@@ -332,17 +332,47 @@ class Store:
             "SELECT p.*, count(pd.document_id) AS documents FROM parts p"
             " LEFT JOIN part_documents pd ON pd.part_id = p.id GROUP BY p.id ORDER BY p.mpn").fetchall()
 
-    def find_part(self, mpn: str) -> int:
-        """The ID of the part with this MPN or alias (case is ignored)."""
+    def match_parts(self, mpn: str, manufacturer: str = "") -> list[sqlite3.Row]:
+        """The parts with this MPN or alias (case is ignored). With a manufacturer:
+        the parts of this manufacturer, or else the parts with no manufacturer."""
         rows = self.db.execute(
             "SELECT id, mpn, manufacturer FROM parts WHERE mpn = ? COLLATE NOCASE OR id IN"
             " (SELECT part_id FROM part_aliases WHERE alias = ? COLLATE NOCASE)", (mpn, mpn)).fetchall()
+        if manufacturer:
+            same = [r for r in rows if r["manufacturer"].lower() == manufacturer.lower()]
+            rows = same or [r for r in rows if not r["manufacturer"]]
+        return rows
+
+    def find_part(self, mpn: str, manufacturer: str = "", create: bool = False) -> int:
+        """The ID of the part (see match_parts). If no part matches and create is
+        true, make the part."""
+        rows = self.match_parts(mpn, manufacturer)
+        if not rows and create:
+            return self.add_part(mpn, manufacturer)
         if not rows:
-            raise LensError(f"part not found: {mpn}")
+            raise LensError(f"part not found: {mpn}" + (f" ({manufacturer})" if manufacturer else ""))
         if len(rows) > 1:
             names = ", ".join(f"{r['mpn']} ({r['manufacturer'] or 'manufacturer unknown'})" for r in rows)
             raise LensError(f"part {mpn} is not unique: {names}")
         return rows[0]["id"]
+
+    def part(self, part_id: int) -> sqlite3.Row | None:
+        return self.db.execute("SELECT * FROM parts WHERE id = ?", (part_id,)).fetchone()
+
+    def documents_of_part(self, part_id: int) -> list[sqlite3.Row]:
+        return self.db.execute(
+            "SELECT d.*, pd.role FROM part_documents pd JOIN documents d ON d.id = pd.document_id"
+            " WHERE pd.part_id = ? ORDER BY d.id", (part_id,)).fetchall()
+
+    def parts_of_document(self, doc_id: int) -> list[sqlite3.Row]:
+        return self.db.execute(
+            "SELECT p.*, pd.role FROM part_documents pd JOIN parts p ON p.id = pd.part_id"
+            " WHERE pd.document_id = ? ORDER BY p.id", (doc_id,)).fetchall()
+
+    def part_names(self) -> list[tuple[int, str]]:
+        """(part ID, name) for each MPN and each alias."""
+        return [(r[0], r[1]) for r in self.db.execute(
+            "SELECT id, mpn FROM parts UNION SELECT part_id, alias FROM part_aliases").fetchall()]
 
     def part_documents(self, mpn: str) -> list[sqlite3.Row]:
         return self.db.execute(

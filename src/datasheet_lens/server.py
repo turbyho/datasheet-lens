@@ -29,7 +29,8 @@ from .store import ROLES, Store
 # use more calls.
 MAX_PDF_PAGES = 50
 
-# The SDK runs the tools in worker threads. Only one add_document at a time:
+# The SDK runs the tools in worker threads. Only one add_document (or change of
+# the project file) at a time:
 # a second call for the same file (for example a retry after a client timeout)
 # then finds the current build and does not start a second one.
 _add_lock = threading.Lock()
@@ -49,7 +50,8 @@ a datasheet to text: read the values from the original pages.
 
 Go into a document step by step, and ask only for what the work needs:
 1. list_parts / list_documents: find the documents of a part (a part can have a
-   datasheet, a manual, errata).
+   datasheet, a manual, errata). project_status gives the parts of the user
+   project; project_sync and project_add_part keep its documents current.
 2. get_index: the outline and the table and figure captions, with pages.
 3. get_outline: the entries under one section (large documents).
 4. search_text: find a word or a value in the text layer (page and line).
@@ -389,6 +391,74 @@ def set_fact_status(fact_id: int, status: str, note: str = "") -> str:
     with Store() as store:
         set_status(store, fact_id, status, note)
         return f"fact #{fact_id}: {status}"
+
+
+PROJECT_ADD_HINT = "project_add_part(mpn='{mpn}', document='{sha}')"
+
+
+@tool
+def project_status(path: str = "") -> str:
+    """The parts of the user project and their documents (document IDs for the
+    other tools), and the copies in the project folder that are missing or
+    changed. The project file datasheet-lens.toml is in path or in a parent
+    folder (default: the working folder of the server)."""
+    from .project import format_parts, format_report, load, sync
+
+    project = load(path or None)
+    with Store() as store:
+        report = sync(project, store, apply=False)
+    return "\n".join(format_parts(project) + format_report(report, False, PROJECT_ADD_HINT))
+
+
+@tool
+def project_sync(path: str = "", restore: bool = False) -> str:
+    """Synchronize the project with the central store: add the documents that the
+    store links to the parts of the project, copy the missing copies into the
+    project folder, and import the new PDF files of the folder (with index and
+    element map). A new file gets a part only from the store; for the other files
+    the result proposes a part, and project_add_part assigns it. restore: copy a
+    changed copy again from the store."""
+    from .project import format_report, load, sync
+
+    with _add_lock, Store() as store:
+        project = load(path or None)
+        report = sync(project, store, restore=restore)
+        queued = _build_in_sequence(store, report["documents"])
+    lines = format_report(report, True, PROJECT_ADD_HINT)
+    if queued:
+        lines.append(f"element map: a background thread builds the maps of {queued} documents, one after "
+                     "the other; get_page_map tells when a map is complete")
+    return "\n".join(lines)
+
+
+def _build_in_sequence(store: Store, doc_ids: list[int]) -> int:
+    """Build the element maps of the documents that have no map and no build, one
+    after the other in one background thread. Give their number."""
+    from .elements import has_elements
+
+    todo = [d for d in doc_ids if not has_elements(store, d) and _state(_builds.get(d))[0] == "none"]
+    if todo:
+        threading.Thread(target=lambda: [_build_elements(d)["thread"].join() for d in todo],
+                         name="elements-sequence", daemon=True).start()
+    return len(todo)
+
+
+@tool
+def project_add_part(mpn: str, manufacturer: str = "", document: str = "", role: str = "datasheet",
+                     path: str = "") -> str:
+    """Add a part to the user project, with the documents that the store links to
+    it. document (ID from project_status or list_documents): link this document
+    to the part first, for example a new file of the project folder. Then
+    project_sync copies the documents into the folder."""
+    from .project import add_part, load
+
+    with _add_lock, Store() as store:
+        project = load(path or None)
+        part = add_part(project, store, mpn, manufacturer, document, role)
+    return "\n".join([f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'}): "
+                      f"{len(part['documents'])} documents"]
+                     + [f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}"
+                        for d in part["documents"]])
 
 
 def main() -> None:

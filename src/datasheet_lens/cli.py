@@ -206,6 +206,62 @@ def cmd_docs(args: argparse.Namespace) -> int:
     return 0
 
 
+PROJECT_ADD_HINT = "datasheet-lens project add-part {mpn} --document {sha}"
+
+
+def cmd_project_init(args: argparse.Namespace) -> int:
+    from .project import init_project
+
+    project = init_project(args.path or Path.cwd(), args.folder)
+    print(f"project file: {project.path}\nfolder: {project.folder_path}")
+    return 0
+
+
+def cmd_project_status(args: argparse.Namespace) -> int:
+    from .project import format_parts, format_report, load, sync
+
+    project = load(args.path)
+    with Store() as store:
+        report = sync(project, store, apply=False)
+    print("\n".join(format_parts(project) + format_report(report, False, PROJECT_ADD_HINT)))
+    return 0
+
+
+def cmd_project_sync(args: argparse.Namespace) -> int:
+    from .elements import build_elements
+    from .project import format_report, load, sync
+    from .setup import element_backend
+
+    project = load(args.path)
+    with Store() as store:
+        report = sync(project, store, restore=args.restore)
+        print("\n".join(format_report(report, True, PROJECT_ADD_HINT)))
+        backend, failed = element_backend(), 0
+        for doc_id in report["documents"]:
+            try:
+                result = build_elements(store, doc_id, backend)
+            except (LensError, OSError, pdfium.PdfiumError) as e:
+                print(f"element map of document {doc_id}: failed: {e}", file=sys.stderr)
+                failed += 1
+                continue
+            if not result["skipped"]:
+                print(f"element map of document {doc_id}: {result['elements']} elements ({result['backend']})")
+    return 1 if failed else 0
+
+
+def cmd_project_add_part(args: argparse.Namespace) -> int:
+    from .project import add_part, load
+
+    project = load(args.path)
+    with Store() as store:
+        part = add_part(project, store, args.mpn, args.manufacturer or "", args.document or "", args.role)
+    print(f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'}): {len(part['documents'])} documents")
+    for d in part["documents"]:
+        print(f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}")
+    print("run 'datasheet-lens project sync' to copy the documents into the folder")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="datasheet-lens",
@@ -297,6 +353,25 @@ def build_parser() -> argparse.ArgumentParser:
     pdfp.add_argument("document", help="document ID or SHA-256 prefix")
     pdfp.add_argument("pages", help="pages, for example 7 or 3-5,8")
     pdfp.set_defaults(func=cmd_pdf_pages)
+
+    project = sub.add_parser("project", help="the parts of a project and the copies of their documents")
+    psub = project.add_subparsers(dest="project_command", required=True)
+    pinit = psub.add_parser("init", help="make the project file datasheet-lens.toml")
+    pinit.add_argument("--folder", default="datasheets", help="the document folder, relative to the project")
+    pinit.set_defaults(func=cmd_project_init)
+    pstatus = psub.add_parser("status", help="show the parts, and the copies that are missing or changed")
+    pstatus.set_defaults(func=cmd_project_status)
+    psync = psub.add_parser("sync", help="copy the documents into the folder; import the new files of the folder")
+    psync.add_argument("--restore", action="store_true", help="copy a changed copy again from the store")
+    psync.set_defaults(func=cmd_project_sync)
+    padd = psub.add_parser("add-part", help="add a part, with the documents that the store links to it")
+    padd.add_argument("mpn", help="the part number (MPN) or an alias")
+    padd.add_argument("--manufacturer", help="the manufacturer of the part")
+    padd.add_argument("--document", help="link this document (ID or SHA-256 prefix) to the part first")
+    padd.add_argument("--role", choices=ROLES, default="datasheet", help="the role of that document")
+    padd.set_defaults(func=cmd_project_add_part)
+    for p in (pinit, pstatus, psync, padd):
+        p.add_argument("--path", help="the project folder (default: the current folder or a parent folder)")
     return parser
 
 
