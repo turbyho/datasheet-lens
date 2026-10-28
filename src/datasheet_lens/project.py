@@ -684,6 +684,20 @@ def suggest_parts(store: Store, filename: str) -> list:
     return [store.part(i) for i, n in sorted(best.items()) if n == top]
 
 
+def _misplaced(store: Store, part_docs: set[int], doc_id: int) -> list[str]:
+    """The parts that the store links to a document of a project part, when the
+    store does not give the document to the part (part_docs: the IDs of the
+    documents of the store part and of its base part). In TOML a
+    [[part.document]] belongs to the [[part]] above it: a block that a person
+    moved changes the part with no error. An empty list: no sign of this (also
+    for a document that the store links to no part yet, for example on a new
+    machine: there the store cannot find a moved block)."""
+    if doc_id in part_docs:
+        return []
+    return sorted({f"{r['mpn']} ({r['manufacturer'] or 'manufacturer unknown'})"
+                   for r in store.parts_of_document(doc_id)})
+
+
 def _store_base(store: Store, part: dict, part_id: int, report: dict) -> int | None:
     """The base part that the project file names for a concrete part goes into
     the store (the project file of a team is the source). Give its ID, or None."""
@@ -716,9 +730,10 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
         project = copy.deepcopy(project)
 
     report = {k: [] for k in ("ok", "copied", "restored", "changed", "missing", "imported", "added", "moved",
-                              "suggested", "unassigned", "unknown_parts", "problems", "documents")}
+                              "suggested", "unassigned", "unknown_parts", "problems", "misplaced", "documents")}
     files = _folder_files(project)
     placed: set[str] = set()  # the documents whose copy is at its place: the first part decides
+    part_ids: dict[int, int] = {}  # id(project part) -> the ID of its store part
 
     def move(rel: str, part: dict, sha: str) -> str:
         """Move a copy to the subfolder of the layout. Give its new name."""
@@ -771,16 +786,26 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
             if apply:
                 _store_base(store, part, rows[0]["id"], report)
             report["added"] += _refresh(project, store, part, rows[0]["id"], files)
+            part_ids[id(part)] = rows[0]["id"]
 
     # 2. The copies of the referenced documents.
     referenced = set()
+    imported: set[str] = set()  # the documents that this sync put into the store
     for part in project.parts:
+        part_docs = {r["id"] for r in store.documents_of_part(part_ids[id(part)])} if id(part) in part_ids else None
         for d in part["documents"]:
             rel, doc = d["file"], store.document(d["sha256"])
+            misplaced = []
+            if doc is not None and part_docs is not None and d["sha256"] not in imported:
+                misplaced = _misplaced(store, part_docs, doc.id)
+                if misplaced:
+                    report["misplaced"].append({"file": rel, "mpn": part.get("base") or part["mpn"],
+                                                "part": part["mpn"], "sha256": doc.sha256, "linked": misplaced})
             if rel in files and files[rel] == d["sha256"]:
-                if doc is None and apply:  # a project from a different machine
-                    doc = import_file(rel)
+                if apply and (doc is None or d["sha256"] in imported):  # a project from a different machine
+                    doc = doc or import_file(rel)
                     if doc is not None:
+                        imported.add(doc.sha256)
                         try:
                             part_id = store.find_part(part["mpn"], part["manufacturer"], create=True)
                             # The document belongs to the base part, if the file names one.
@@ -789,8 +814,9 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
                         except LensError as e:
                             report["problems"].append(f"{rel}: not linked to a part: {e}")
                 # A copy that the user did not pin goes to the subfolder of the layout.
+                # A misplaced reference does not move it: its part is not sure.
                 moved = False
-                if doc is not None and not d.get("pinned") and d["sha256"] not in placed:
+                if doc is not None and not d.get("pinned") and not misplaced and d["sha256"] not in placed:
                     try:
                         new = move(rel, part, d["sha256"])
                         moved, rel = new != rel, new
@@ -891,6 +917,11 @@ def format_report(report: dict, apply: bool, add_hint: str) -> list[str]:
               "a file with its content)" for rel in report["missing"]]
     lines += [f"part not in the store: {mpn}" for mpn in report["unknown_parts"]]
     lines += [f"problem: {text}" for text in report["problems"]]
+    for item in report["misplaced"]:
+        lines.append(f"problem: {item['file']}: the project file has it under part {item['part']}, but the store "
+                     f"links it to {', '.join(item['linked'])}. A [[part.document]] block belongs to the [[part]] "
+                     "above it: was the block moved? If the part is correct, link it with "
+                     + add_hint.format(mpn=item["mpn"], sha=item["sha256"][:12]))
     for item in report["suggested"]:
         mpn = item["parts"][0].split(" (")[0]
         lines.append(f"no part: {item['file']} ({item['sha256'][:12]}); proposal: {', '.join(item['parts'])}; "

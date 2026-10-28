@@ -346,3 +346,50 @@ def test_layout_checks(tmp_path):
     assert prj.layout_dir(project, {"mpn": "X", "manufacturer": "TI"}) == ""
     assert prj.layout_dir(prj.Project(tmp_path, layout="{manufacturer}"),
                           {"mpn": "X", "manufacturer": "A/B: C"}) == "A_B_ C"
+
+
+def test_moved_document_block(store_home, text_pdf, tmp_path):
+    """A [[part.document]] block that a person moved under a different part: sync
+    tells it (the store links the document to the first part), and it does not
+    move the copy into the folder of the wrong part."""
+    opa, rtc = text_pdf("opa2134.pdf", OPA), text_pdf("rtc.pdf", RTC)
+    with Store() as store:
+        store.link(store.add_part("OPA2134", "TI"), store.add_document(opa).id)
+        doc = store.add_document(rtc)
+        store.link(store.add_part("RV-3149-C3", "Micro Crystal"), doc.id)
+        project = prj.init_project(tmp_path / "board")  # layout {manufacturer}
+        prj.add_part(project, store, "OPA2134")
+        prj.add_part(project, store, "RV-3149-C3")
+        assert not prj.sync(project, store)["misplaced"]
+        # Move the document block of RV-3149-C3 under OPA2134 (above the second part).
+        text = project.path.read_text(encoding="utf-8")
+        head, rtc_part = text.split('[[part]]\nmpn = "RV-3149-C3"', 1)
+        rtc_doc = rtc_part[rtc_part.index("[[part.document]]"):]
+        rtc_head = rtc_part[:rtc_part.index("[[part.document]]")]
+        project.path.write_text(head + rtc_doc + '\n[[part]]\nmpn = "RV-3149-C3"' + rtc_head, encoding="utf-8")
+        report = prj.sync(prj.load(project.root), store)
+    item = report["misplaced"][0]
+    assert (item["part"], item["linked"]) == ("OPA2134", ["RV-3149-C3 (Micro Crystal)"])
+    lines = prj.format_report(report, True, "add {mpn} {sha}")
+    assert any("was the block moved?" in line and f"add OPA2134 {doc.sha256[:12]}" in line for line in lines)
+    assert (project.folder_path / "Micro Crystal/rtc.pdf").is_file()
+    assert not (project.folder_path / "TI/rtc.pdf").exists()
+
+
+def test_shared_document_on_a_new_machine(store_home, text_pdf, tmp_path, monkeypatch):
+    """One datasheet under two parts (variants), and an empty store: no false
+    report of a moved block, and the store links it to the two parts."""
+    with Store() as store:
+        doc = store.add_document(text_pdf("adc.pdf", [[(50, 60, 14, "ADC34J24")]]))
+        store.link_parts(doc.id, "ADC34J24", ["ADC34J22"], "TI")
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "ADC34J24")
+        prj.add_part(project, store, "ADC34J22")
+        prj.sync(project, store)
+    monkeypatch.setenv("DATASHEET_LENS_HOME", str(tmp_path / "store2"))
+    with Store() as store:
+        for _ in range(2):
+            report = prj.sync(prj.load(project.root), store)
+            assert not report["misplaced"], report["misplaced"]
+        assert {r["mpn"] for r in store.parts_of_document(store.document(doc.sha256).id)} == {"ADC34J24",
+                                                                                            "ADC34J22"}
