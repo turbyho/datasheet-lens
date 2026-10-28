@@ -1,6 +1,9 @@
 .venv/
 .venvs/
 __pycache__/
+.pytest_cache/
+dist/
+*.egg-info/
 # Raw output of the converters in spike 2. convert.py makes it again.
 spike/*/verify/convert/*/raw/
 *.py[cod]

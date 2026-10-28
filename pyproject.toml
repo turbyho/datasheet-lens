@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "datasheet-lens"
+version = "0.1.0.dev0"
+description = "Index of component datasheets, and pages of the original on demand, for LLM agents"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "Turbyho" }]
+keywords = ["datasheet", "pdf", "mcp", "llm", "electronics", "kicad"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+]
+dependencies = [
+    "pypdfium2>=5.14",
+    "mcp>=2.3",
+]
+
+[project.optional-dependencies]
+# Element map with the docling layout model (torch, some GB of disk).
+layout = ["docling>=2.144"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+datasheet-lens = "datasheet_lens.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/datasheet_lens"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
