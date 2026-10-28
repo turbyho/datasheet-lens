@@ -150,6 +150,12 @@ CREATE INDEX IF NOT EXISTS knowledge_subject ON knowledge (subject);
 """
 
 MEDIA_TYPES = {".pdf": "application/pdf"}
+ROLES = ("datasheet", "manual", "errata", "appnote", "other")
+
+
+def _ulower(text):
+    """lower() for all of Unicode (the lower() of SQLite changes only ASCII)."""
+    return text.lower() if isinstance(text, str) else text
 
 
 def now() -> str:
@@ -186,6 +192,7 @@ class Store:
         (self.home / "db").mkdir(exist_ok=True)
         self.db = sqlite3.connect(self.home / "db" / "lens.db")
         self.db.row_factory = sqlite3.Row
+        self.db.create_function("ulower", 1, _ulower, deterministic=True)
         self.db.execute("PRAGMA journal_mode = WAL")
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.executescript(SCHEMA)
@@ -253,12 +260,16 @@ class Store:
             tmp.replace(target)
         finally:
             tmp.unlink(missing_ok=True)
-        self.db.execute(
-            "INSERT INTO documents (sha256, filename, media_type, size, pages, title, source_url, added)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (sha, path.name, media_type, target.stat().st_size, pages, title, source_url, now()),
-        )
-        self.db.commit()
+        try:
+            self.db.execute(
+                "INSERT INTO documents (sha256, filename, media_type, size, pages, title, source_url, added)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (sha, path.name, media_type, target.stat().st_size, pages, title, source_url, now()),
+            )
+            self.db.commit()
+        except sqlite3.IntegrityError:
+            # A different process added the same file after the check above.
+            self.db.rollback()
         return self.document(sha)
 
     def document(self, ref: str | int) -> Document | None:
@@ -316,6 +327,18 @@ class Store:
         return self.db.execute(
             "SELECT p.*, count(pd.document_id) AS documents FROM parts p"
             " LEFT JOIN part_documents pd ON pd.part_id = p.id GROUP BY p.id ORDER BY p.mpn").fetchall()
+
+    def find_part(self, mpn: str) -> int:
+        """The ID of the part with this MPN or alias (case is ignored)."""
+        rows = self.db.execute(
+            "SELECT id, mpn, manufacturer FROM parts WHERE mpn = ? COLLATE NOCASE OR id IN"
+            " (SELECT part_id FROM part_aliases WHERE alias = ? COLLATE NOCASE)", (mpn, mpn)).fetchall()
+        if not rows:
+            raise LensError(f"part not found: {mpn}")
+        if len(rows) > 1:
+            names = ", ".join(f"{r['mpn']} ({r['manufacturer'] or 'manufacturer unknown'})" for r in rows)
+            raise LensError(f"part {mpn} is not unique: {names}")
+        return rows[0]["id"]
 
     def part_documents(self, mpn: str) -> list[sqlite3.Row]:
         return self.db.execute(

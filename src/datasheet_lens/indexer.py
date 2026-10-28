@@ -229,7 +229,7 @@ def search(store: Store, doc_ids: list[int], query: str, limit: int = 30) -> lis
     out = []
     rows = store.db.execute(
         f"SELECT document_id, page, text FROM pages WHERE document_id IN ({','.join('?' * len(doc_ids))})"
-        " AND instr(lower(text), ?) > 0 ORDER BY document_id, page", (*doc_ids, needle)).fetchall()
+        " AND instr(ulower(text), ?) > 0 ORDER BY document_id, page", (*doc_ids, needle)).fetchall()
     for row in rows:
         doc_id, page, text = row["document_id"], row["page"], row["text"]
         for line in text.splitlines():

@@ -207,7 +207,7 @@ def page_map(store: Store, doc_id: int, page: int, everything: bool = False) -> 
     rows = store.db.execute("SELECT * FROM elements WHERE document_id = ? AND page = ? ORDER BY page_order",
                             (doc_id, page)).fetchall()
     if not rows and not _has_elements(store, doc_id):
-        raise LensError("the document has no element map (run: datasheet-lens elements)")
+        raise LensError("the document has no element map (build it with the command: datasheet-lens elements)")
     lines, rest = [], []
     for r in rows:
         if r["code"] == "R":
@@ -220,7 +220,7 @@ def page_map(store: Store, doc_id: int, page: int, everything: bool = False) -> 
             rest.append(r["element_id"])
     if rest:
         lines.append(f"+ {len(rest)} text elements ({rest[0]} … {rest[-1]}); "
-                     "use page-map --all or element-text <ID>")
+                     "ask for all elements of the page, or for the text of an element")
     return lines
 
 

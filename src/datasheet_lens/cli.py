@@ -10,9 +10,7 @@ import pypdfium2 as pdfium
 from . import __version__
 from .config import store_home
 from .errors import LensError
-from .store import Store
-
-ROLES = ("datasheet", "manual", "errata", "appnote", "other")
+from .store import ROLES, Store
 
 
 def cmd_info(_args: argparse.Namespace) -> int:
@@ -96,6 +94,13 @@ def parse_bbox(text: str) -> tuple[float, float, float, float]:
     if len(bbox) != 4 or not all(math.isfinite(v) for v in bbox):
         raise LensError("--bbox needs four finite numbers: x0,y0,x1,y1 (pt, top-left origin)")
     return bbox
+
+
+def cmd_mcp(_args: argparse.Namespace) -> int:
+    from .server import main as serve
+
+    serve()
+    return 0
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -248,6 +253,9 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument("--part", help="part number: search all documents of the part")
     search.add_argument("--max", type=int, default=30, help="maximum number of lines")
     search.set_defaults(func=cmd_search)
+
+    serve = sub.add_parser("mcp", help="run the MCP server (stdio)")
+    serve.set_defaults(func=cmd_mcp)
 
     init = sub.add_parser("init", help="make the store; ask about the optional docling component")
     init.add_argument("--layout", choices=("ask", "yes", "no"), default="ask",
