@@ -1,3 +1,4 @@
+import copy
 import shutil
 
 import pytest
@@ -20,6 +21,14 @@ def setup(store_home, text_pdf, tmp_path):
         store.link(store.add_part("OPA2134", "TI"), doc.id)
         store.add_part("RV-3149-C3", "Micro Crystal")
     return prj.init_project(tmp_path / "board"), opa, rtc
+
+
+def test_header_of_a_new_file(setup):
+    """A new project file tells a team member where to get the tool."""
+    text = setup[0].path.read_text(encoding="utf-8")
+    assert text.startswith("# datasheet-lens project file")
+    assert "# Install: pipx install git+https://github.com/turbyho/datasheet-lens.git" in text
+    assert not any(line != line.rstrip() for line in text.splitlines())
 
 
 def test_copies_and_new_files(setup):
@@ -132,12 +141,12 @@ def test_save_of_unusual_files(setup):
         assert "role" not in text and "\n\n[[part]]\nmpn = \"RV-3149-C3\"" in text
         assert [p["mpn"] for p in prj.load(project.root).parts] == ["OPA2134", "RV-3149-C3"]
 
-        # An inline array becomes an array of tables, with its keys.
+        # An inline array can be read, but datasheet-lens does not write to it.
         project.path.write_text('part = [{mpn = "OPA2134", note = "n"}]\n', encoding="utf-8")
-        prj.add_part(prj.load(project.root), store, "RV-3149-C3")
-        parts = prj.load(project.root).parts
-        assert [p["mpn"] for p in parts] == ["OPA2134", "RV-3149-C3"]
-        assert 'note = "n"' in project.path.read_text(encoding="utf-8")
+        assert prj.load(project.root).parts[0]["mpn"] == "OPA2134"
+        with pytest.raises(LensError, match="not as an inline array"):
+            prj.add_part(prj.load(project.root), store, "RV-3149-C3")
+        assert project.path.read_text(encoding="utf-8") == 'part = [{mpn = "OPA2134", note = "n"}]\n'
 
         # A file that changed after load() is not written over.
         loaded = prj.load(project.root)
@@ -147,9 +156,61 @@ def test_save_of_unusual_files(setup):
 
         # A dry run does not change the project.
         loaded = prj.load(project.root)
-        before = [dict(p, documents=list(p["documents"])) for p in loaded.parts]
+        before = copy.deepcopy(loaded.parts)
         prj.sync(loaded, store, apply=False)
         assert loaded.parts == before
+
+        # A multi-line string, two blank lines and a header with no blank line
+        # before it: only the changed value changes.
+        original = ('folder = "datasheets"\n\n\n[[part]]\nmpn = "OPA2134"\nnote = """\nline1\n\n\nline2\n[x]\n"""\n'
+                    '[[part]]\nmpn = "RV-3149-C3"\n')
+        project.path.write_text(original, encoding="utf-8")
+        loaded = prj.load(project.root)
+        loaded.parts[1]["manufacturer"] = "Micro Crystal"
+        prj.save(loaded)
+        assert project.path.read_text(encoding="utf-8") == original + 'manufacturer = "Micro Crystal"\n'
+
+        # The first document of a part that is not the last one: the comment
+        # above the next part stays above it.
+        project.path.write_text('[[part]]\nmpn = "OPA2134"\n\n# part B: important\n[[part]]\nmpn = "RV-3149-C3"\n',
+                                encoding="utf-8")
+        loaded = prj.load(project.root)
+        loaded.parts[0]["documents"].append({"sha256": sha, "file": "a.pdf", "role": "datasheet"})
+        prj.save(loaded)
+        assert '# part B: important\n[[part]]\nmpn = "RV-3149-C3"' in project.path.read_text(encoding="utf-8")
+
+        # A removed part: the comment above the next part stays.
+        loaded = prj.load(project.root)
+        del loaded.parts[0]
+        prj.save(loaded)
+        assert project.path.read_text(encoding="utf-8").startswith("\n# part B: important\n[[part]]")
+
+        # A table goes to the document with the same content first, and only then
+        # to the document with the same file name.
+        project.path.write_text(f'[[part]]\nmpn = "OPA2134"\n\n[[part.document]]\nsha256 = "{"1" * 64}"\n'
+                                'file = "a.pdf"\nnote = "about 1"\n', encoding="utf-8")
+        loaded = prj.load(project.root)
+        loaded.parts[0]["documents"] = [{"sha256": "2" * 64, "file": "a.pdf", "role": "datasheet"},
+                                        {"sha256": "1" * 64, "file": "c.pdf", "role": "datasheet"}]
+        prj.save(loaded)
+        text = project.path.read_text(encoding="utf-8")
+        assert f'sha256 = "{"1" * 64}"\nfile = "c.pdf"\nnote = "about 1"' in text
+
+        # A comment above a header stays above it when a table is added before it.
+        project.path.write_text(f'[[part]]\nmpn = "OPA2134"\n\n[[part.document]]\nsha256 = "{sha}"\n'
+                                'file = "a.pdf"\n\n# part B: important\n[[part]]\nmpn = "RV-3149-C3"\n',
+                                encoding="utf-8")
+        loaded = prj.load(project.root)
+        loaded.parts[0]["documents"].append({"sha256": "1" * 64, "file": "b.pdf", "role": "errata"})
+        prj.save(loaded)
+        text = project.path.read_text(encoding="utf-8")
+        assert '# part B: important\n[[part]]\nmpn = "RV-3149-C3"' in text
+        assert 'role = "errata"\n\n# part B' in text
+
+        # A file that was removed after load() is not made again.
+        project.path.unlink()
+        with pytest.raises(LensError, match="was removed"):
+            prj.save(loaded)
 
 
 def test_manufacturer_selects_the_part(setup):
@@ -178,7 +239,11 @@ def test_problem_files(setup):
         report = prj.sync(project, store)
     assert any(p.startswith("broken.pdf: not imported") for p in report["problems"])
     assert report["missing"] == ["opa2134.pdf"] and report["imported"] == ["opa2134.pdf"]
-    assert "0" * 64 in {d["sha256"] for d in prj.load(project.root).parts[0]["documents"]}
+    # The table of the old reference goes to the document with its content (the
+    # store copy under a new name); the reference with the new sha256 gets a new table.
+    docs = prj.load(project.root).parts[0]["documents"]
+    assert docs[0]["sha256"] == sha256_file(opa) and docs[0]["file"] != "opa2134.pdf"
+    assert docs[1] == {"sha256": "0" * 64, "file": "opa2134.pdf", "role": "datasheet"}
 
 
 def test_project_file_checks(setup):
@@ -200,6 +265,8 @@ def test_project_file_checks(setup):
         prj.load(project.root)
     with pytest.raises(LensError, match="exists already"):
         prj.init_project(project.root)
+    # A folder that is not in the normal form.
+    assert prj.init_project(project.root.parent / "other", folder="./docs/").folder == "docs"
     with pytest.raises(LensError, match="no datasheet-lens.toml"):
         prj.load(project.root.parent)
 

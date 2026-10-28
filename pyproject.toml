@@ -20,8 +20,12 @@ dependencies = [
     "pypdfium2>=5.14",
     "mcp>=2.3",
     # Writes the project file and keeps the comments and the keys of the user.
-    "tomlkit>=0.13",
+    "tomlkit>=0.15",
 ]
+
+[project.urls]
+Homepage = "https://github.com/turbyho/datasheet-lens"
+Source = "https://github.com/turbyho/datasheet-lens"
 
 [project.optional-dependencies]
 # Element map with the docling layout model (torch, some GB of disk).

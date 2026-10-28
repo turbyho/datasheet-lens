@@ -23,14 +23,30 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import pypdfium2 as pdfium
 import tomlkit
 import tomlkit.exceptions
-from tomlkit.items import AoT
+from tomlkit.container import Container
+from tomlkit.items import AoT, Comment, Whitespace
 
+from . import PROJECT_URL
 from .errors import LensError
 from .fileutil import temp_path, write_atomic
 from .store import ROLES, Document, Store, sha256_file
 
 PROJECT_FILE = "datasheet-lens.toml"
 DEFAULT_FOLDER = "datasheets"
+# The comment at the start of a new project file.
+HEADER = (
+    "datasheet-lens project file: the parts of this project and their documents.",
+    "",
+    "datasheet-lens gives component datasheets (PDF) to LLM agents: an index of",
+    "each document, and the original pages and regions on demand.",
+    f"Source and documentation: {PROJECT_URL}",
+    f"Install: pipx install git+{PROJECT_URL}.git",
+    "Then run \"datasheet-lens init\" one time, and \"datasheet-lens project sync\"",
+    "in the folder of this file.",
+    "",
+    "The central store holds the documents. \"datasheet-lens project sync\" copies",
+    "them into the folder, and imports a new PDF of the folder into the store.",
+)
 
 
 def _rel_parts(rel: str, what: str) -> tuple[str, ...]:
@@ -93,24 +109,23 @@ def init_project(root: Path | str, folder: str = DEFAULT_FOLDER) -> Project:
     root = Path(root).expanduser().resolve()
     if (root / PROJECT_FILE).exists():
         raise LensError(f"{root / PROJECT_FILE} exists already")
-    project = Project(root, folder)
+    project = Project(root, _rel(folder, "the folder"))
     project.folder_path.mkdir(parents=True, exist_ok=True)
     save(project)
     return project
 
 
-def load(start: Path | str | None = None) -> Project:
-    root = find_project(start)
-    path = root / PROJECT_FILE
-    text = path.read_text(encoding="utf-8")
+def _parse(text: str, path: Path) -> tuple[str, list[dict]]:
+    """The folder and the parts of the text of a project file."""
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
         raise LensError(f"{path}: {e}") from e
-    project = Project(root, _rel(data.get("folder", DEFAULT_FOLDER), "the folder"), text=text)
+    folder = _rel(data.get("folder", DEFAULT_FOLDER), "the folder")
     parts = data.get("part", [])
     if not isinstance(parts, list):
         raise LensError(f"{path}: 'part' must be a list of tables ([[part]])")
+    out = []
     for p in parts:
         if not isinstance(p, dict) or not isinstance(p.get("mpn"), str) or not p["mpn"].strip():
             raise LensError(f"{path}: each [[part]] needs an mpn")
@@ -125,9 +140,22 @@ def load(start: Path | str | None = None) -> Project:
             if role not in ROLES:
                 raise LensError(f"{path}: part {p['mpn']}: role must be one of {', '.join(ROLES)}")
             docs.append({"sha256": sha, "file": _rel(file, "the file"), "role": role})
-        project.parts.append({"mpn": p["mpn"].strip(), "manufacturer": str(p.get("manufacturer", "")),
-                              "documents": docs})
-    return project
+        out.append({"mpn": p["mpn"].strip(), "manufacturer": str(p.get("manufacturer", "")), "documents": docs})
+    return folder, out
+
+
+def load(start: Path | str | None = None) -> Project:
+    root = find_project(start)
+    path = root / PROJECT_FILE
+    text = path.read_text(encoding="utf-8")
+    folder, parts = _parse(text, path)
+    return Project(root, folder, parts, text=text)
+
+
+def _summary(folder: str, parts: list[dict]):
+    """The data of a project with no order, to compare two projects."""
+    return folder, sorted((p["mpn"], p["manufacturer"], tuple(sorted(
+        (d["sha256"], d["file"], d["role"]) for d in p["documents"]))) for p in parts)
 
 
 def _strip(value) -> str:
@@ -159,87 +187,150 @@ def _same_part(table, part: dict) -> bool:
 
 
 def _tables(container, key: str) -> list:
-    """The tables of the array container[key]. An inline array ("part = [{...}]")
-    becomes an array of tables: its keys stay, its inline format does not."""
+    """The tables of the array of tables container[key]. datasheet-lens cannot
+    add to an inline array ("part = [{...}]") and keep its place in the text."""
     value = container.get(key)
     if value is None:
         return []
     if not isinstance(value, AoT):
-        aot = tomlkit.aot()
-        for item in value:
-            table = tomlkit.table()
-            for k, v in item.items():
-                table[k] = v
-            aot.append(table)
-        del container[key]
-        container[key] = aot
-    return list(container[key])
+        raise LensError(f"{PROJECT_FILE}: write '{key}' as an array of tables ([[...]]), "
+                        "not as an inline array, so that datasheet-lens can add to it")
+    return list(value)
+
+
+def _body(container) -> list:
+    return container.body if isinstance(container, Container) else container.value.body
+
+
+def _last_table(table):
+    """The table whose text comes last in a table or a document (the last table
+    of its last array of tables, at each depth)."""
+    while True:
+        body = _body(table)
+        i = len(body) - 1
+        while i >= 0 and body[i][0] is None and isinstance(body[i][1], (Comment, Whitespace)):
+            i -= 1
+        if i < 0 or not isinstance(body[i][1], AoT) or not len(body[i][1]):
+            return table
+        table = body[i][1][-1]
+
+
+def _take_tail(table) -> list:
+    """Remove the comment lines and blank lines at the end of the text of a
+    table, and give them. tomlkit keeps the comment lines above a header there."""
+    body = _body(_last_table(table))
+    tail = []
+    while body and body[-1][0] is None and isinstance(body[-1][1], (Comment, Whitespace)):
+        tail.insert(0, body.pop()[1])
+    return tail
 
 
 def _set_tables(container, key: str, old: list, new: list) -> None:
     """Make the array of tables container[key] hold the tables of new. The array
     is changed in place: a kept table keeps its position, its text and its
-    comments, and a new table comes at the end, after a blank line."""
+    comments, and a new table comes at the end. The comment lines above a header
+    stay above it. The order of the parts and of the documents has no meaning."""
+    keep, before = {id(t) for t in new}, {id(t) for t in old}
+    added = [t for t in new if id(t) not in before]
+    aot = container.get(key)
+    for i in reversed(range(len(old))):
+        if id(old[i]) in keep:
+            continue
+        tail = _take_tail(old[i])
+        following = next((t for t in old[i + 1:] if id(t) in keep), None)
+        previous = next((t for t in reversed(old[:i]) if id(t) in keep), None)
+        if following is not None:
+            following.trivia.indent = "".join(x.as_string() for x in tail) + following.trivia.indent
+        elif previous is not None:
+            for x in tail:
+                _last_table(previous).add(x)
+        del aot[i]
     if not new:
         if key in container:
             del container[key]
         return
-    if key not in container:
+    if not added:
+        return
+    # The comment lines at the end of the text before the new tables are above
+    # the header that comes after the array: they go after the new tables.
+    tail = _take_tail(aot[-1] if aot is not None and len(aot) else container)
+    if aot is None:
         container[key] = tomlkit.aot()
-    aot = container[key]
-    for i in reversed(range(len(old))):
-        if not any(old[i] is t for t in new):
-            del aot[i]
-    # The order of the parts and of the documents has no meaning: a new table
-    # goes to the end, also if it comes before a kept table in new.
-    for t in new:
-        if not any(t is o for o in old):
-            t.trivia.indent = "\n"
-            aot.append(t)
+        aot = container[key]
+    for t in added:
+        t.trivia.indent = "\n"  # a blank line before the header
+        aot.append(t)
+    for x in tail:
+        _last_table(added[-1]).add(x)
+
+
+def _match_documents(old_docs: list, documents: list[dict]) -> list:
+    """The table of each document: first the tables with the same content, then
+    the tables with the same file (a new revision of the copy), then new tables."""
+    free = list(old_docs)
+    found: list = [None] * len(documents)
+    for match in (lambda t, d: t.get("sha256") == d["sha256"],
+                  lambda t, d: _norm_rel(t.get("file", "")) == d["file"]):
+        for i, d in enumerate(documents):
+            if found[i] is None:
+                found[i] = next((t for t in free if match(t, d)), None)
+                free = [t for t in free if t is not found[i]]
+    return [t if t is not None else tomlkit.table() for t in found]
 
 
 def save(project: Project) -> None:
     """Write the project file. The text of the file stays: the comments, the
     format and the keys that datasheet-lens does not know. Only the changed values
     and the new parts and documents are written. If the file changed after
-    load() read it, nothing is written (the changes of the user stay)."""
+    load() read it, nothing is written (the changes of the user stay). The new
+    text is read back before the write: if it does not give the data of the
+    project, nothing is written."""
+    source = None
     if project.path.exists():
         text = project.path.read_text(encoding="utf-8")
         if project.text is not None and text != project.text:
             raise LensError(f"{project.path} changed after datasheet-lens read it: run the command again")
+        source = text if text.endswith("\n") or not text else text + "\n"
         try:
-            doc = tomlkit.parse(text if text.endswith("\n") or not text else text + "\n")
+            doc = tomlkit.parse(source)
         except tomlkit.exceptions.ParseError as e:
             raise LensError(f"{project.path}: {e}") from e
         _set(doc, "folder", project.folder, default=DEFAULT_FOLDER, norm=_norm_rel)
+    elif project.text is not None:
+        raise LensError(f"{project.path} was removed after datasheet-lens read it: run the command again")
     else:
         doc = tomlkit.document()
-        doc.add(tomlkit.comment("datasheet-lens project: the parts and their documents. The central store"))
-        doc.add(tomlkit.comment("holds the documents; \"datasheet-lens project sync\" copies them into the folder."))
+        for line in HEADER:
+            doc.add(tomlkit.comment(line))
         doc.add(tomlkit.nl())
         doc.add("folder", project.folder)
     old_parts = _tables(doc, "part")
-    free = list(old_parts)
+    used: set[int] = set()
     tables = []
     for part in project.parts:
-        table = next((t for t in free if _same_part(t, part)), None) or tomlkit.table()
-        free = [t for t in free if t is not table]
+        table = next((t for t in old_parts if id(t) not in used and _same_part(t, part)), None) or tomlkit.table()
+        used.add(id(table))
         _set(table, "mpn", part["mpn"], norm=_strip)
         _set(table, "manufacturer", part["manufacturer"], norm=_strip)
         old_docs = _tables(table, "document")
-        free_docs = list(old_docs)
-        doc_tables = []
-        for d in part["documents"]:
-            dt = next((t for t in free_docs if t.get("sha256") == d["sha256"]), None) or tomlkit.table()
-            free_docs = [t for t in free_docs if t is not dt]
+        doc_tables = _match_documents(old_docs, part["documents"])
+        for dt, d in zip(doc_tables, part["documents"]):
             _set(dt, "sha256", d["sha256"])
             _set(dt, "file", d["file"], norm=_norm_rel)
             _set(dt, "role", d["role"], default="datasheet")
-            doc_tables.append(dt)
         _set_tables(table, "document", old_docs, doc_tables)
         tables.append(table)
     _set_tables(doc, "part", old_parts, tables)
     text = tomlkit.dumps(doc)
+    if text == source:  # no change: the file and its format stay as they are
+        return
+    try:
+        same = _summary(*_parse(text, project.path)) == _summary(project.folder, project.parts)
+    except LensError:
+        same = False
+    if not same:
+        raise LensError(f"{project.path}: the new text does not give the data of the project (internal "
+                        "error); the file did not change")
     write_atomic(project.path, text.encode("utf-8"))
     project.text = text
 
@@ -457,7 +548,8 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
 
 
 def format_parts(project: Project) -> list[str]:
-    lines = [f"project {project.root} (folder {project.folder}/): {len(project.parts)} parts"]
+    lines = [f"project {project.root} (folder {project.folder}/): {len(project.parts)} parts "
+             f"(as in {PROJECT_FILE})"]
     for part in project.parts:
         lines.append(f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'})")
         for d in part["documents"]:
