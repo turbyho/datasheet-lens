@@ -19,6 +19,8 @@ classifiers = [
 dependencies = [
     "pypdfium2>=5.14",
     "mcp>=2.3",
+    # Writes the project file and keeps the comments and the keys of the user.
+    "tomlkit>=0.13",
 ]
 
 [project.optional-dependencies]

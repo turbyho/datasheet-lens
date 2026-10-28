@@ -85,6 +85,73 @@ def test_project_from_a_different_machine(setup, tmp_path, monkeypatch):
         assert [r["mpn"] for r in store.part_documents("OPA2134")] == ["OPA2134"]
 
 
+def test_save_keeps_the_text_of_the_user(setup):
+    """Comments, format and unknown keys stay; only new data is added."""
+    project, _, _ = setup
+    project.path.write_text(
+        "# Board X: datasheets\n"
+        'folder = "datasheets"   # the default\n'
+        "\n"
+        "[[part]]\n"
+        'mpn = "OPA2134"   # input amplifier\n'
+        'note = "check the PA and UA versions"\n'
+        "\n"
+        "# the RTC follows\n"
+        "[[part]]\n"
+        'mpn = "RV-3149-C3"\n'
+        'manufacturer = "Micro Crystal"\n', encoding="utf-8")
+    with Store() as store:
+        prj.sync(prj.load(project.root), store)
+    text = project.path.read_text(encoding="utf-8")
+    for kept in ("# Board X: datasheets", "# the default", 'mpn = "OPA2134"   # input amplifier',
+                 'note = "check the PA and UA versions"', "# the RTC follows"):
+        assert kept in text
+    loaded = prj.load(project.root)
+    assert loaded.parts[0]["manufacturer"] == "TI"  # from the store
+    assert loaded.parts[0]["documents"][0]["file"] == "opa2134.pdf"
+    assert [p["mpn"] for p in loaded.parts] == ["OPA2134", "RV-3149-C3"]
+    # A second sync with no change does not change the file.
+    with Store() as store:
+        prj.sync(loaded, store)
+    assert project.path.read_text(encoding="utf-8") == text
+
+
+def test_save_of_unusual_files(setup):
+    project, opa, _ = setup
+    sha = sha256_file(opa)
+    with Store() as store:
+        # No final newline, an MPN with spaces, a document with no role, a file
+        # name that is not in the normal form: the text stays.
+        project.path.write_text(f'[[part]]\nmpn = " OPA2134 "   # c\nnote = "keep me"\n\n[[part.document]]\n'
+                                f'sha256 = "{sha}"\nfile = "./opa2134.pdf"   # copy\n# end', encoding="utf-8")
+        loaded = prj.load(project.root)
+        prj.add_part(loaded, store, "RV-3149-C3")
+        text = project.path.read_text(encoding="utf-8")
+        for kept in ('mpn = " OPA2134 "   # c', 'note = "keep me"', 'file = "./opa2134.pdf"   # copy', "# end"):
+            assert kept in text
+        assert "role" not in text and "\n\n[[part]]\nmpn = \"RV-3149-C3\"" in text
+        assert [p["mpn"] for p in prj.load(project.root).parts] == ["OPA2134", "RV-3149-C3"]
+
+        # An inline array becomes an array of tables, with its keys.
+        project.path.write_text('part = [{mpn = "OPA2134", note = "n"}]\n', encoding="utf-8")
+        prj.add_part(prj.load(project.root), store, "RV-3149-C3")
+        parts = prj.load(project.root).parts
+        assert [p["mpn"] for p in parts] == ["OPA2134", "RV-3149-C3"]
+        assert 'note = "n"' in project.path.read_text(encoding="utf-8")
+
+        # A file that changed after load() is not written over.
+        loaded = prj.load(project.root)
+        project.path.write_text(project.path.read_text(encoding="utf-8") + "# edit\n", encoding="utf-8")
+        with pytest.raises(LensError, match="changed after datasheet-lens read it"):
+            prj.sync(loaded, store)
+
+        # A dry run does not change the project.
+        loaded = prj.load(project.root)
+        before = [dict(p, documents=list(p["documents"])) for p in loaded.parts]
+        prj.sync(loaded, store, apply=False)
+        assert loaded.parts == before
+
+
 def test_manufacturer_selects_the_part(setup):
     project, opa, _ = setup
     with Store() as store:
@@ -111,7 +178,7 @@ def test_problem_files(setup):
         report = prj.sync(project, store)
     assert any(p.startswith("broken.pdf: not imported") for p in report["problems"])
     assert report["missing"] == ["opa2134.pdf"] and report["imported"] == ["opa2134.pdf"]
-    assert prj.load(project.root).parts[0]["documents"][0]["sha256"] == "0" * 64
+    assert "0" * 64 in {d["sha256"] for d in prj.load(project.root).parts[0]["documents"]}
 
 
 def test_project_file_checks(setup):

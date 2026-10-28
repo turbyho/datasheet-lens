@@ -8,11 +8,12 @@ central store. sync adds it to a part only when the store links the document to
 a part of the project. For a different file, sync proposes a part from the file
 name, and the user (or the model) assigns it with add_part.
 
-save() writes the project file again: comments that a user added are lost.
+save() keeps the comments, the format and the other keys of the project file.
 """
 
 from __future__ import annotations
 
+import copy
 import re
 import shutil
 import tomllib
@@ -20,6 +21,9 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pypdfium2 as pdfium
+import tomlkit
+import tomlkit.exceptions
+from tomlkit.items import AoT
 
 from .errors import LensError
 from .fileutil import temp_path, write_atomic
@@ -50,6 +54,8 @@ class Project:
     folder: str = DEFAULT_FOLDER
     # {"mpn", "manufacturer", "documents": [{"sha256", "file", "role"}]}
     parts: list[dict] = field(default_factory=list)
+    # The text of the project file that load() read or save() wrote.
+    text: str | None = field(default=None, repr=False, compare=False)
 
     @property
     def path(self) -> Path:
@@ -96,11 +102,12 @@ def init_project(root: Path | str, folder: str = DEFAULT_FOLDER) -> Project:
 def load(start: Path | str | None = None) -> Project:
     root = find_project(start)
     path = root / PROJECT_FILE
+    text = path.read_text(encoding="utf-8")
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
         raise LensError(f"{path}: {e}") from e
-    project = Project(root, _rel(data.get("folder", DEFAULT_FOLDER), "the folder"))
+    project = Project(root, _rel(data.get("folder", DEFAULT_FOLDER), "the folder"), text=text)
     parts = data.get("part", [])
     if not isinstance(parts, list):
         raise LensError(f"{path}: 'part' must be a list of tables ([[part]])")
@@ -123,29 +130,118 @@ def load(start: Path | str | None = None) -> Project:
     return project
 
 
-def _toml_str(s: str) -> str:
-    out = []
-    for ch in s:
-        if ch in '"\\':
-            out.append("\\" + ch)
-        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
-            out.append(f"\\u{ord(ch):04X}")
-        else:
-            out.append(ch)
-    return '"' + "".join(out) + '"'
+def _strip(value) -> str:
+    return str(value).strip()
+
+
+def _norm_rel(value) -> str:
+    try:
+        return _rel(str(value), "the file")
+    except LensError:
+        return str(value)
+
+
+def _set(table, key: str, value: str, default: str = "", norm=str) -> None:
+    """Set a value only if it changed (norm gives the form to compare): an
+    unchanged value keeps its format and its comment. A missing key with the
+    default value is not added."""
+    if key in table and norm(table[key]) == value:
+        return
+    if key not in table and value == default:
+        return
+    table[key] = value
+
+
+def _same_part(table, part: dict) -> bool:
+    mpn, manufacturer = _strip(table.get("mpn", "")), _strip(table.get("manufacturer", ""))
+    return mpn.lower() == part["mpn"].lower() and (
+        not manufacturer or manufacturer.lower() == part["manufacturer"].strip().lower())
+
+
+def _tables(container, key: str) -> list:
+    """The tables of the array container[key]. An inline array ("part = [{...}]")
+    becomes an array of tables: its keys stay, its inline format does not."""
+    value = container.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, AoT):
+        aot = tomlkit.aot()
+        for item in value:
+            table = tomlkit.table()
+            for k, v in item.items():
+                table[k] = v
+            aot.append(table)
+        del container[key]
+        container[key] = aot
+    return list(container[key])
+
+
+def _set_tables(container, key: str, old: list, new: list) -> None:
+    """Make the array of tables container[key] hold the tables of new. The array
+    is changed in place: a kept table keeps its position, its text and its
+    comments, and a new table comes at the end, after a blank line."""
+    if not new:
+        if key in container:
+            del container[key]
+        return
+    if key not in container:
+        container[key] = tomlkit.aot()
+    aot = container[key]
+    for i in reversed(range(len(old))):
+        if not any(old[i] is t for t in new):
+            del aot[i]
+    # The order of the parts and of the documents has no meaning: a new table
+    # goes to the end, also if it comes before a kept table in new.
+    for t in new:
+        if not any(t is o for o in old):
+            t.trivia.indent = "\n"
+            aot.append(t)
 
 
 def save(project: Project) -> None:
-    lines = ["# datasheet-lens project: the parts and their documents. The central store",
-             "# holds the documents; \"datasheet-lens project sync\" copies them into the folder.",
-             "", f"folder = {_toml_str(project.folder)}"]
+    """Write the project file. The text of the file stays: the comments, the
+    format and the keys that datasheet-lens does not know. Only the changed values
+    and the new parts and documents are written. If the file changed after
+    load() read it, nothing is written (the changes of the user stay)."""
+    if project.path.exists():
+        text = project.path.read_text(encoding="utf-8")
+        if project.text is not None and text != project.text:
+            raise LensError(f"{project.path} changed after datasheet-lens read it: run the command again")
+        try:
+            doc = tomlkit.parse(text if text.endswith("\n") or not text else text + "\n")
+        except tomlkit.exceptions.ParseError as e:
+            raise LensError(f"{project.path}: {e}") from e
+        _set(doc, "folder", project.folder, default=DEFAULT_FOLDER, norm=_norm_rel)
+    else:
+        doc = tomlkit.document()
+        doc.add(tomlkit.comment("datasheet-lens project: the parts and their documents. The central store"))
+        doc.add(tomlkit.comment("holds the documents; \"datasheet-lens project sync\" copies them into the folder."))
+        doc.add(tomlkit.nl())
+        doc.add("folder", project.folder)
+    old_parts = _tables(doc, "part")
+    free = list(old_parts)
+    tables = []
     for part in project.parts:
-        lines += ["", "[[part]]", f"mpn = {_toml_str(part['mpn'])}",
-                  f"manufacturer = {_toml_str(part['manufacturer'])}"]
+        table = next((t for t in free if _same_part(t, part)), None) or tomlkit.table()
+        free = [t for t in free if t is not table]
+        _set(table, "mpn", part["mpn"], norm=_strip)
+        _set(table, "manufacturer", part["manufacturer"], norm=_strip)
+        old_docs = _tables(table, "document")
+        free_docs = list(old_docs)
+        doc_tables = []
         for d in part["documents"]:
-            lines += ["", "[[part.document]]", f"sha256 = {_toml_str(d['sha256'])}",
-                      f"file = {_toml_str(d['file'])}", f"role = {_toml_str(d['role'])}"]
-    write_atomic(project.path, ("\n".join(lines) + "\n").encode("utf-8"))
+            dt = next((t for t in free_docs if t.get("sha256") == d["sha256"]), None) or tomlkit.table()
+            free_docs = [t for t in free_docs if t is not dt]
+            _set(dt, "sha256", d["sha256"])
+            _set(dt, "file", d["file"], norm=_norm_rel)
+            _set(dt, "role", d["role"], default="datasheet")
+            doc_tables.append(dt)
+        _set_tables(table, "document", old_docs, doc_tables)
+        tables.append(table)
+    _set_tables(doc, "part", old_parts, tables)
+    text = tomlkit.dumps(doc)
+    write_atomic(project.path, text.encode("utf-8"))
+    project.text = text
 
 
 # {path: (size, mtime_ns, SHA-256)}: a server process does not read a file again
@@ -255,8 +351,12 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
     documents that the store links to the parts, copy the missing copies, import
     the new files of the folder into the store (with their index), and save the
     project file. If restore is true, a changed copy is copied again from the store.
-    Give the report: lists of file names (and of document IDs in "documents")."""
+    Give the report: lists of file names (and of document IDs in "documents").
+    If apply is false, the project does not change."""
     from .indexer import build_index
+
+    if not apply:
+        project = copy.deepcopy(project)
 
     report = {k: [] for k in ("ok", "copied", "restored", "changed", "missing", "imported", "added",
                               "suggested", "unassigned", "unknown_parts", "problems", "documents")}
@@ -284,6 +384,8 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
                 f"part {part['mpn']}: more parts in the store have this MPN; give the manufacturer in "
                 f"{PROJECT_FILE} (" + ", ".join(r["manufacturer"] or "unknown" for r in rows) + ")")
         else:
+            if not part["manufacturer"]:
+                part["manufacturer"] = rows[0]["manufacturer"]
             report["added"] += _refresh(project, store, part, rows[0]["id"], files)
 
     # 2. The copies of the referenced documents.
