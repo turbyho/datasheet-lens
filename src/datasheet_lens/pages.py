@@ -19,6 +19,7 @@ import pypdfium2 as pdfium
 
 from .errors import LensError
 from .fileutil import temp_path, write_atomic
+from .pdflock import pdfium_locked
 from .pdftext import view_transform
 from .store import Store
 
@@ -78,6 +79,7 @@ def _page_size(store: Store, doc, page: int) -> tuple[float, float] | None:
     return (row["width_pt"], row["height_pt"]) if row else None
 
 
+@pdfium_locked
 def page_image(store: Store, doc_id: int, page: int, bbox=None, max_px: int = MAX_PX) -> Image:
     doc = store.document(doc_id)
     if doc is None:
@@ -138,6 +140,7 @@ def parse_pages(spec: str, count: int) -> list[int]:
     return pages
 
 
+@pdfium_locked
 def pdf_pages(store: Store, doc_id: int, spec: str) -> tuple[Path, list[int]]:
     """Write the pages to a new PDF in the store (render/), and give its path."""
     doc = store.document(doc_id)

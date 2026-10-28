@@ -22,6 +22,7 @@ import pypdfium2 as pdfium
 from . import __version__
 from .errors import LensError
 from .indexer import CAPS_RE, CAPTION_RE, HEADING_RE, TOC_RE
+from .pdflock import pdfium_locked
 from .pdftext import Line, page_lines
 from .store import Store, now
 
@@ -133,6 +134,7 @@ def _docling_elements(path: str, pages: int, chunk: int) -> list[dict]:
 COLUMN_TOLERANCE = 30.0  # pt: a line belongs to a block if its left edge is this near
 
 
+@pdfium_locked
 def _text_elements(path: str) -> list[dict]:
     """Headings, captions and text blocks from the text layer. A line with column
     gaps is split into its columns; each column builds its own blocks."""

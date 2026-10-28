@@ -108,18 +108,16 @@ def test_facts(store_home, text_pdf):
 
 
 def test_background_build(store_home, text_pdf, monkeypatch):
-    from datasheet_lens import elements
-
-    build = elements.build_elements
+    build = server._run_build  # the real build: a separate process
     go, fail = threading.Event(), []
 
-    def slow_build(store, doc_id, backend="auto", **kw):
+    def slow_build(doc_id, backend):
         go.wait(10)
         if fail:
             raise RuntimeError("layout model crashed")
-        return build(store, doc_id, backend, **kw)
+        return build(doc_id, backend)
 
-    monkeypatch.setattr(elements, "build_elements", slow_build)
+    monkeypatch.setattr(server, "_run_build", slow_build)
     monkeypatch.setattr(server, "ELEMENT_WAIT", 0.05)
     path = str(text_pdf("opa.pdf", [PAGE]))
     assert "a background thread builds the element map" in text_of(call("add_document", path=path))

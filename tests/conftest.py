@@ -6,6 +6,16 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def isolated(tmp_path_factory, monkeypatch):
+    """Each test runs in an empty folder, with a store there: a command that finds
+    a project or a store from the current folder or the home folder must not
+    find the real ones of the user."""
+    work = tmp_path_factory.mktemp("work")
+    monkeypatch.chdir(work)
+    monkeypatch.setenv("DATASHEET_LENS_HOME", str(work / ".datasheet-lens"))
+
+
+@pytest.fixture(autouse=True)
 def close_stores(monkeypatch):
     """Close each Store that a test opens (an open SQLite file blocks the removal
     of the temporary directory on Windows)."""

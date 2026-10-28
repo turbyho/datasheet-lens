@@ -19,6 +19,36 @@ def cmd_info(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _ask_part(store: Store, doc, args: argparse.Namespace) -> tuple[str, str]:
+    """The part of a new document: --part, a part that the store links already,
+    or the proposal from the PDF, which the user confirms. ("", "") for no part."""
+    from .identify import propose
+
+    if args.part:
+        return args.part.strip(), (args.manufacturer or "").strip()
+    linked = store.parts_of_document(doc.id)
+    if linked:
+        return linked[0]["mpn"], linked[0]["manufacturer"]
+    p = propose(store, doc)
+    if not p.mpn:
+        print("part: no MPN found in the PDF; give it with --part")
+        return "", ""
+    manufacturer = (args.manufacturer or "").strip() or p.manufacturer
+    print(f"part: {p.mpn} ({manufacturer or 'manufacturer unknown'})\n  from: {', '.join(p.sources)}"
+          + (f"; other candidates: {', '.join(p.candidates)}" if p.candidates else ""))
+    if args.yes:
+        return p.mpn, manufacturer
+    if not sys.stdin.isatty():
+        print(f"  not confirmed (no terminal): give --yes, or --part {p.mpn}")
+        return "", ""
+    answer = input("  Enter = yes, or type another MPN (- = no part): ").strip()
+    if answer == "-":
+        return "", ""
+    if not answer:
+        return p.mpn, manufacturer
+    return answer, input(f"  manufacturer [{manufacturer}]: ").strip() or manufacturer
+
+
 def cmd_add(args: argparse.Namespace) -> int:
     from .fetch import add_from_url, is_url
     from .indexer import build_index
@@ -31,17 +61,56 @@ def cmd_add(args: argparse.Namespace) -> int:
         else:
             doc = store.add_document(Path(args.file), title=args.title or "", source_url=args.url or "")
         print(f"document {doc.id}: {doc.sha256[:12]} {doc.filename} ({doc.pages} pages)")
+        mpn, manufacturer = _ask_part(store, doc, args)
+        category = (args.category or "").strip()
         # The link first: an index error must not lose it.
-        if args.part:
-            part_id = store.add_part(args.part, args.manufacturer or "")
-            if args.category and args.category.strip():
-                store.set_category(part_id, args.category.strip())
-            store.link(part_id, doc.id, args.role)
-            print(f"part {args.part}: {args.role}")
+        if mpn:
+            try:
+                part_id = store.find_part(mpn, manufacturer, create=True)
+            except LensError as e:  # for example an MPN of two manufacturers
+                print(f"part {mpn}: not linked: {e} (give --manufacturer)", file=sys.stderr)
+                mpn = ""
+            else:
+                if category:
+                    store.set_category(part_id, category)
+                store.link(part_id, doc.id, args.role)
+                print(f"part {mpn}: {args.role}")
         idx = build_index(store, doc.id)
         if not idx["skipped"]:
             print(f"index: {idx['outline']} outline entries, {idx['captions']} captions")
+        if not args.no_project:
+            _add_to_project(store, doc, mpn, manufacturer, category, args)
     return 0
+
+
+def _add_to_project(store: Store, doc, mpn: str, manufacturer: str, category: str,
+                    args: argparse.Namespace) -> None:
+    """In a project folder: add the part to the project, copy the document into
+    the folder and build its element map."""
+    from .elements import build_elements
+    from .project import add_part, find_project, load, sync
+    from .setup import element_backend
+
+    try:
+        root = find_project(args.project)
+    except LensError:
+        if args.project:
+            raise
+        return  # not in a project: the store only
+    if not mpn:
+        print(f"project {root}: not added (the document has no part)")
+        return
+    project = load(root)
+    add_part(project, store, mpn, manufacturer, doc.sha256, args.role, category)
+    report = sync(project, store)
+    for text in report["problems"]:
+        print(f"problem: {text}")
+    files = [d["file"] for part in project.parts for d in part["documents"] if d["sha256"] == doc.sha256]
+    if files:
+        print(f"project: {project.folder}/{files[0]}")
+    result = build_elements(store, doc.id, element_backend())
+    if not result["skipped"]:
+        print(f"element map: {result['elements']} elements ({result['backend']})")
 
 
 def _doc(store: Store, ref: str):
@@ -287,9 +356,12 @@ def build_parser() -> argparse.ArgumentParser:
     info = sub.add_parser("info", help="show the version and the store location")
     info.set_defaults(func=cmd_info)
 
-    add = sub.add_parser("add", help="add a document to the central store")
+    add = sub.add_parser("add", help="add a document: to the store, and in a project folder also to the project")
     add.add_argument("file", help="the document file (PDF), or an http or https URL to download it from")
-    add.add_argument("--part", help="the part number (MPN) of the component")
+    add.add_argument("--part", help="the part number (MPN); without it, the tool proposes one from the PDF")
+    add.add_argument("--yes", action="store_true", help="accept the proposed part without a question")
+    add.add_argument("--project", help="the project folder (default: the current folder or a parent folder)")
+    add.add_argument("--no-project", action="store_true", help="add to the store only, not to the project")
     add.add_argument("--manufacturer", help="the manufacturer of the part")
     add.add_argument("--category", help="the function of the part, for example ADC (for the project layout)")
     add.add_argument("--role", choices=ROLES, default="datasheet", help="the role of the document")

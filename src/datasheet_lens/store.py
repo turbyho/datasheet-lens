@@ -19,6 +19,7 @@ from pathlib import Path
 
 from .config import store_home
 from .errors import LensError
+from .pdflock import PDFIUM
 from .fileutil import temp_path
 
 SCHEMA_VERSION = 1
@@ -254,14 +255,18 @@ class Store:
             # damaged) must not leave a file in the store.
             import pypdfium2 as pdfium
 
-            try:
-                pdf = pdfium.PdfDocument(str(path))
-            except pdfium.PdfiumError as e:
-                raise LensError(f"cannot read the PDF (encrypted or damaged?): {path}: {e}") from e
-            pages = len(pdf)
-            if not title:
-                title = (pdf.get_metadata_dict().get("Title") or "").strip()
-            pdf.close()
+            # The lock only for pdfium: not for the hash, the copy and the database.
+            with PDFIUM:
+                try:
+                    pdf = pdfium.PdfDocument(str(path))
+                except pdfium.PdfiumError as e:
+                    raise LensError(f"cannot read the PDF (encrypted or damaged?): {path}: {e}") from e
+                try:
+                    pages = len(pdf)
+                    if not title:
+                        title = (pdf.get_metadata_dict().get("Title") or "").strip()
+                finally:
+                    pdf.close()
         target = self.blob_path(sha, suffix)
         tmp = temp_path(target)
         try:

@@ -14,6 +14,7 @@ import pypdfium2 as pdfium
 
 from . import __version__
 from .errors import LensError
+from .pdflock import pdfium_locked
 from .pdftext import PageText, page_lines, raster_min_dpi
 from .store import Store, now
 
@@ -45,6 +46,33 @@ LOW_DPI = 300           # raster images below this dpi are marked
 SHORT_DOCUMENT = 10     # a page map is in index.md for documents up to this length
 
 
+@pdfium_locked
+def _read_pages(path: str) -> tuple[list[PageText], list[dict], list[dict]]:
+    """The text, the quality and the outline of each page. The pdfium lock is
+    held only here, not during the database writes."""
+    pdf = pdfium.PdfDocument(path)
+    try:
+        pages: list[PageText] = []
+        quality = []
+        for i in range(len(pdf)):
+            page = pdf[i]
+            try:
+                pt = page_lines(page, i + 1)
+                pages.append(pt)
+                q = {}
+                if sum(len(line.text) for line in pt.lines) < 20:
+                    q["no_text_layer"] = True
+                dpi = raster_min_dpi(page)
+                if dpi is not None and dpi < LOW_DPI:
+                    q["raster_dpi"] = round(dpi)
+                quality.append(q)
+            finally:
+                page.close()
+        return pages, quality, _bookmarks(pdf) or _headings(pages)
+    finally:
+        pdf.close()
+
+
 def build_index(store: Store, doc_id: int, force: bool = False) -> dict:
     """Build the index of a document. An index of the same tool version is kept,
     unless force is true."""
@@ -56,23 +84,7 @@ def build_index(store: Store, doc_id: int, force: bool = False) -> dict:
                                            (doc.id,)).fetchone()[0]
         return {"pages": count("pages"), "outline": count("outline"), "captions": count("captions"),
                 "skipped": True}
-    pdf = pdfium.PdfDocument(str(doc.path))
-    pages: list[PageText] = []
-    quality = []
-    for i in range(len(pdf)):
-        page = pdf[i]
-        pt = page_lines(page, i + 1)
-        pages.append(pt)
-        q = {}
-        if sum(len(line.text) for line in pt.lines) < 20:
-            q["no_text_layer"] = True
-        dpi = raster_min_dpi(page)
-        if dpi is not None and dpi < LOW_DPI:
-            q["raster_dpi"] = round(dpi)
-        quality.append(q)
-        page.close()
-    outline = _bookmarks(pdf) or _headings(pages)
-    pdf.close()
+    pages, quality, outline = _read_pages(str(doc.path))
     captions = _captions(pages)
 
     db = store.db

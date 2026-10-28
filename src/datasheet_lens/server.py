@@ -11,8 +11,12 @@ Values must come from the original (step 5). Index, map and text only find them.
 
 from __future__ import annotations
 
+import atexit
 import base64
+import contextlib
 import functools
+import subprocess
+import sys
 import threading
 import time
 
@@ -36,11 +40,20 @@ MAX_PDF_PAGES = 50
 _add_lock = threading.Lock()
 
 # The element map of a large document takes minutes with docling: longer than
-# the timeout of an MCP client. A background thread builds it, and add_document
-# waits only ELEMENT_WAIT seconds for it. The build state is in this process
-# only: two server processes can build the same map, and a build stops when its
-# process stops (the next request of the map then starts it again).
+# the timeout of an MCP client. A background thread builds it (with docling in a
+# child process, see _run_build), and add_document waits only ELEMENT_WAIT
+# seconds for it. The build state is in this process only: two server processes
+# can build the same map. When the server stops, it stops its child processes
+# (the next request of the map then starts the build again).
 ELEMENT_WAIT = 20.0
+_children: set[subprocess.Popen] = set()
+
+
+@atexit.register
+def _stop_children() -> None:
+    for child in list(_children):
+        with contextlib.suppress(OSError):
+            child.kill()
 _builds: dict[int, dict] = {}  # document ID -> {"thread", "started", "result", "error"}
 _builds_lock = threading.RLock()
 
@@ -104,6 +117,35 @@ def _indexed(store: Store, doc_ids: list[int]) -> list[int]:
     return doc_ids
 
 
+def _run_build(doc_id: int, backend: str) -> dict:
+    """Build the element map. The text backend runs here (it holds the pdfium
+    lock). docling runs in a child process (the CLI command elements): it uses
+    pdfium inside, and the lock of this process cannot reach it. A crash of
+    docling then also does not stop the server."""
+    from .elements import build_elements
+    from .setup import element_backend
+
+    if backend == "auto":
+        backend = element_backend()
+    if backend == "text":
+        with Store() as store:
+            return build_elements(store, doc_id, backend)
+    command = [sys.executable, "-m", "datasheet_lens.cli", "elements", str(doc_id), "--backend", backend]
+    child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                             encoding="utf-8", errors="replace")
+    _children.add(child)
+    try:
+        out, err = child.communicate()
+    finally:
+        _children.discard(child)
+    if child.returncode != 0:
+        lines = [line for line in (err or out).splitlines() if line.strip()]
+        raise LensError(lines[-1] if lines else f"the build process stopped with code {child.returncode}")
+    with Store() as store:
+        count = store.db.execute("SELECT count(*) FROM elements WHERE document_id = ?", (doc_id,)).fetchone()[0]
+    return {"elements": count, "backend": backend}
+
+
 def _build_elements(doc_id: int) -> dict:
     """Start the element map build of a document in a background thread, if no
     build of the document runs. Give the build. A failed build starts again only
@@ -118,11 +160,8 @@ def _build_elements(doc_id: int) -> dict:
         job = {"started": time.monotonic(), "result": None, "error": None, "backend": element_backend()}
 
         def run():
-            from .elements import build_elements
-
             try:
-                with Store() as store:
-                    job["result"] = build_elements(store, doc_id, job["backend"])
+                job["result"] = _run_build(doc_id, job["backend"])
             except Exception as e:  # the next request of the map gives it to the model
                 job["error"] = f"{e.__class__.__name__}: {e}"
             finally:
@@ -200,7 +239,6 @@ def add_document(path: str, part: str = "", manufacturer: str = "", role: str = 
     other. The element map of a large document can take minutes: it is then built
     in the background, and the index and the page tools are available at once. To
     copy the document into the user project: project_add_part, then project_sync."""
-    import contextlib
     from pathlib import Path
 
     from .config import store_home
@@ -217,16 +255,30 @@ def add_document(path: str, part: str = "", manufacturer: str = "", role: str = 
             file, source = Path(path).expanduser(), ""
         with _add_lock, Store() as store:
             doc = store.add_document(file, source_url=source, move=bool(source))
-            if part:
-                store.link(store.add_part(part, manufacturer), doc.id, role)
             idx = build_index(store, doc.id)
+            if part:  # an MPN or an alias, as in the CLI command add
+                store.link(store.find_part(part, manufacturer, create=True), doc.id, role)
             job = _build_elements(doc.id)
+            proposal = "" if part or store.parts_of_document(doc.id) else _proposal(store, doc)
     job["thread"].join(ELEMENT_WAIT)
     state, text = _state(job)
     if state == "running":
         text += "; get_page_map tells when the map is complete"
     return (f"document {doc.sha256[:12]}: {doc.filename}, {doc.pages} pages; index: "
-            f"{idx['outline']} outline entries, {idx['captions']} captions; element map: {text}")
+            f"{idx['outline']} outline entries, {idx['captions']} captions; element map: {text}" + proposal)
+
+
+def _proposal(store: Store, doc) -> str:
+    """The part that the PDF proposes, for a document with no part."""
+    from .identify import propose
+
+    p = propose(store, doc)
+    if not p.mpn:
+        return "\nno part: the PDF gives no MPN; find it (title, ordering information) and link it"
+    return (f"\nno part: the PDF proposes {p.mpn} ({p.manufacturer or 'manufacturer unknown'}; from "
+            f"{', '.join(p.sources)}" + (f"; other candidates: {', '.join(p.candidates)}" if p.candidates else "")
+            + f"). Check it, then link it: project_add_part(mpn, manufacturer, document="
+            f"'{doc.sha256[:12]}') for the user project, or add_document again with part")
 
 
 @tool
