@@ -120,6 +120,7 @@ def page_fingerprint(pt: PageText) -> str:
 
 
 def _bookmarks(pdf: pdfium.PdfDocument) -> list[dict]:
+    """The outline from the bookmarks of the PDF: level, title and page of each entry."""
     out = []
     for item in pdf.get_toc():
         dest = item.get_dest()
@@ -236,6 +237,8 @@ def index_markdown(store: Store, doc_id: int) -> str:
 
 
 def outline_under(store: Store, doc_id: int, section: str) -> list:
+    """The outline entries under a section number (8.27 gives 8.27.1, 8.27.5.143 ...),
+    in the sequence of the document. A LensError if the document has no index."""
     require_index(store, doc_id)
     return store.db.execute(
         "SELECT level, title, page FROM outline WHERE document_id = ? AND (title LIKE ? OR title LIKE ?)"

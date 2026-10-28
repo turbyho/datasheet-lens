@@ -34,6 +34,7 @@ DOCLING_CODE = {"section_header": "H", "title": "H", "text": "P", "paragraph": "
 
 
 def docling_available() -> bool:
+    """True if the optional docling package is installed."""
     return importlib.util.find_spec("docling") is not None
 
 
@@ -92,6 +93,8 @@ def _number(raw: list[dict]) -> list[dict]:
 
 
 def _docling_elements(path: str, pages: int, chunk: int) -> list[dict]:
+    """The raw elements of a PDF from the docling layout model, read in chunks of
+    pages, with page coordinates in pt (origin at the top left)."""
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -232,6 +235,7 @@ def has_elements(store: Store, doc_id: int) -> bool:
 
 
 def element(store: Store, doc_id: int, element_id: str):
+    """The element element_id of a document (type, page, region, text), or a LensError."""
     row = store.db.execute("SELECT * FROM elements WHERE document_id = ? AND element_id = ?",
                            (doc_id, element_id)).fetchone()
     if row is None:
@@ -240,6 +244,8 @@ def element(store: Store, doc_id: int, element_id: str):
 
 
 def list_items(store: Store, doc_id: int, kind: str | None = None) -> list:
+    """The tables, figures and captions of a document in page order. kind: table,
+    figure, caption, or None for all."""
     codes = {"table": ("T",), "figure": ("F",), "caption": ("C",), None: ("T", "F", "C")}.get(kind)
     if codes is None:
         raise LensError(f"unknown item type: {kind} (table, figure, caption)")

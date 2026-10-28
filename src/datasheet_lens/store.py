@@ -167,10 +167,12 @@ def _ulower(text):
 
 
 def now() -> str:
+    """The time now in UTC (ISO 8601, seconds)."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def sha256_file(path: Path) -> str:
+    """The SHA-256 of a file (hex)."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for block in iter(lambda: f.read(1 << 20), b""):
@@ -180,6 +182,8 @@ def sha256_file(path: Path) -> str:
 
 @dataclass
 class Document:
+    """A document in the store: ID, SHA-256, file name, media type, size, pages, title
+    and the path of its file."""
     id: int
     sha256: str
     filename: str
@@ -240,6 +244,7 @@ class Store:
             raise
 
     def close(self) -> None:
+        """Close the database connection."""
         self.db.close()
 
     def __enter__(self) -> "Store":
@@ -262,6 +267,7 @@ class Store:
     # Files
 
     def blob_path(self, sha: str, suffix: str) -> Path:
+        """The path of the file of a document in the store (from its SHA-256)."""
         return self.home / "blobs" / sha[:2] / f"{sha}{suffix}"
 
     # Documents
@@ -342,6 +348,7 @@ class Store:
                         row["pages"], row["title"], self.blob_path(row["sha256"], suffix))
 
     def documents(self) -> list[sqlite3.Row]:
+        """All documents, with the parts that they are linked to."""
         return self.db.execute(
             "SELECT d.*, group_concat(p.mpn || ' (' || pd.role || ')', ', ') AS parts"
             " FROM documents d LEFT JOIN part_documents pd ON pd.document_id = d.id"
@@ -368,6 +375,7 @@ class Store:
         return cur.lastrowid
 
     def link(self, part_id: int, document_id: int, role: str = "datasheet") -> None:
+        """Link a document to a part with a role. A second link changes the role."""
         self.db.execute(
             "INSERT INTO part_documents (part_id, document_id, role) VALUES (?, ?, ?)"
             " ON CONFLICT (part_id, document_id) DO UPDATE SET role = excluded.role",
@@ -375,6 +383,7 @@ class Store:
         self.db.commit()
 
     def parts(self) -> list[sqlite3.Row]:
+        """All parts, with the number of their documents."""
         return self.db.execute(
             "SELECT p.*, count(pd.document_id) AS documents FROM parts p"
             " LEFT JOIN part_documents pd ON pd.part_id = p.id GROUP BY p.id ORDER BY p.mpn").fetchall()
@@ -440,6 +449,7 @@ class Store:
         self.db.commit()
 
     def part(self, part_id: int) -> sqlite3.Row | None:
+        """The part with this ID, or None."""
         return self.db.execute("SELECT * FROM parts WHERE id = ?", (part_id,)).fetchone()
 
     def set_base(self, part_id: int, base_id: int) -> None:
@@ -474,6 +484,7 @@ class Store:
             " ORDER BY d.id", {"p": part_id}).fetchall()
 
     def parts_of_document(self, doc_id: int) -> list[sqlite3.Row]:
+        """The parts that a document is linked to, with the role of each link."""
         return self.db.execute(
             "SELECT p.*, pd.role FROM part_documents pd JOIN parts p ON p.id = pd.part_id"
             " WHERE pd.document_id = ? ORDER BY p.id", (doc_id,)).fetchall()

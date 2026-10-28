@@ -32,10 +32,12 @@ A team server can build the element map one time for all users.
 
 
 def config_path():
+    """The configuration file of the store (config.json)."""
     return store_home() / "config.json"
 
 
 def load_config() -> dict:
+    """The configuration, or {} if there is none or it cannot be read."""
     try:
         return json.loads(config_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -43,6 +45,7 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
+    """Write the configuration."""
     write_atomic(config_path(), (json.dumps(cfg, indent=1) + "\n").encode("utf-8"))
 
 

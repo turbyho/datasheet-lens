@@ -18,6 +18,8 @@ import pypdfium2.raw as pdfium_c
 
 @dataclass
 class Line:
+    """A text line of a page: its text, its box (x0, y0, x1, y1 in pt, origin at the
+    top left), its character runs and its parts between column gaps."""
     text: str
     x0: float
     y0: float
@@ -48,6 +50,7 @@ class Line:
 
 @dataclass
 class PageText:
+    """The text lines of one page and the size of the page in pt."""
     page: int
     width: float
     height: float

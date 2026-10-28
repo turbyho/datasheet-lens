@@ -43,6 +43,7 @@ MANUAL = "download the file by hand, put it into the folder of the project and r
 
 
 def is_url(text: str) -> bool:
+    """True for an http or https URL."""
     return bool(re.match(r"(?i)https?://", text.strip()))
 
 
@@ -69,6 +70,7 @@ def _filename(url: str, headers=None) -> str:
 
 
 def _is_pdf(head: bytes) -> bool:
+    """True if the data starts with %PDF (a BOM and blank characters can come first)."""
     return head.lstrip(b"\xef\xbb\xbf \t\r\n\x00").startswith(b"%PDF")
 
 

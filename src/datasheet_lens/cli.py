@@ -14,6 +14,7 @@ from .store import ROLES, Store
 
 
 def cmd_info(_args: argparse.Namespace) -> int:
+    """The command info: show the version and the store folder."""
     print(f"datasheet-lens {__version__}")
     print(f"store: {store_home()}")
     return 0
@@ -81,6 +82,7 @@ def _ask_part(store: Store, doc, args: argparse.Namespace) -> tuple[str, str, li
 
 
 def cmd_add(args: argparse.Namespace) -> int:
+    """The command add: a document into the store and, in a project folder, into the project."""
     from .fetch import add_from_url, is_url
     from .indexer import build_index
 
@@ -158,6 +160,7 @@ def _add_to_project(store: Store, doc, mpn: str, manufacturer: str, category: st
 
 
 def _doc(store: Store, ref: str):
+    """The document of a reference (ID or SHA-256 prefix), or a LensError."""
     doc = store.document(ref)
     if doc is None:
         raise LensError(f"document not found: {ref}")
@@ -172,6 +175,7 @@ def _docs(store: Store, refs: list[str]) -> list:
 
 
 def cmd_index(args: argparse.Namespace) -> int:
+    """The command index: build the index of documents (all documents by default)."""
     from .indexer import build_index
 
     with Store() as store:
@@ -184,6 +188,7 @@ def cmd_index(args: argparse.Namespace) -> int:
 
 
 def cmd_show(args: argparse.Namespace) -> int:
+    """The command show: print the index of a document."""
     from .indexer import index_markdown
 
     with Store() as store:
@@ -192,6 +197,7 @@ def cmd_show(args: argparse.Namespace) -> int:
 
 
 def cmd_outline(args: argparse.Namespace) -> int:
+    """The command outline: print the outline entries under a section."""
     from .indexer import outline_under
 
     with Store() as store:
@@ -201,6 +207,7 @@ def cmd_outline(args: argparse.Namespace) -> int:
 
 
 def cmd_search(args: argparse.Namespace) -> int:
+    """The command search: find a text in a document or in the documents of a part."""
     from .indexer import search
 
     with Store() as store:
@@ -214,6 +221,7 @@ def cmd_search(args: argparse.Namespace) -> int:
 
 
 def parse_bbox(text: str) -> tuple[float, float, float, float]:
+    """A region "x0,y0,x1,y1" (pt) as four numbers, or a LensError."""
     try:
         bbox = tuple(float(v) for v in text.split(","))
     except ValueError:
@@ -224,6 +232,7 @@ def parse_bbox(text: str) -> tuple[float, float, float, float]:
 
 
 def cmd_mcp(_args: argparse.Namespace) -> int:
+    """The command mcp: run the MCP server on stdin and stdout."""
     from .server import main as serve
 
     serve()
@@ -231,12 +240,14 @@ def cmd_mcp(_args: argparse.Namespace) -> int:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
+    """The command init: make the store, and ask about the optional docling component."""
     from .setup import init
 
     return init(args.layout)
 
 
 def cmd_elements(args: argparse.Namespace) -> int:
+    """The command elements: build the element map of documents."""
     from .elements import build_elements
     from .setup import element_backend
 
@@ -250,6 +261,7 @@ def cmd_elements(args: argparse.Namespace) -> int:
 
 
 def cmd_page_map(args: argparse.Namespace) -> int:
+    """The command page-map: print the structure of a page."""
     from .elements import page_map
 
     with Store() as store:
@@ -259,6 +271,7 @@ def cmd_page_map(args: argparse.Namespace) -> int:
 
 
 def cmd_element_text(args: argparse.Namespace) -> int:
+    """The command element-text: print the full text of elements."""
     from .elements import element
 
     with Store() as store:
@@ -271,6 +284,7 @@ def cmd_element_text(args: argparse.Namespace) -> int:
 
 
 def cmd_items(args: argparse.Namespace) -> int:
+    """The command items: print the tables, figures and captions of a document."""
     from .elements import list_items
 
     with Store() as store:
@@ -284,6 +298,7 @@ ELEMENT_PAD = 6.0  # pt around an element region
 
 
 def cmd_page_image(args: argparse.Namespace) -> int:
+    """The command page-image: render a page, a region or an element as a PNG file."""
     from .pages import page_image
 
     if args.element and args.bbox:
@@ -309,6 +324,7 @@ def cmd_page_image(args: argparse.Namespace) -> int:
 
 
 def cmd_pdf_pages(args: argparse.Namespace) -> int:
+    """The command pdf-pages: write pages of a document to a new PDF file."""
     from .pages import pdf_pages
 
     with Store() as store:
@@ -318,6 +334,7 @@ def cmd_pdf_pages(args: argparse.Namespace) -> int:
 
 
 def cmd_parts(_args: argparse.Namespace) -> int:
+    """The command parts: list the parts in the store."""
     with Store() as store:
         for p in store.parts():
             print(f"{p['mpn']:24} {p['manufacturer']:20} documents: {p['documents']}")
@@ -325,6 +342,7 @@ def cmd_parts(_args: argparse.Namespace) -> int:
 
 
 def cmd_docs(args: argparse.Namespace) -> int:
+    """The command docs: list the documents, or the documents of a part."""
     with Store() as store:
         rows = store.part_documents(args.part) if args.part else store.documents()
         for d in rows:
@@ -337,6 +355,7 @@ PROJECT_ADD_HINT = "datasheet-lens project add-part \"{mpn}\" --document {sha}"
 
 
 def cmd_project_init(args: argparse.Namespace) -> int:
+    """The command new (project init): make the project file and its folder."""
     from .project import init_project
 
     project = init_project(args.path or Path.cwd(), args.folder, args.layout)
@@ -345,6 +364,7 @@ def cmd_project_init(args: argparse.Namespace) -> int:
 
 
 def cmd_project_status(args: argparse.Namespace) -> int:
+    """The command ls (project status): print the parts, documents and copies."""
     from .project import format_parts, format_report, load, sync
 
     project = load(args.path)
@@ -355,6 +375,7 @@ def cmd_project_status(args: argparse.Namespace) -> int:
 
 
 def cmd_project_sync(args: argparse.Namespace) -> int:
+    """The command sync (project sync): synchronize the project and build element maps."""
     from .elements import build_elements
     from .project import format_report, load, sync
     from .setup import element_backend
@@ -389,6 +410,7 @@ def _document_key(ref: str) -> str:
 
 
 def cmd_rm(args: argparse.Namespace) -> int:
+    """The command rm: remove a part, or a document (-d), from the project."""
     from .project import load, remove_document, remove_part
 
     if not args.mpn and not args.document:
@@ -412,6 +434,7 @@ def cmd_rm(args: argparse.Namespace) -> int:
 
 
 def cmd_project_add_part(args: argparse.Namespace) -> int:
+    """The command project add-part: add a part with its documents to the project."""
     from .project import add_part, load
 
     project = load(args.path)
@@ -426,6 +449,7 @@ def cmd_project_add_part(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """The argument parser of the CLI: one subcommand for each task."""
     parser = argparse.ArgumentParser(
         prog="datasheet-lens",
         description="Index of component datasheets, and pages of the original on demand.",
@@ -578,6 +602,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the CLI. Give the exit code: 0 done, 1 a file cannot be read, 2 a wrong input,
+    130 stopped by the user."""
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)

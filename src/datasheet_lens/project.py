@@ -75,6 +75,9 @@ def _rel(rel: str, what: str) -> str:
 
 @dataclass
 class Project:
+    """A user project: its root folder, the folder of the copies, the parts with their
+    document references, the layout of the subfolders, and the text of the project
+    file that load() read or save() wrote."""
     root: Path
     folder: str = DEFAULT_FOLDER
     # {"mpn", "manufacturer", "documents": [{"sha256", "file", "role"} and
@@ -87,10 +90,12 @@ class Project:
 
     @property
     def path(self) -> Path:
+        """The project file."""
         return self.root / PROJECT_FILE
 
     @property
     def folder_path(self) -> Path:
+        """The folder of the copies."""
         return self.root.joinpath(*_rel_parts(self.folder, "the folder"))
 
     def file_path(self, rel: str) -> Path:
@@ -98,6 +103,7 @@ class Project:
         return self.folder_path.joinpath(*_rel_parts(rel, "the file"))
 
     def find(self, mpn: str, manufacturer: str = "") -> dict | None:
+        """The part with this MPN (and this manufacturer, if given), or None."""
         for part in self.parts:
             if part["mpn"].lower() == mpn.lower() and (
                     not manufacturer or not part["manufacturer"]
@@ -118,6 +124,8 @@ def find_project(start: Path | str | None = None) -> Path:
 
 
 def init_project(root: Path | str, folder: str = DEFAULT_FOLDER, layout: str = DEFAULT_LAYOUT) -> Project:
+    """Make the project file and the folder of the copies in root. A LensError if
+    the project file is there already."""
     root = Path(root).expanduser().resolve()
     if (root / PROJECT_FILE).exists():
         raise LensError(f"{root / PROJECT_FILE} exists already")
@@ -128,6 +136,8 @@ def init_project(root: Path | str, folder: str = DEFAULT_FOLDER, layout: str = D
 
 
 def _check_layout(layout) -> str:
+    """Give the layout if it is valid: only {manufacturer}, {category} and {mpn},
+    and a relative path. Else a LensError."""
     if not isinstance(layout, str):
         raise LensError("layout must be a text, for example \"{manufacturer}\"")
     names = ", ".join("{" + k + "}" for k in LAYOUT_KEYS)
@@ -205,6 +215,7 @@ def _parse(text: str, path: Path) -> tuple[str, str, list[dict]]:
 
 
 def load(start: Path | str | None = None) -> Project:
+    """Read the project file of the project that holds start (the current folder by default)."""
     root = find_project(start)
     path = root / PROJECT_FILE
     text = path.read_text(encoding="utf-8")
@@ -242,6 +253,8 @@ def _set(table, key: str, value: str, default: str = "", norm=str) -> None:
 
 
 def _same_part(table, part: dict) -> bool:
+    """True if a table of the project file is this project part: the same MPN, and
+    the same manufacturer or no manufacturer in the table."""
     mpn, manufacturer = _strip(table.get("mpn", "")), _strip(table.get("manufacturer", ""))
     return mpn.lower() == part["mpn"].lower() and (
         not manufacturer or manufacturer.lower() == part["manufacturer"].strip().lower())
@@ -260,6 +273,7 @@ def _tables(container, key: str) -> list:
 
 
 def _body(container) -> list:
+    """The list of the items of a tomlkit table or document."""
     return container.body if isinstance(container, Container) else container.value.body
 
 
@@ -421,6 +435,7 @@ _hashes: dict[Path, tuple[int, int, str]] = {}
 
 
 def _hash(path: Path) -> str:
+    """The SHA-256 of a file; it is kept while the size and the time of the file stay."""
     st = path.stat()
     known = _hashes.get(path)
     if known and known[:2] == (st.st_size, st.st_mtime_ns):
@@ -891,6 +906,7 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
 
 
 def format_parts(project: Project) -> list[str]:
+    """The parts and the documents of a project as lines, as in the project file."""
     lines = [f"project {project.root} (folder {project.folder}/): {len(project.parts)} parts "
              f"(as in {PROJECT_FILE})"]
     for part in project.parts:

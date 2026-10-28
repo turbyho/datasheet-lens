@@ -193,3 +193,12 @@ def test_missing_index(store_home, text_pdf, monkeypatch):
     assert main(["add", str(text_pdf("rtc.pdf", [[(50, 60, 12, "1 RTC")]])), "--part", "RV-3149-C3"]) == 2
     with Store() as store:
         assert [r["filename"] for r in store.part_documents("RV-3149-C3")] == ["rtc.pdf"]
+
+
+def test_each_tool_parameter_has_a_description():
+    """The model reads the descriptions: a parameter with none is a defect."""
+    for t in asyncio.run(mcp.list_tools()):
+        schema = t.input_schema if hasattr(t, "input_schema") else t.inputSchema
+        assert len(t.description) > 40, t.name
+        for name, prop in schema.get("properties", {}).items():
+            assert prop.get("description"), f"{t.name}.{name}"

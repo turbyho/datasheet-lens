@@ -65,7 +65,7 @@ def test_mcp_add_gives_the_proposal(store_home, text_pdf, monkeypatch):
     result = asyncio.run(server.mcp.call_tool("add_document", {"path": str(path)}))
     blocks = result[0] if isinstance(result, tuple) else getattr(result, "content", result)
     text = "\n".join(getattr(b, "text", "") for b in blocks)
-    assert "the PDF proposes SN74LV1T34 (Texas Instruments" in text and "project_add_part" in text
+    assert "(it can be wrong): SN74LV1T34 (Texas Instruments" in text and "project_add_part" in text
     for job in list(server._builds.values()):
         job["thread"].join(10)
     server._builds.clear()
@@ -176,3 +176,21 @@ def test_empty_variants_leave_the_file(store_home, text_pdf, tmp_path):
         store.link(store.find_part("ADC34J22"), doc.id, "other")  # no longer its datasheet
         prj.sync(project, store)
     assert "variants" not in project.path.read_text(encoding="utf-8")
+
+
+def test_document_names_are_not_mpns(store_home, text_pdf):
+    """Words of a document name and onsemi publication order numbers are not MPNs.
+    Short forms ("MCP6001/1R/1U/2/4", "ADS1113/4/5") give no invented MPN."""
+    assert not _is_mpn("MCP1827-DATA-SHEET-DS20002001") and not _is_mpn("DS20002001E-page")
+    from datasheet_lens.identify import _variant
+
+    assert not _variant("MC74VHC50", "MC74VHC50-D", ["page 1"], file_name=True)
+    assert _variant("TPS7A02", "TPS7A02-EP", ["page 1"]) and _variant("LT1086", "LT1086-5", ["page 1"])
+    with Store() as store:
+        for name, heading, wrong in (
+                ("MCP1827-Data-Sheet-DS20002001.pdf", "MCP1827/S 1.5A Low Voltage LDO Regulator", "DATA"),
+                ("mcp6001.pdf", "MCP6001/1R/1U/2/4 1 MHz Op Amp", "MCP60011R"),
+                ("ads1113.pdf", "ADS1113/4/5 16-Bit ADC", "ADS11134")):
+            p = propose(store, store.add_document(text_pdf(name, [[(50, 60, 14, heading)]])))
+            assert not any(wrong in c for c in [p.mpn] + p.candidates + p.variants), (name, p)
+    assert p.mpn == "ADS1113"

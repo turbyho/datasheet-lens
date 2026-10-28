@@ -31,6 +31,7 @@ MAX_DPI = 600         # a higher dpi adds no information (also for a small page)
 
 @dataclass
 class Image:
+    """A rendered PNG file: path, page, region (None: a full page), dpi and size in pixels."""
     path: Path
     page: int
     dpi: float
@@ -51,6 +52,7 @@ def _png(width: int, height: int, rgb: bytes, stride: int) -> bytes:
 
 
 def _png_size(path: Path) -> tuple[int, int]:
+    """The width and the height of a PNG file, from its header."""
     with open(path, "rb") as f:
         return struct.unpack(">II", f.read(24)[16:24])
 
@@ -68,12 +70,14 @@ def region_dpi(bbox: tuple[float, float, float, float], max_px: int = MAX_PX) ->
 
 
 def _check_bbox(bbox) -> tuple[float, float, float, float]:
+    """Check a region: four finite numbers, x0 < x1 and y0 < y1, on the page."""
     if len(bbox) != 4 or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in bbox):
         raise LensError(f"a region needs four finite numbers x0,y0,x1,y1 (pt): {bbox}")
     return tuple(float(v) for v in bbox)
 
 
 def _page_size(store: Store, doc, page: int) -> tuple[float, float] | None:
+    """The size of a page in pt as a viewer shows it (after /Rotate and the CropBox)."""
     row = store.db.execute("SELECT width_pt, height_pt FROM pages WHERE document_id = ? AND page = ?",
                            (doc.id, page)).fetchone()
     return (row["width_pt"], row["height_pt"]) if row else None
@@ -81,6 +85,10 @@ def _page_size(store: Store, doc, page: int) -> tuple[float, float] | None:
 
 @pdfium_locked
 def page_image(store: Store, doc_id: int, page: int, bbox=None, max_px: int = MAX_PX) -> Image:
+    """Render a page, or a region of a page (bbox: x0, y0, x1, y1 in pt, origin at
+    the top left), as a PNG file in the render cache of the store. A region gets
+    300 to 600 dpi, a full page the dpi that fits max_px on its long edge. A file
+    in the cache is used again."""
     doc = store.document(doc_id)
     if doc is None:
         raise LensError(f"document not found: {doc_id}")

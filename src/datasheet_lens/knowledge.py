@@ -20,6 +20,8 @@ def save_fact(store: Store, doc_id: int, page: int, subject: str, value: str, *,
               conditions: str = "", column: str = "", element_id: str = "", bbox=None, note: str = "",
               source_kind: str = "model", model: str = "", prompt_version: str = "", author: str = "",
               part: str = "") -> int:
+    """Save a fact (a value that a model or a person read from the original) with its
+    source, and give its ID. A LensError for a wrong page, element, region or part."""
     doc = store.document(doc_id)
     if doc is None:
         raise LensError(f"document not found: {doc_id}")
@@ -86,6 +88,8 @@ def set_status(store: Store, fact_id: int, status: str, note: str = "") -> None:
 
 
 def format_fact(r) -> str:
+    """One line for a fact: number, subject = value and unit, column, conditions,
+    source, state, author and note."""
     where = f"{r['sha256'][:12]} p.{r['page']}" + (f" {r['element_id']}" if r["element_id"] else "")
     if r["bbox"]:
         where += " [" + ", ".join(f"{v:.0f}" for v in json.loads(r["bbox"])) + "]"

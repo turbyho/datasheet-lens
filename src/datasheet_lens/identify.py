@@ -33,7 +33,9 @@ TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-+.#]*[A-Za-z0-9+#]")
 # as ADXL345, ISO7741 and USB2514 must not match.
 NOT_MPN_RE = re.compile(r"(?i)^(rev[a-z0-9.]*|s[lbncwp][a-z]{2}\d{3}[a-z]?|\d+(\.\d+)?-?[a-z]*|aec-q\d+|"
                         r"sot-?\d+|soic-?\d+|qfn-?\d+|tssop-?\d+|msop-?\d+|dfn-?\d+|bga-?\d+|"
-                        r"ieee\d+|jesd\d+[a-z]?)$")
+                        r"ieee\d+|jesd\d+[a-z]?|ds\d{8}[a-z]?)$")
+# Words of a document name, not of an MPN: "MCP1827-Data-Sheet-DS20002001".
+DOC_WORD_RE = re.compile(r"(?i)(^|-)(data|sheet|datasheet|page|manual|errata|rev)(-|$)")
 
 # Canonical name: names and abbreviations in a PDF or a file name (upper case).
 MANUFACTURERS = {
@@ -69,6 +71,8 @@ MANUFACTURERS = {
 
 @dataclass
 class Proposal:
+    """The part that a PDF proposes: the MPN, the manufacturer, the sources of the MPN
+    (title, page 1, file name), other candidates and the variants."""
     mpn: str = ""
     manufacturer: str = ""
     sources: list[str] = field(default_factory=list)
@@ -83,8 +87,10 @@ def _norm(text: str) -> str:
 
 
 def _is_mpn(token: str) -> bool:
+    """True if a token can be an MPN: letters and digits, 4 characters or more, and
+    not a revision, a literature number, a value with a unit, a package or a standard."""
     return (len(token) >= 4 and any(c.isdigit() for c in token) and any(c.isalpha() for c in token)
-            and not NOT_MPN_RE.match(token))
+            and not NOT_MPN_RE.match(token) and not DOC_WORD_RE.search(token))
 
 
 def _manufacturer(store: Store, texts: list[str]) -> str:
@@ -112,6 +118,8 @@ def _manufacturer(store: Store, texts: list[str]) -> str:
 
 @pdfium_locked
 def propose(store: Store, doc: Document) -> Proposal:
+    """Propose the part of a document from its PDF (see the module docstring). It is
+    only a proposal: the user or the model confirms it."""
     pdf = pdfium.PdfDocument(str(doc.path))
     try:
         meta = pdf.get_metadata_dict()
@@ -148,6 +156,9 @@ def propose(store: Store, doc: Document) -> Proposal:
     # The candidates: the title, the start of page 1 (the heading), the file name.
     for token in TOKEN_RE.findall(title):
         add(token, 0 if family(token) else 2, "title")
+    # No rule for short forms such as "MCP1827/S": the manufacturers write them in
+    # different ways ("MCP6001/1R/1U/2/4", "ADS1113/4/5"), and a rule gives MPNs
+    # that do not exist. The model reads such a list from the original.
     for token in TOKEN_RE.findall(page1[:600]):
         add(token, 0, "page 1")
     from_name = set()
@@ -180,9 +191,13 @@ def _variant(best: str, other: str, sources: list[str], file_name: bool = False)
     page 1 names it, or it is the file name, and it is one of:
     - the same length, with only the last characters different (ADC34J22 and
       ADC34J24, TL071 and TL072)
-    - the base with a suffix after a hyphen (LM20144 and LM20144-Q1)
-    An orderable code (LM358DR, SN74LV1T34DBVRG4) is not a variant: it is
-    longer, with no hyphen."""
+    - the base with a suffix after a hyphen (LM20144 and LM20144-Q1, LT1086 and
+      LT1086-5)
+    Not a variant:
+    - an orderable code (LM358DR, SN74LV1T34DBVRG4): longer, with no hyphen
+    - a suffix of one letter (MC74VHC50-D): onsemi names its documents
+      "MC74VHC50/D" and its files "MC74VHC50-D.pdf"
+    - a suffix with no digit when only the file name gives it"""
     b, o = _norm(best), _norm(other)
     named = file_name or {"title", "page 1"} & set(sources)
     if not b or o == b or not named or re.search(r"\dx", o):
@@ -190,4 +205,8 @@ def _variant(best: str, other: str, sources: list[str], file_name: bool = False)
     if len(o) == len(b):
         return len(os.path.commonprefix([b, o])) >= max(4, len(b) - 2)
     shorter, longer = sorted((best.upper(), other.upper()), key=len)
+    suffix = longer[len(shorter) + 1:]
+    if (len(suffix) == 1 and suffix.isalpha()) or (
+            not {"title", "page 1"} & set(sources) and not any(c.isdigit() for c in suffix)):
+        return False
     return longer.startswith(shorter + "-") and len(longer) - len(shorter) <= 4

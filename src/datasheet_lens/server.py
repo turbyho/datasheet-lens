@@ -1,12 +1,10 @@
-"""MCP server (stdio): the progressive drill-down into component datasheets.
+"""MCP server (stdio): the step-by-step access of a model to component datasheets.
 
-Method for the model:
-  1. list_documents / get_index: the outline and the captions of a document.
-  2. get_outline: the outline under one section of a large document.
-  3. get_page_map: the structure of one page (headings, tables, figures, formulas).
-  4. get_element_text: the full text of an element.
-  5. get_page_image / get_pdf_pages: the original, to read the values.
-Values must come from the original (step 5). Index, map and text only find them.
+INSTRUCTIONS tells the model the method. The docstring of each tool and the
+description of each parameter go to the model: write them for a model that
+knows nothing about this tool. Tell what the tool does, when to use it, and what
+it gives. Values come from the original pages (images or PDF pages); the index,
+the page map and the text layer only find them.
 """
 
 from __future__ import annotations
@@ -20,14 +18,33 @@ import sys
 import threading
 import time
 
+from typing import Annotated
+
 import pypdfium2 as pdfium
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import BlobResourceContents, EmbeddedResource
+from pydantic import Field
 
 from . import __version__
 from .errors import LensError
 from .store import ROLES, Store
+
+# The parameters that more tools use: the same description everywhere.
+DocRef = Annotated[str, Field(description=(
+    "The document: its reference from list_documents, project_status or add_document (the first 12 "
+    "characters of its SHA-256). A longer SHA-256 prefix or the numeric document ID also works."))]
+PartRef = Annotated[str, Field(description="A part number (MPN) or an alias. Case is ignored.")]
+Page = Annotated[int, Field(description="The page number, from 1, as get_index and search_text give it.")]
+Manufacturer = Annotated[str, Field(description=(
+    "The manufacturer, for example TI. Necessary only when two parts have the same MPN."))]
+Role = Annotated[str, Field(description="The role of the document: datasheet, manual, errata, appnote or other.")]
+ProjectPath = Annotated[str, Field(description=(
+    "A folder of the user project (default: the working folder of the server). The project file "
+    "datasheet-lens.toml is in it or in a parent folder."))]
+DryRun = Annotated[bool, Field(description="True: change nothing, only tell what would change.")]
+DeletePinned = Annotated[bool, Field(description=(
+    "True: also delete a file that the user put into the project folder (pinned = true)."))]
 
 # The PDF of get_pdf_pages goes into one tool result: a larger request must
 # use more calls.
@@ -51,32 +68,52 @@ _children: set[subprocess.Popen] = set()
 
 @atexit.register
 def _stop_children() -> None:
+    """Stop the child processes (element map builds) when the server stops."""
     for child in list(_children):
         with contextlib.suppress(OSError):
             child.kill()
+
+
 _builds: dict[int, dict] = {}  # document ID -> {"thread", "started", "result", "error"}
 _builds_lock = threading.RLock()
 
 INSTRUCTIONS = """\
-datasheet-lens gives the content of component datasheets (PDF). It does not convert
-a datasheet to text: read the values from the original pages.
+datasheet-lens gives you the content of electronic component datasheets (PDF). It
+does not convert a datasheet to text. It helps you find the content, and it gives
+you the original pages. Read each value from the original (an image or PDF pages),
+never from the text layer alone: the text layer can lose superscripts, signs,
+units and the structure of tables.
 
-Go into a document step by step, and ask only for what the work needs:
-1. list_parts / list_documents: find the documents of a part (a part can have a
-   datasheet, a manual, errata). project_status gives the parts of the user
-   project; project_sync and project_add_part keep its documents current.
-2. get_index: the outline and the table and figure captions, with pages.
-3. get_outline: the entries under one section (large documents).
-4. search_text: find a word or a value in the text layer (page and line).
-5. get_page_map: the headings, tables, figures and formulas of one page, with IDs.
-   The element map of a large new document can take minutes to build. Until it
-   is complete, use steps 2, 4 and 7 with a page or a region.
-6. get_element_text: the full text of elements.
-7. get_page_image (an element ID, a region, or a page) or get_pdf_pages: the
-   original. Read the values here, never from the text layer alone (it can lose
-   superscripts, signs and table structure).
-Save a value that the work uses with save_fact (with its page and element), and
-look for saved values first with find_facts.
+Find the content step by step, and ask only for what the work needs:
+1. Find the document: list_parts, list_documents(part). A part can have a
+   datasheet, a manual and errata. project_status gives the parts and the
+   documents of the user project.
+2. find_facts: values that a session read before, with their source.
+3. get_index: the outline and the table and figure captions, with pages. For a
+   large document, get_outline gives the entries under one section.
+4. search_text: find a word, a register name or a value (page and line).
+5. get_page_map: the headings, tables, figures and formulas of one page, with
+   element IDs and regions. get_element_text gives the text of elements, and
+   list_items gives all tables and figures of a document.
+6. get_page_image with an element ID or a region: the original at 300 to 600 dpi.
+   Read the values here. A full page costs more input. get_pdf_pages gives pages
+   as a PDF.
+7. save_fact: save a value that the work uses, with its page and element.
+
+When the store has no datasheet for a part: add_document with a local file or a
+URL (for example from a distributor tool or the Datasheet field of a CAD symbol).
+Give part when you know it. Without part, the result gives a rough proposal from
+the text of the PDF, which can be wrong: read the MPN in the title of page 1 and
+in the ordering information of the original, then call add_document with part.
+
+A part of the user project is the concrete orderable MPN of the BOM (for example
+TLV75533PDBVR). Its base part is the part of the datasheet (TLV755P):
+project_add_part(mpn, base, document). project_sync copies the documents into
+the project folder.
+
+The element map of a large new document can take minutes to build. Until it is
+complete, get_page_map tells so: use get_index, search_text and get_page_image
+with a page or a region.
 """
 
 mcp = MCPServer("datasheet-lens", instructions=INSTRUCTIONS)
@@ -99,6 +136,7 @@ def tool(func):
 
 
 def _doc(store: Store, ref: str):
+    """The document of a reference, or a LensError that tells the model to use list_documents."""
     doc = store.document(ref)
     if doc is None:
         raise LensError(f"document not found: {ref} (use list_documents)")
@@ -205,7 +243,9 @@ def _elements_ready(store: Store, doc_id: int) -> str:
 
 @tool
 def list_parts() -> str:
-    """List the parts in the store, with the number of documents of each part."""
+    """The parts in the store, with their manufacturer and the number of their
+    documents. Gives one line for each part: "MPN (manufacturer): N documents".
+    list_documents gives the documents of a part."""
     with Store() as store:
         rows = store.parts()
         if not rows:
@@ -215,9 +255,11 @@ def list_parts() -> str:
 
 
 @tool
-def list_documents(part: str = "") -> str:
-    """List the documents, or the documents of one part (MPN or alias). Each line
-    gives the document ID to use in the other tools, the pages and the role."""
+def list_documents(part: PartRef = "") -> str:
+    """The documents in the store, or the documents of one part (a concrete part
+    also gets the documents of its base part). Gives one line for each document:
+    its reference (12 characters, for the other tools), the number of pages, the
+    file name, the role or the parts, and the title."""
     with Store() as store:
         rows = store.part_documents(part) if part else store.documents()
         if not rows:
@@ -231,18 +273,26 @@ def list_documents(part: str = "") -> str:
 
 
 @tool
-def add_document(path: str, part: str = "", manufacturer: str = "", role: str = "datasheet",
-                 variants: list[str] | None = None) -> str:
-    """Add a PDF to the store, link it to a part, and build its index and element
-    map. path: a local file, or an http or https URL of the PDF (for example the
-    datasheet URL from a part registry, a distributor or a CAD symbol); the tool
-    downloads it and records the URL. part: the MPN of the part (the variant that
-    the design uses). variants: the other parts that the datasheet covers (for
-    example ADC34J22, ADC34J23, ADC34J25); the document is linked to each.
-    role: datasheet, manual, errata, appnote or other. The element map of a large
-    document can take minutes: it is then built in the background, and the index
-    and the page tools are available at once. To copy the document into the user
-    project: project_add_part, then project_sync."""
+def add_document(
+        path: Annotated[str, Field(description="A local PDF file, or an http or https URL of a PDF.")],
+        part: Annotated[str, Field(description=(
+            "The MPN that the datasheet describes: the base part, for example TLV755P (or one variant of "
+            "a family). Empty: the result proposes an MPN from the PDF."))] = "",
+        manufacturer: Manufacturer = "",
+        role: Role = "datasheet",
+        variants: Annotated[list[str] | None, Field(description=(
+            "The other parts that the same datasheet covers, for example [\"ADC34J22\", \"ADC34J23\"] "
+            "for ADC34J24. Only with part."))] = None) -> str:
+    """Add a PDF document to the store: copy or download it, build its index and
+    its element map, and link it to its part. Use it when list_documents does
+    not find the datasheet; the URL can come from a distributor tool or from the
+    Datasheet field of a CAD symbol. The element map of a large document can take
+    minutes: a background thread builds it, and the index and the page images
+    are available at once. Gives the document reference, the pages, the size of
+    the index and the state of the element map. Without part, it also gives a
+    rough proposal of the MPN from the text of the PDF; it can be wrong. Read the
+    MPN on page 1 of the original, then call add_document again with part. To put
+    the part into the user project: project_add_part."""
     from pathlib import Path
 
     from .config import store_home
@@ -252,7 +302,7 @@ def add_document(path: str, part: str = "", manufacturer: str = "", role: str = 
     if role not in ROLES:
         raise LensError(f"role must be one of {', '.join(ROLES)}")
     if variants and not part.strip():
-        raise LensError("variants need part: the variant that the design uses")
+        raise LensError("variants need part: the MPN that the datasheet describes")
     with contextlib.ExitStack() as stack:
         # The download runs before the lock: a slow server must not stop the other tools.
         if is_url(path):
@@ -284,18 +334,24 @@ def _proposal(store: Store, doc) -> str:
     p = propose(store, doc)
     if not p.mpn:
         return "\nno part: the PDF gives no MPN; find it (title, ordering information) and link it"
-    covers = (f" The datasheet covers the variants {', '.join(p.variants)}: give the variant that the design "
-              "uses as part, and the others as variants." if p.variants else "")
-    return (f"\nno part: the PDF proposes {p.mpn} ({p.manufacturer or 'manufacturer unknown'}; from "
-            f"{', '.join(p.sources)}" + (f"; other candidates: {', '.join(p.candidates)}" if p.candidates else "")
-            + f").{covers} Check it, then link it: add_document again with part (and variants), then "
-            f"project_add_part(mpn, manufacturer, document='{doc.sha256[:12]}') for the user project")
+    covers = (f" The datasheet covers the variants {', '.join(p.variants)}: give one as part and the "
+              "others as variants." if p.variants else "")
+    return (f"\nno part: a rough proposal from the text of the PDF (it can be wrong): {p.mpn} "
+            f"({p.manufacturer or 'manufacturer unknown'}; from {', '.join(p.sources)}"
+            + (f"; other candidates: {', '.join(p.candidates)}" if p.candidates else "")
+            + f").{covers} Read the MPN on page 1 of the original (get_page_image page 1), then link it: "
+            f"add_document again with part (and variants). For the user "
+            f"project: project_add_part(mpn=<the concrete orderable MPN>, base=<part>, "
+            f"document='{doc.sha256[:12]}')")
 
 
 @tool
-def get_index(document: str) -> str:
-    """The index of a document: outline with pages, and the table and figure
-    captions with their page, order and position on the page."""
+def get_index(document: DocRef) -> str:
+    """The index of a document: the outline (bookmarks or numbered headings) with
+    pages, and the table and figure captions with their page and position. A
+    large document gives only the top outline levels: get_outline gives the
+    entries under a section. Also the pages with no text layer or with images of
+    a low resolution. Start here to find where the content is."""
     from .indexer import index_markdown
 
     with Store() as store:
@@ -303,9 +359,11 @@ def get_index(document: str) -> str:
 
 
 @tool
-def get_outline(document: str, section: str) -> str:
-    """The outline entries under a section number (for example 8.27), with pages.
-    Use it for a large document, where get_index gives only the top levels."""
+def get_outline(
+        document: DocRef,
+        section: Annotated[str, Field(description="A section number, for example \"8.27\".")]) -> str:
+    """The outline entries under one section of a document, with pages. Use it
+    for a large document, when get_index gives only the top levels."""
     from .indexer import outline_under
 
     with Store() as store:
@@ -316,10 +374,16 @@ def get_outline(document: str, section: str) -> str:
 
 
 @tool
-def search_text(text: str, document: str = "", part: str = "", max_lines: int = 30) -> str:
-    """Find a text in the text layer (case-insensitive substring) of one document,
-    or of all documents of a part. Gives the page and the line. Use it to find the
-    page; read the values from the original (get_page_image)."""
+def search_text(
+        text: Annotated[str, Field(description=(
+            "The text to find. Case is ignored, and it is a substring: \"VDD\" also finds \"AVDD\"."))],
+        document: DocRef = "",
+        part: PartRef = "",
+        max_lines: Annotated[int, Field(description="The maximum number of lines (1 to 200).")] = 30) -> str:
+    """Find a text in the text layer of one document, or of all documents of a
+    part. Gives one line for each hit: the document reference, the page and the
+    line. Use it to find the page of a register, a parameter or a pin. Then read
+    the value from the original (get_page_image): the text layer can be wrong."""
     from .indexer import search
 
     with Store() as store:
@@ -337,10 +401,17 @@ def search_text(text: str, document: str = "", part: str = "", max_lines: int = 
 
 
 @tool
-def get_page_map(document: str, page: int, all_elements: bool = False) -> str:
-    """The structure of one page: the headings, tables, figures, formulas and
-    captions with their IDs and regions (pt, top-left origin). The text elements
-    are only counted, unless all_elements is true."""
+def get_page_map(
+        document: DocRef,
+        page: Page,
+        all_elements: Annotated[bool, Field(description=(
+            "True: also list each text element (paragraph, list item); else they are only counted."))] = False,
+) -> str:
+    """The structure of one page: headings, tables, figures, formulas and
+    captions. Gives one line for each element: its ID (for example p7.T1), its
+    type, its region [x0, y0, x1, y1] in pt (origin at the top left of the page)
+    and its text or caption. Use the IDs with get_element_text and
+    get_page_image."""
     from .elements import page_map
 
     with Store() as store:
@@ -351,8 +422,13 @@ def get_page_map(document: str, page: int, all_elements: bool = False) -> str:
 
 
 @tool
-def get_element_text(document: str, element_ids: list[str]) -> str:
-    """The full text of elements (IDs from get_page_map, for example p7.P3)."""
+def get_element_text(
+        document: DocRef,
+        element_ids: Annotated[list[str], Field(description=(
+            "Element IDs from get_page_map or list_items, for example [\"p7.T1\", \"p7.P3\"]."))]) -> str:
+    """The full text of elements from the text layer, with their type, page and
+    region. Use it for headings and paragraphs. Read table values, figures and
+    formulas from get_page_image: the text layer can lose their structure."""
     from .elements import element
 
     with Store() as store:
@@ -367,9 +443,12 @@ def get_element_text(document: str, element_ids: list[str]) -> str:
 
 
 @tool
-def list_items(document: str, kind: str = "") -> str:
-    """The tables, figures or captions of the whole document, with ID, page and
-    region. kind: table, figure, caption, or empty for all."""
+def list_items(
+        document: DocRef,
+        kind: Annotated[str, Field(description="table, figure or caption. Empty: all three.")] = "") -> str:
+    """The tables, figures and captions of the whole document. Gives one line for
+    each item: element ID, page, region and caption. Use it to find a table or a
+    figure when you do not know its page."""
     from .elements import list_items as items
 
     with Store() as store:
@@ -383,12 +462,22 @@ def list_items(document: str, kind: str = "") -> str:
 
 
 @tool
-def get_page_image(document: str, page: int = 0, element: str = "", bbox: list[float] | None = None,
-                   max_px: int = 2576) -> list:
-    """The original as a PNG image: an element (ID from get_page_map), a region
-    (bbox x0, y0, x1, y1 in pt, top-left origin) or a full page. A region or an
-    element is rendered at 300 to 600 dpi; a full page at the dpi that fits max_px
-    on its long edge. Read values from this image."""
+def get_page_image(
+        document: DocRef,
+        page: Annotated[int, Field(description="The page number, from 1. Not necessary with element.")] = 0,
+        element: Annotated[str, Field(description=(
+            "An element ID from get_page_map or list_items, for example p7.T1: the image shows this element."
+        ))] = "",
+        bbox: Annotated[list[float] | None, Field(description=(
+            "Or a region [x0, y0, x1, y1] in pt, origin at the top left of the page (the units of "
+            "get_page_map). Needs page."))] = None,
+        max_px: Annotated[int, Field(description=(
+            "The maximum long edge of a full-page image in pixels (256 to 8000)."))] = 2576) -> list:
+    """The original as a PNG image: an element, a region or a full page. Read the
+    values from this image. An element or a region is rendered at 300 to 600 dpi:
+    prefer them, because a full page costs more input. A full page is rendered at
+    the resolution that fits max_px. Gives a line with the page, the region, the
+    dpi and the size, and the image."""
     from .elements import element as get_element
     from .pages import page_image
 
@@ -414,10 +503,12 @@ def get_page_image(document: str, page: int = 0, element: str = "", bbox: list[f
 
 
 @tool
-def get_pdf_pages(document: str, pages: str) -> list:
-    """The original pages as a new PDF (pages: "7" or "3-5,8", at most 50 pages).
-    Gives the PDF as an embedded resource and its file path (a client that cannot
-    read the resource can read the file)."""
+def get_pdf_pages(
+        document: DocRef,
+        pages: Annotated[str, Field(description="The pages, for example \"7\" or \"3-5,8\" (at most 50).")]
+) -> list:
+    """The original pages as a new PDF file. Use it when your client can read a
+    PDF. Gives the file path and the PDF as an embedded resource."""
     from .pages import parse_pages, pdf_pages
 
     with Store() as store:
@@ -433,12 +524,26 @@ def get_pdf_pages(document: str, pages: str) -> list:
 
 
 @tool
-def save_fact(document: str, page: int, subject: str, value: str, unit: str = "", conditions: str = "",
-              column: str = "", element: str = "", bbox: list[float] | None = None, note: str = "",
-              model: str = "", part: str = "") -> str:
-    """Save a value that you read from the original, with its source: document,
-    page, element ID or bbox, the column (MIN/TYP/MAX) and the conditions. model:
-    your model name. The fact gets the state 'unchecked'."""
+def save_fact(
+        document: DocRef,
+        page: Page,
+        subject: Annotated[str, Field(description=(
+            "What the value is, for example \"VDD maximum\" or \"CTRL register reset value\"."))],
+        value: Annotated[str, Field(description="The value as the original shows it, for example \"3.6\".")],
+        unit: Annotated[str, Field(description="The unit, for example V, mA, °C.")] = "",
+        conditions: Annotated[str, Field(description=(
+            "The conditions of the value, for example \"TA = 25 °C, VDD = 3.3 V\"."))] = "",
+        column: Annotated[str, Field(description="The table column of the value: MIN, TYP, MAX.")] = "",
+        element: Annotated[str, Field(description="The element ID that holds the value, for example p7.T1.")] = "",
+        bbox: Annotated[list[float] | None, Field(description=(
+            "Or the region that holds the value: [x0, y0, x1, y1] in pt."))] = None,
+        note: Annotated[str, Field(description="A note, for example a footnote of the table.")] = "",
+        model: Annotated[str, Field(description="Your model name.")] = "",
+        part: Annotated[str, Field(description=(
+            "The part that the value is for, when the document covers more parts."))] = "") -> str:
+    """Save a value that you read from the original, with its source and your
+    model name, so that a later session finds it with find_facts. A new fact has
+    the state unchecked. Gives the fact number."""
     from .knowledge import save_fact as save
 
     with Store() as store:
@@ -451,10 +556,16 @@ def save_fact(document: str, page: int, subject: str, value: str, unit: str = ""
 
 
 @tool
-def find_facts(query: str = "", document: str = "", part: str = "", limit: int = 50) -> str:
-    """Find saved facts by a text in the subject or the value, in one document, in
-    the documents of a part, or in all documents. Each fact gives its source and
-    state; check an important value against the original."""
+def find_facts(
+        query: Annotated[str, Field(description="A text in the subject or the value. Empty: all facts.")] = "",
+        document: DocRef = "",
+        part: PartRef = "",
+        limit: Annotated[int, Field(description="The maximum number of facts (1 to 500).")] = 50) -> str:
+    """Find values that were read before (save_fact). Gives one line for each
+    fact: number, subject, value, column, conditions, source (document, page,
+    element or region), state and author. A fact is not the source of truth:
+    check an important value against the original, then set its state with
+    set_fact_status."""
     from .knowledge import find_facts as find
     from .knowledge import format_fact
 
@@ -470,9 +581,15 @@ def find_facts(query: str = "", document: str = "", part: str = "", limit: int =
 
 
 @tool
-def set_fact_status(fact_id: int, status: str, note: str = "") -> str:
-    """Set the state of a fact: unchecked, checked (compared with the original) or
-    disputed (the original or another source disagrees; give the reason in note)."""
+def set_fact_status(
+        fact_id: Annotated[int, Field(description="The fact number from find_facts or save_fact.")],
+        status: Annotated[str, Field(description=(
+            "unchecked; checked (you compared it with the original); or disputed (the original or a "
+            "different source does not agree)."))],
+        note: Annotated[str, Field(description=(
+            "The reason, for example for disputed. It is added to the existing note."))] = "") -> str:
+    """Set the state of a saved fact after you compared it with the original.
+    Gives the fact number and its new state."""
     from .knowledge import set_status
 
     with Store() as store:
@@ -484,11 +601,11 @@ PROJECT_ADD_HINT = "project_add_part(mpn='{mpn}', document='{sha}')"
 
 
 @tool
-def project_status(path: str = "") -> str:
-    """The parts of the user project and their documents (document IDs for the
-    other tools), and the copies in the project folder that are missing or
-    changed. The project file datasheet-lens.toml is in path or in a parent
-    folder (default: the working folder of the server)."""
+def project_status(path: ProjectPath = "") -> str:
+    """The parts and documents of the user project, and the state of the copies
+    in the project folder: missing or changed copies, new files, problems. It
+    changes nothing. Gives one line for each part (MPN, manufacturer, base part,
+    variants) and one line for each document (reference, role, file)."""
     from .project import format_parts, format_report, load, sync
 
     project = load(path or None)
@@ -498,13 +615,17 @@ def project_status(path: str = "") -> str:
 
 
 @tool
-def project_sync(path: str = "", restore: bool = False) -> str:
-    """Synchronize the project with the central store: add the documents that the
-    store links to the parts of the project, copy the missing copies into the
-    project folder, and import the new PDF files of the folder (with index and
-    element map). A new file gets a part only from the store; for the other files
-    the result proposes a part, and project_add_part assigns it. restore: copy a
-    changed copy again from the store."""
+def project_sync(
+        path: ProjectPath = "",
+        restore: Annotated[bool, Field(description=(
+            "True: copy a changed copy again from the store (the file in the folder is replaced)."
+        ))] = False) -> str:
+    """Synchronize the user project with the central store: add the documents
+    that the store links to the project parts, copy the missing copies into the
+    project folder, move the copies into the subfolders of the layout, and import
+    the new PDF files of the folder. A new file gets a part only from the store;
+    for a different file the result proposes a part, and project_add_part
+    assigns it. Gives the changes and the problems."""
     from .project import format_report, load, sync
 
     with _add_lock, Store() as store:
@@ -531,17 +652,25 @@ def _build_in_sequence(store: Store, doc_ids: list[int]) -> int:
 
 
 @tool
-def project_add_part(mpn: str, manufacturer: str = "", document: str = "", role: str = "datasheet",
-                     category: str = "", base: str = "", path: str = "") -> str:
+def project_add_part(
+        mpn: Annotated[str, Field(description=(
+            "The concrete orderable MPN that the design (the BOM) uses, with its package, voltage or "
+            "grade, for example TLV75533PDBVR. Or the base part MPN when the concrete one is not known."))],
+        manufacturer: Manufacturer = "",
+        document: Annotated[str, Field(description=(
+            "A document to link first (to the base part, if base is given), for example a new file of "
+            "the project folder: its reference from project_status or list_documents."))] = "",
+        role: Role = "datasheet",
+        category: Annotated[str, Field(description=(
+            "The function of the part, for example ADC, LDO or MCU. The layout of the project folder "
+            "can use it."))] = "",
+        base: Annotated[str, Field(description=(
+            "The base part of the datasheet, for example TLV755P. The concrete part gets the documents "
+            "of the base part."))] = "",
+        path: ProjectPath = "") -> str:
     """Add a part to the user project, with the documents that the store links to
-    it. mpn: the concrete orderable MPN that the design (the BOM) uses, with its
-    package, voltage or grade (for example TLV75533PDBVR). base: the base part of
-    the datasheet (for example TLV755P); the concrete part gets its documents.
-    document (ID from project_status or list_documents): link this document to
-    the part (to the base part if base is given) first, for example a new file of
-    the project folder. category: the function of the part (for example ADC, LDO,
-    MCU); the layout of the project folder can use it. Then project_sync copies
-    the documents into the folder."""
+    it. Then project_sync copies the documents into the project folder. Gives the
+    part and its documents."""
     from .project import add_part, load
 
     with _add_lock, Store() as store:
@@ -554,6 +683,7 @@ def project_add_part(mpn: str, manufacturer: str = "", document: str = "", role:
 
 
 def _removal(result: dict, folder: str, dry_run: bool, what: str) -> str:
+    """The result of a removal from the project as lines."""
     lines = [f"{'would remove' if dry_run else 'removed'}: {what}"]
     lines += [f"  {'would delete' if dry_run else 'deleted'}: {folder}/{rel}" for rel in result["deleted"]]
     lines += [f"  kept: {folder}/{text}" for text in result["kept"]]
@@ -561,12 +691,17 @@ def _removal(result: dict, folder: str, dry_run: bool, what: str) -> str:
 
 
 @tool
-def project_remove_part(mpn: str, manufacturer: str = "", delete_pinned: bool = False, dry_run: bool = False,
-                        path: str = "") -> str:
-    """Remove a part from the user project, and delete its copies in the project
-    folder that no other part uses. A file that the user put into the folder
-    (pinned) stays, unless delete_pinned is true. The central store does not
-    change. dry_run: only tell what would change."""
+def project_remove_part(
+        mpn: Annotated[str, Field(description="The MPN of the project part.")],
+        manufacturer: Manufacturer = "",
+        delete_pinned: DeletePinned = False,
+        dry_run: DryRun = False,
+        path: ProjectPath = "") -> str:
+    """Remove a part from the user project, and delete its copies that no other
+    part uses. A file that the user put into the folder (pinned) stays, unless
+    delete_pinned is true. The central store does not change, because other
+    projects can use the part. Gives the removed part and the deleted and kept
+    files."""
     from .project import load, remove_part
 
     with _add_lock:
@@ -576,13 +711,19 @@ def project_remove_part(mpn: str, manufacturer: str = "", delete_pinned: bool = 
 
 
 @tool
-def project_remove_document(document: str, mpn: str = "", manufacturer: str = "", delete_pinned: bool = False,
-                            dry_run: bool = False, path: str = "") -> str:
-    """Remove a document (document ID, SHA-256 prefix or file name) from the parts
-    of the user project, or from part mpn only; the part stays. The project
-    remembers it (exclude), so that project_sync does not add it again;
-    project_add_part with the document adds it again. The copy is deleted when no
-    part uses it. The central store does not change."""
+def project_remove_document(
+        document: Annotated[str, Field(description=(
+            "The document: its reference, a SHA-256 prefix, its document ID, or its file name in the "
+            "project folder."))],
+        mpn: Annotated[str, Field(description="Only from this part. Empty: from each part that has it.")] = "",
+        manufacturer: Manufacturer = "",
+        delete_pinned: DeletePinned = False,
+        dry_run: DryRun = False,
+        path: ProjectPath = "") -> str:
+    """Remove a document from the parts of the user project; the parts stay. The
+    project remembers it (exclude), so that project_sync does not add it again;
+    project_add_part with this document adds it again. The copy is deleted when
+    no part uses it. The central store does not change."""
     from .project import load, remove_document
 
     with _add_lock:
@@ -596,6 +737,7 @@ def project_remove_document(document: str, mpn: str = "", manufacturer: str = ""
 
 
 def main() -> None:
+    """Run the MCP server on stdin and stdout."""
     mcp.run("stdio")
 
 
