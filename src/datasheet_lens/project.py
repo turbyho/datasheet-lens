@@ -13,9 +13,12 @@ save() keeps the comments, the format and the other keys of the project file.
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import os
 import re
 import shutil
+import string
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -33,6 +36,12 @@ from .store import ROLES, Document, Store, sha256_file
 
 PROJECT_FILE = "datasheet-lens.toml"
 DEFAULT_FOLDER = "datasheets"
+# The subfolder of a copy in the folder: a pattern with {manufacturer},
+# {category} (the function of the part) and {mpn}. "" puts all copies into the
+# folder itself. A missing value gives the subfolder UNKNOWN.
+DEFAULT_LAYOUT = "{manufacturer}"
+LAYOUT_KEYS = ("manufacturer", "category", "mpn")
+UNKNOWN = "_unknown"
 # The comment at the start of a new project file.
 HEADER = (
     "datasheet-lens project file: the parts of this project and their documents.",
@@ -68,8 +77,11 @@ def _rel(rel: str, what: str) -> str:
 class Project:
     root: Path
     folder: str = DEFAULT_FOLDER
-    # {"mpn", "manufacturer", "documents": [{"sha256", "file", "role"}]}
+    # {"mpn", "manufacturer", "documents": [{"sha256", "file", "role"} and
+    # "pinned": True for a file that the user put into the folder: sync does not
+    # move it]}
     parts: list[dict] = field(default_factory=list)
+    layout: str = DEFAULT_LAYOUT
     # The text of the project file that load() read or save() wrote.
     text: str | None = field(default=None, repr=False, compare=False)
 
@@ -105,23 +117,48 @@ def find_project(start: Path | str | None = None) -> Path:
                     "(make one with the command: datasheet-lens project init)")
 
 
-def init_project(root: Path | str, folder: str = DEFAULT_FOLDER) -> Project:
+def init_project(root: Path | str, folder: str = DEFAULT_FOLDER, layout: str = DEFAULT_LAYOUT) -> Project:
     root = Path(root).expanduser().resolve()
     if (root / PROJECT_FILE).exists():
         raise LensError(f"{root / PROJECT_FILE} exists already")
-    project = Project(root, _rel(folder, "the folder"))
+    project = Project(root, _rel(folder, "the folder"), layout=_check_layout(layout))
     project.folder_path.mkdir(parents=True, exist_ok=True)
     save(project)
     return project
 
 
-def _parse(text: str, path: Path) -> tuple[str, list[dict]]:
-    """The folder and the parts of the text of a project file."""
+def _check_layout(layout) -> str:
+    if not isinstance(layout, str):
+        raise LensError("layout must be a text, for example \"{manufacturer}\"")
+    names = ", ".join("{" + k + "}" for k in LAYOUT_KEYS)
+    try:
+        keys = [name for _, name, _, _ in string.Formatter().parse(layout) if name is not None]
+    except ValueError as e:
+        raise LensError(f"layout {layout!r}: {e} (use {names})") from e
+    if any(k not in LAYOUT_KEYS for k in keys):
+        raise LensError(f"layout {layout!r}: use only {names}")
+    try:
+        sample = layout.format_map({k: "x" for k in LAYOUT_KEYS})
+    except (ValueError, KeyError, IndexError) as e:
+        raise LensError(f"layout {layout!r}: {e} (use {names})") from e
+    if sample.strip("/"):
+        _rel(sample, "the layout")
+    return layout
+
+
+def _parse(text: str, path: Path) -> tuple[str, str, list[dict]]:
+    """The folder, the layout and the parts of the text of a project file."""
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
         raise LensError(f"{path}: {e}") from e
     folder = _rel(data.get("folder", DEFAULT_FOLDER), "the folder")
+    try:
+        # No layout key: a project file of a version with no layout. Its copies
+        # stay where they are ("").
+        layout = _check_layout(data.get("layout", ""))
+    except LensError as e:
+        raise LensError(f"{path}: {e}") from e
     parts = data.get("part", [])
     if not isinstance(parts, list):
         raise LensError(f"{path}: 'part' must be a list of tables ([[part]])")
@@ -139,23 +176,29 @@ def _parse(text: str, path: Path) -> tuple[str, list[dict]]:
                 raise LensError(f"{path}: part {p['mpn']}: sha256 must have 64 hex digits")
             if role not in ROLES:
                 raise LensError(f"{path}: part {p['mpn']}: role must be one of {', '.join(ROLES)}")
-            docs.append({"sha256": sha, "file": _rel(file, "the file"), "role": role})
-        out.append({"mpn": p["mpn"].strip(), "manufacturer": str(p.get("manufacturer", "")), "documents": docs})
-    return folder, out
+            if not isinstance(d.get("pinned", False), bool):
+                raise LensError(f"{path}: part {p['mpn']}: pinned must be true or false")
+            doc = {"sha256": sha, "file": _rel(file, "the file"), "role": role}
+            if d.get("pinned"):
+                doc["pinned"] = True
+            docs.append(doc)
+        out.append({"mpn": p["mpn"].strip(), "manufacturer": str(p.get("manufacturer", "")),
+                    "category": str(p.get("category", "")).strip(), "documents": docs})
+    return folder, layout, out
 
 
 def load(start: Path | str | None = None) -> Project:
     root = find_project(start)
     path = root / PROJECT_FILE
     text = path.read_text(encoding="utf-8")
-    folder, parts = _parse(text, path)
-    return Project(root, folder, parts, text=text)
+    folder, layout, parts = _parse(text, path)
+    return Project(root, folder, parts, layout, text=text)
 
 
-def _summary(folder: str, parts: list[dict]):
+def _summary(folder: str, layout: str, parts: list[dict]):
     """The data of a project with no order, to compare two projects."""
-    return folder, sorted((p["mpn"], p["manufacturer"], tuple(sorted(
-        (d["sha256"], d["file"], d["role"]) for d in p["documents"]))) for p in parts)
+    return folder, layout, sorted((p["mpn"], p["manufacturer"], p.get("category", ""), tuple(sorted(
+        (d["sha256"], d["file"], d["role"], d.get("pinned", False)) for d in p["documents"]))) for p in parts)
 
 
 def _strip(value) -> str:
@@ -296,6 +339,7 @@ def save(project: Project) -> None:
         except tomlkit.exceptions.ParseError as e:
             raise LensError(f"{project.path}: {e}") from e
         _set(doc, "folder", project.folder, default=DEFAULT_FOLDER, norm=_norm_rel)
+        _set(doc, "layout", project.layout, default="")
     elif project.text is not None:
         raise LensError(f"{project.path} was removed after datasheet-lens read it: run the command again")
     else:
@@ -304,6 +348,10 @@ def save(project: Project) -> None:
             doc.add(tomlkit.comment(line))
         doc.add(tomlkit.nl())
         doc.add("folder", project.folder)
+        doc.add(tomlkit.comment("The subfolder of each copy: {manufacturer}, {category} (the function of"))
+        doc.add(tomlkit.comment("the part) and {mpn}, for example \"{category}/{manufacturer}\". \"\": no"))
+        doc.add(tomlkit.comment("subfolders. Sync moves the copies, but not a file with pinned = true."))
+        doc.add("layout", project.layout)
     old_parts = _tables(doc, "part")
     used: set[int] = set()
     tables = []
@@ -312,12 +360,14 @@ def save(project: Project) -> None:
         used.add(id(table))
         _set(table, "mpn", part["mpn"], norm=_strip)
         _set(table, "manufacturer", part["manufacturer"], norm=_strip)
+        _set(table, "category", part.get("category", ""), norm=_strip)
         old_docs = _tables(table, "document")
         doc_tables = _match_documents(old_docs, part["documents"])
         for dt, d in zip(doc_tables, part["documents"]):
             _set(dt, "sha256", d["sha256"])
             _set(dt, "file", d["file"], norm=_norm_rel)
             _set(dt, "role", d["role"], default="datasheet")
+            _set(dt, "pinned", d.get("pinned", False), default=False, norm=bool)
         _set_tables(table, "document", old_docs, doc_tables)
         tables.append(table)
     _set_tables(doc, "part", old_parts, tables)
@@ -325,7 +375,7 @@ def save(project: Project) -> None:
     if text == source:  # no change: the file and its format stay as they are
         return
     try:
-        same = _summary(*_parse(text, project.path)) == _summary(project.folder, project.parts)
+        same = _summary(*_parse(text, project.path)) == _summary(project.folder, project.layout, project.parts)
     except LensError:
         same = False
     if not same:
@@ -359,60 +409,106 @@ def _folder_files(project: Project) -> dict[str, str]:
             for p in sorted(folder.rglob("*")) if p.is_file() and p.suffix.lower() == ".pdf"}
 
 
-def _copy_name(project: Project, doc: Document, files: dict[str, str]) -> str:
-    """The file name of the copy of a document: a file in the folder with the same
-    content, or the original file name if no different file has it."""
+def _safe(name: str) -> str:
+    """A name that is valid as a file or folder name on each system."""
+    return re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", name).strip(" .")
+
+
+def layout_dir(project: Project, part: dict) -> str:
+    """The subfolder of the copies of a part (relative to the folder), from the
+    layout and the part in the project file (manufacturer, category, mpn). A
+    missing value gives UNKNOWN."""
+    values = {k: _safe(str(part.get(k, ""))) or UNKNOWN for k in LAYOUT_KEYS}
+    text = project.layout.format_map(values)
+    return "/".join(p for p in text.split("/") if p.strip() and p.strip() != ".")
+
+
+def _used(project: Project) -> dict[str, str]:
+    """{file name: SHA-256} of the references of the project."""
+    return {d["file"]: d["sha256"] for part in project.parts for d in part["documents"]}
+
+
+def _free_name(rel: str, sha: str, files: dict[str, str], used: dict[str, str]) -> str:
+    """rel, or rel with a hash suffix if a different file of the folder or a
+    reference to a different document has the name."""
+    if files.get(rel, sha) == sha and used.get(rel, sha) == sha:
+        return rel
+    stem, dot, suffix = rel.rpartition(".")
+    return f"{stem}-{sha[:8]}.{suffix}" if dot else f"{rel}-{sha[:8]}"
+
+
+def _copy_name(project: Project, doc: Document, files: dict[str, str], subdir: str) -> tuple[str, bool]:
+    """The file name of the copy of a document, and True if it is a file that the
+    user put into the folder (it has the content, and no reference has the name).
+    A copy that sync made for a different part is shared, not pinned."""
+    used = _used(project)
     for rel, sha in files.items():
         if sha == doc.sha256:
-            return rel
-    used = {d["file"]: d["sha256"] for part in project.parts for d in part["documents"]}
-    # A name that is a valid file name on each system, and a valid project entry.
-    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", doc.filename).strip(" .") or f"{doc.sha256[:12]}.pdf"
-    if files.get(name, doc.sha256) != doc.sha256 or used.get(name, doc.sha256) != doc.sha256:
-        stem, dot, suffix = name.rpartition(".")
-        name = f"{stem}-{doc.sha256[:8]}.{suffix}" if dot else f"{name}-{doc.sha256[:8]}"
-    return name
+            return rel, rel not in used
+    name = _safe(doc.filename) or f"{doc.sha256[:12]}.pdf"
+    return _free_name(f"{subdir}/{name}" if subdir else name, doc.sha256, files, used), False
 
 
 def _refresh(project: Project, store: Store, part: dict, part_id: int, files: dict[str, str]) -> list[str]:
-    """Add the documents that the store links to the part. Give their file names."""
+    """Add the documents that the store links to the part. Give their file names.
+    A reference to a file that the user put into the folder gets pinned = true."""
     added = []
     refs = {d["sha256"]: d for d in part["documents"]}
+    subdir = layout_dir(project, part)
     for row in store.documents_of_part(part_id):
         if row["sha256"] in refs:
             refs[row["sha256"]]["role"] = row["role"]
             continue
-        name = _copy_name(project, store.document(row["id"]), files)
-        part["documents"].append({"sha256": row["sha256"], "file": name, "role": row["role"]})
+        name, pinned = _copy_name(project, store.document(row["id"]), files, subdir)
+        ref = {"sha256": row["sha256"], "file": name, "role": row["role"]}
+        if pinned:
+            ref["pinned"] = True
+        part["documents"].append(ref)
         added.append(name)
     return added
 
 
 def _entry(project: Project, store: Store, part_id: int) -> dict:
-    """The project part of a store part (made if necessary)."""
+    """The project part of a store part (made if necessary). An empty
+    manufacturer or category of the project part comes from the store."""
     row = store.part(part_id)
     part = project.find(row["mpn"], row["manufacturer"])
     if part is None:
-        part = {"mpn": row["mpn"], "manufacturer": row["manufacturer"], "documents": []}
+        part = {"mpn": row["mpn"], "manufacturer": row["manufacturer"], "category": row["family"] or "",
+                "documents": []}
         project.parts.append(part)
-    elif not part["manufacturer"]:
-        part["manufacturer"] = row["manufacturer"]
+    _fill(part, row)
     return part
 
 
+def _fill(part: dict, row) -> None:
+    """Fill an empty manufacturer or category of a project part from the store.
+    The project file holds them, so that each person of a team gets the same
+    layout."""
+    if not part["manufacturer"]:
+        part["manufacturer"] = row["manufacturer"]
+    if not part.get("category"):
+        part["category"] = row["family"] or ""
+
+
 def add_part(project: Project, store: Store, mpn: str, manufacturer: str = "", document: str = "",
-             role: str = "datasheet") -> dict:
+             role: str = "datasheet", category: str = "") -> dict:
     """Add a part to the project, with the documents that the store links to it.
-    A document (ID or SHA-256 prefix) is first linked to the part in the store."""
+    A document (ID or SHA-256 prefix) is first linked to the part in the store.
+    category: the function of the part (for example ADC), for the layout."""
     if role not in ROLES:
         raise LensError(f"role must be one of {', '.join(ROLES)}")
     part_id = store.find_part(mpn, manufacturer, create=True)
+    if category.strip():
+        store.set_category(part_id, category.strip())
     if document:
         doc = store.document(document)
         if doc is None:
             raise LensError(f"document not found: {document}")
         store.link(part_id, doc.id, role)
     part = _entry(project, store, part_id)
+    if category.strip():
+        part["category"] = category.strip()
     _refresh(project, store, part, part_id, _folder_files(project))
     save(project)
     return part
@@ -451,9 +547,41 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
     if not apply:
         project = copy.deepcopy(project)
 
-    report = {k: [] for k in ("ok", "copied", "restored", "changed", "missing", "imported", "added",
+    report = {k: [] for k in ("ok", "copied", "restored", "changed", "missing", "imported", "added", "moved",
                               "suggested", "unassigned", "unknown_parts", "problems", "documents")}
     files = _folder_files(project)
+    placed: set[str] = set()  # the documents whose copy is at its place: the first part decides
+
+    def move(rel: str, part: dict, sha: str) -> str:
+        """Move a copy to the subfolder of the layout. Give its new name."""
+        subdir = layout_dir(project, part)
+        name = PurePosixPath(rel).name
+        want = f"{subdir}/{name}" if subdir else name
+        if want == rel:
+            return rel
+        want = _free_name(want, sha, files, _used(project))
+        if want == rel:
+            return rel
+        if apply:
+            source, target = project.file_path(rel), project.file_path(want)
+            if want in files:  # the same content is there already
+                source.unlink()
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(source, target)
+            # The file moved: an error in the removal of empty folders is no problem.
+            with contextlib.suppress(OSError):
+                parent = source.parent
+                while parent != project.folder_path and parent.is_dir() and not any(parent.iterdir()):
+                    parent.rmdir()
+                    parent = parent.parent
+        files[want] = files.pop(rel)
+        for p in project.parts:
+            for d in p["documents"]:
+                if d["file"] == rel:
+                    d["file"] = want
+        report["moved"].append(f"{rel} -> {want}")
+        return want
 
     def import_file(rel: str) -> Document | None:
         """Import a file of the folder. A file that cannot be read is a problem of
@@ -476,8 +604,7 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
                 f"part {part['mpn']}: more parts in the store have this MPN; give the manufacturer in "
                 f"{PROJECT_FILE} (" + ", ".join(r["manufacturer"] or "unknown" for r in rows) + ")")
         else:
-            if not part["manufacturer"]:
-                part["manufacturer"] = rows[0]["manufacturer"]
+            _fill(part, store.part(rows[0]["id"]))
             report["added"] += _refresh(project, store, part, rows[0]["id"], files)
 
     # 2. The copies of the referenced documents.
@@ -494,7 +621,17 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
                                        doc.id, d["role"])
                         except LensError as e:
                             report["problems"].append(f"{rel}: not linked to a part: {e}")
-                report["ok"].append(rel)
+                # A copy that the user did not pin goes to the subfolder of the layout.
+                moved = False
+                if doc is not None and not d.get("pinned") and d["sha256"] not in placed:
+                    try:
+                        new = move(rel, part, d["sha256"])
+                        moved, rel = new != rel, new
+                    except OSError as e:
+                        report["problems"].append(f"{rel}: not moved: {e}")
+                placed.add(d["sha256"])
+                if not moved:
+                    report["ok"].append(rel)
             elif doc is None:
                 # The store does not have the document. A different file with this
                 # name is a new document (step 3).
@@ -530,8 +667,8 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
         for row in linked:
             part = project.find(row["mpn"], row["manufacturer"])
             if part is not None:
-                if apply:
-                    part["documents"].append({"sha256": sha, "file": rel, "role": row["role"]})
+                if apply:  # the user put the file there: it stays there
+                    part["documents"].append({"sha256": sha, "file": rel, "role": row["role"], "pinned": True})
                 report["added"].append(rel)
                 assigned = True
         if not assigned:
@@ -574,6 +711,7 @@ def format_report(report: dict, apply: bool, add_hint: str) -> list[str]:
     lines = []
     for key, text in (("added", "new reference"), ("copied", "copied" if apply else "copy missing"),
                       ("restored", "copied again" if apply else "copy to restore"),
+                      ("moved", "moved to its subfolder" if apply else "to move to its subfolder"),
                       ("imported", "imported into the store")):
         lines += [f"{text}: {rel}" for rel in report[key]]
     lines += [f"changed: {rel} (the copy differs from the store; restore it, or give the file "

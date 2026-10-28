@@ -21,7 +21,7 @@ def setup(store_home, text_pdf, tmp_path):
         doc = store.add_document(opa)
         store.link(store.add_part("OPA2134", "TI"), doc.id)
         store.add_part("RV-3149-C3", "Micro Crystal")
-    return prj.init_project(tmp_path / "board"), opa, rtc
+    return prj.init_project(tmp_path / "board", layout=""), opa, rtc
 
 
 def test_header_of_a_new_file(setup):
@@ -124,6 +124,7 @@ def test_save_keeps_the_text_of_the_user(setup):
         assert kept in text
     loaded = prj.load(project.root)
     assert loaded.parts[0]["manufacturer"] == "TI"  # from the store
+    # No layout key (a file of an older version): the copies stay in the folder.
     assert loaded.parts[0]["documents"][0]["file"] == "opa2134.pdf"
     assert [p["mpn"] for p in loaded.parts] == ["OPA2134", "RV-3149-C3"]
     # A second sync with no change does not change the file.
@@ -296,3 +297,52 @@ def test_cli_and_mcp(setup, capsys, monkeypatch):
     blocks = result[0] if isinstance(result, tuple) else getattr(result, "content", result)
     text = "\n".join(getattr(b, "text", "") for b in blocks)
     assert "OPA2134 (TI)" in text and "1 copies are current" in text
+
+
+def test_layout(store_home, text_pdf, tmp_path):
+    """The copies go to the subfolder of the layout. A change of the layout moves
+    them. A file that the user put into the folder stays (pinned)."""
+    opa, rtc = text_pdf("opa2134.pdf", OPA), text_pdf("rtc.pdf", RTC)
+    with Store() as store:
+        doc = store.add_document(opa)
+        store.link(store.add_part("OPA2134", "TI"), doc.id)
+        store.add_part("RV-3149-C3", "")
+        project = prj.init_project(tmp_path / "board")  # default: {manufacturer}
+        assert prj.load(project.root).layout == "{manufacturer}"
+        prj.add_part(project, store, "OPA2134", category="Op amp")
+        assert prj.sync(project, store)["copied"] == ["TI/opa2134.pdf"]
+
+        # A new layout with the category: sync moves the copy, and removes the
+        # empty subfolder.
+        text = project.path.read_text(encoding="utf-8").replace('layout = "{manufacturer}"',
+                                                                 'layout = "{category}/{manufacturer}"')
+        project.path.write_text(text, encoding="utf-8")
+        project = prj.load(project.root)
+        assert prj.sync(project, store, apply=False)["moved"] == ["TI/opa2134.pdf -> Op amp/TI/opa2134.pdf"]
+        report = prj.sync(project, store)
+        assert report["moved"] == ["TI/opa2134.pdf -> Op amp/TI/opa2134.pdf"]
+        assert (project.folder_path / "Op amp/TI/opa2134.pdf").is_file()
+        assert not (project.folder_path / "TI").exists()
+        assert prj.load(project.root).parts[0]["documents"][0]["file"] == "Op amp/TI/opa2134.pdf"
+
+        # A file that the user put into the folder: its reference is pinned, and
+        # sync does not move it. A part with no category and no manufacturer
+        # would go to _unknown/_unknown.
+        shutil.copyfile(rtc, project.folder_path / "rv3149.pdf")
+        report = prj.sync(project, store)
+        sha = report["unassigned"][0]["sha256"]
+        part = prj.add_part(project, store, "RV-3149-C3", document=sha[:12])
+        assert part["documents"] == [{"sha256": sha, "file": "rv3149.pdf", "role": "datasheet", "pinned": True}]
+        assert prj.sync(project, store)["moved"] == []
+        assert "pinned = true" in project.path.read_text(encoding="utf-8")
+        assert prj.layout_dir(project, {"mpn": "X", "manufacturer": ""}) == "_unknown/_unknown"
+
+
+def test_layout_checks(tmp_path):
+    for bad, message in (("{vendor}", "use only"), ("../{mpn}", "no '..'"), ("{mpn", "use")):
+        with pytest.raises(LensError, match=message):
+            prj.init_project(tmp_path / bad.replace("/", "_"), layout=bad)
+    project = prj.init_project(tmp_path / "flat", layout="")
+    assert prj.layout_dir(project, {"mpn": "X", "manufacturer": "TI"}) == ""
+    assert prj.layout_dir(prj.Project(tmp_path, layout="{manufacturer}"),
+                          {"mpn": "X", "manufacturer": "A/B: C"}) == "A_B_ C"

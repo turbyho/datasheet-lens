@@ -34,6 +34,8 @@ def cmd_add(args: argparse.Namespace) -> int:
         # The link first: an index error must not lose it.
         if args.part:
             part_id = store.add_part(args.part, args.manufacturer or "")
+            if args.category and args.category.strip():
+                store.set_category(part_id, args.category.strip())
             store.link(part_id, doc.id, args.role)
             print(f"part {args.part}: {args.role}")
         idx = build_index(store, doc.id)
@@ -224,7 +226,7 @@ PROJECT_ADD_HINT = "datasheet-lens project add-part {mpn} --document {sha}"
 def cmd_project_init(args: argparse.Namespace) -> int:
     from .project import init_project
 
-    project = init_project(args.path or Path.cwd(), args.folder)
+    project = init_project(args.path or Path.cwd(), args.folder, args.layout)
     print(f"project file: {project.path}\nfolder: {project.folder_path}")
     return 0
 
@@ -266,7 +268,8 @@ def cmd_project_add_part(args: argparse.Namespace) -> int:
 
     project = load(args.path)
     with Store() as store:
-        part = add_part(project, store, args.mpn, args.manufacturer or "", args.document or "", args.role)
+        part = add_part(project, store, args.mpn, args.manufacturer or "", args.document or "", args.role,
+                        args.category or "")
     print(f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'}): {len(part['documents'])} documents")
     for d in part["documents"]:
         print(f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}")
@@ -288,6 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("file", help="the document file (PDF), or an http or https URL to download it from")
     add.add_argument("--part", help="the part number (MPN) of the component")
     add.add_argument("--manufacturer", help="the manufacturer of the part")
+    add.add_argument("--category", help="the function of the part, for example ADC (for the project layout)")
     add.add_argument("--role", choices=ROLES, default="datasheet", help="the role of the document")
     add.add_argument("--title", help="the title (default: from the PDF metadata)")
     add.add_argument("--url", help="the source URL of a local file (a downloaded file records its URL)")
@@ -370,6 +374,9 @@ def build_parser() -> argparse.ArgumentParser:
     psub = project.add_subparsers(dest="project_command", required=True)
     pinit = psub.add_parser("init", help="make the project file datasheet-lens.toml")
     pinit.add_argument("--folder", default="datasheets", help="the document folder, relative to the project")
+    pinit.add_argument("--layout", default="{manufacturer}",
+                       help="the subfolder of each copy: {manufacturer}, {category}, {mpn}, or \"\" (default: "
+                            "{manufacturer})")
     pinit.set_defaults(func=cmd_project_init)
     pstatus = psub.add_parser("status", help="show the parts, and the copies that are missing or changed")
     pstatus.set_defaults(func=cmd_project_status)
@@ -379,6 +386,7 @@ def build_parser() -> argparse.ArgumentParser:
     padd = psub.add_parser("add-part", help="add a part, with the documents that the store links to it")
     padd.add_argument("mpn", help="the part number (MPN) or an alias")
     padd.add_argument("--manufacturer", help="the manufacturer of the part")
+    padd.add_argument("--category", help="the function of the part, for example ADC (for the layout)")
     padd.add_argument("--document", help="link this document (ID or SHA-256 prefix) to the part first")
     padd.add_argument("--role", choices=ROLES, default="datasheet", help="the role of that document")
     padd.set_defaults(func=cmd_project_add_part)

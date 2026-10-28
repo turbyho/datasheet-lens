@@ -364,6 +364,11 @@ class Store:
             raise LensError(f"part {mpn} is not unique: {names}")
         return rows[0]["id"]
 
+    def set_category(self, part_id: int, category: str) -> None:
+        """The function of the part (for example ADC). The column is "family"."""
+        self.db.execute("UPDATE parts SET family = ? WHERE id = ?", (category, part_id))
+        self.db.commit()
+
     def part(self, part_id: int) -> sqlite3.Row | None:
         return self.db.execute("SELECT * FROM parts WHERE id = ?", (part_id,)).fetchone()
 

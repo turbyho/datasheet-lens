@@ -469,16 +469,18 @@ def _build_in_sequence(store: Store, doc_ids: list[int]) -> int:
 
 @tool
 def project_add_part(mpn: str, manufacturer: str = "", document: str = "", role: str = "datasheet",
-                     path: str = "") -> str:
+                     category: str = "", path: str = "") -> str:
     """Add a part to the user project, with the documents that the store links to
     it. document (ID from project_status or list_documents): link this document
-    to the part first, for example a new file of the project folder. Then
-    project_sync copies the documents into the folder."""
+    to the part first, for example a new file of the project folder. category:
+    the function of the part (for example ADC, LDO, MCU); the layout of the
+    project folder can use it. Then project_sync copies the documents into the
+    folder."""
     from .project import add_part, load
 
     with _add_lock, Store() as store:
         project = load(path or None)
-        part = add_part(project, store, mpn, manufacturer, document, role)
+        part = add_part(project, store, mpn, manufacturer, document, role, category)
     return "\n".join([f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'}): "
                       f"{len(part['documents'])} documents"]
                      + [f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}"
