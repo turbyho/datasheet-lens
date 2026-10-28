@@ -1,0 +1,6 @@
+.venv/
+.venvs/
+__pycache__/
+# Raw output of the converters in spike 2. convert.py makes it again.
+spike/*/verify/convert/*/raw/
+*.py[cod]
