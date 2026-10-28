@@ -22,7 +22,13 @@ from .errors import LensError
 from .pdflock import PDFIUM
 from .fileutil import temp_path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# Changes of a store of an older version, in sequence: {version: SQL}.
+MIGRATIONS = {
+    # A concrete orderable part (TLV75533PDBVR) refers to the base part of its
+    # datasheet (TLV755P).
+    2: "ALTER TABLE parts ADD COLUMN base_id INTEGER REFERENCES parts(id) ON DELETE SET NULL",
+}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -35,6 +41,7 @@ CREATE TABLE IF NOT EXISTS parts (
     manufacturer TEXT NOT NULL DEFAULT '' COLLATE NOCASE,
     family       TEXT NOT NULL DEFAULT '',
     created      TEXT NOT NULL,
+    base_id      INTEGER REFERENCES parts(id) ON DELETE SET NULL,
     UNIQUE (mpn, manufacturer)
 );
 CREATE TABLE IF NOT EXISTS part_aliases (
@@ -194,6 +201,14 @@ class Store:
         self.db = sqlite3.connect(self.home / "db" / "lens.db")
         self.db.row_factory = sqlite3.Row
         self.db.create_function("ulower", 1, _ulower, deterministic=True)
+        try:
+            self._prepare()
+        except BaseException:
+            self.db.close()  # no open connection is left for an error of the schema
+            raise
+
+    def _prepare(self) -> None:
+        """Make the schema, or bring a store of an older version up to date."""
         self.db.execute("PRAGMA journal_mode = WAL")
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.executescript(SCHEMA)
@@ -201,9 +216,28 @@ class Store:
         if row is None:
             self.db.execute("INSERT INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
             self.db.commit()
-        elif int(row["value"]) != SCHEMA_VERSION:
-            raise RuntimeError(f"store schema version {row['value']} is not supported "
-                               f"(this version of datasheet-lens needs {SCHEMA_VERSION})")
+            return
+        version = int(row["value"])
+        if version > SCHEMA_VERSION:
+            raise RuntimeError(f"store schema version {version} is not supported "
+                               f"(this version of datasheet-lens knows {SCHEMA_VERSION}: install a newer one)")
+        if version == SCHEMA_VERSION:
+            return
+        # A store of an older version. One write transaction (BEGIN IMMEDIATE) for
+        # all changes: a second process that opens the store at the same time
+        # waits, then reads the new version and changes nothing. SQLite can undo
+        # ALTER TABLE in a transaction.
+        self.db.commit()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            version = int(self.db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0])
+            for target in range(version + 1, SCHEMA_VERSION + 1):
+                self.db.execute(MIGRATIONS[target])
+                self.db.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(target),))
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
 
     def close(self) -> None:
         self.db.close()
@@ -408,10 +442,36 @@ class Store:
     def part(self, part_id: int) -> sqlite3.Row | None:
         return self.db.execute("SELECT * FROM parts WHERE id = ?", (part_id,)).fetchone()
 
+    def set_base(self, part_id: int, base_id: int) -> None:
+        """A concrete orderable part (TLV75533PDBVR) refers to the base part of its
+        datasheet (TLV755P). It then has the documents of the base part too."""
+        base = self.part(base_id)
+        if base is None:
+            raise LensError(f"part not found: {base_id}")
+        if base_id == part_id:
+            raise LensError("a part cannot be its own base part")
+        # Two levels only: documents_of_part follows one step.
+        if base["base_id"] is not None:
+            raise LensError(f"the base part {base['mpn']} is a concrete part (it has a base part)")
+        if self.db.execute("SELECT 1 FROM parts WHERE base_id = ? LIMIT 1", (part_id,)).fetchone():
+            raise LensError(f"{self.part(part_id)['mpn']} is the base part of other parts: it cannot get a base part")
+        self.db.execute("UPDATE parts SET base_id = ? WHERE id = ?", (base_id, part_id))
+        self.db.commit()
+
+    def base_of(self, part_id: int) -> sqlite3.Row | None:
+        """The base part of a concrete part, or None."""
+        return self.db.execute("SELECT b.* FROM parts p JOIN parts b ON b.id = p.base_id WHERE p.id = ?",
+                               (part_id,)).fetchone()
+
     def documents_of_part(self, part_id: int) -> list[sqlite3.Row]:
+        """The documents of the part, and of its base part. The role of the link
+        of the part wins over the role of the link of the base part."""
         return self.db.execute(
-            "SELECT d.*, pd.role FROM part_documents pd JOIN documents d ON d.id = pd.document_id"
-            " WHERE pd.part_id = ? ORDER BY d.id", (part_id,)).fetchall()
+            "SELECT d.*, coalesce((SELECT role FROM part_documents WHERE part_id = :p AND document_id = d.id),"
+            " (SELECT role FROM part_documents WHERE part_id = (SELECT base_id FROM parts WHERE id = :p)"
+            " AND document_id = d.id)) AS role FROM documents d WHERE d.id IN (SELECT document_id FROM"
+            " part_documents WHERE part_id = :p OR part_id = (SELECT base_id FROM parts WHERE id = :p))"
+            " ORDER BY d.id", {"p": part_id}).fetchall()
 
     def parts_of_document(self, doc_id: int) -> list[sqlite3.Row]:
         return self.db.execute(
@@ -424,9 +484,13 @@ class Store:
             "SELECT id, mpn FROM parts UNION SELECT part_id, alias FROM part_aliases").fetchall()]
 
     def part_documents(self, mpn: str) -> list[sqlite3.Row]:
+        """The documents of the parts with this MPN or alias, and of their base
+        parts (a concrete orderable MPN finds the datasheet of its base part)."""
         return self.db.execute(
-            "SELECT d.*, pd.role, p.mpn, p.manufacturer FROM parts p"
+            "WITH found AS (SELECT id, base_id FROM parts WHERE mpn = ? COLLATE NOCASE OR id IN"
+            " (SELECT part_id FROM part_aliases WHERE alias = ? COLLATE NOCASE)),"
+            " ids AS (SELECT id FROM found UNION SELECT base_id FROM found WHERE base_id IS NOT NULL)"
+            " SELECT d.*, pd.role, p.mpn, p.manufacturer FROM parts p"
             " JOIN part_documents pd ON pd.part_id = p.id JOIN documents d ON d.id = pd.document_id"
-            " WHERE p.mpn = ? COLLATE NOCASE OR p.id IN"
-            " (SELECT part_id FROM part_aliases WHERE alias = ? COLLATE NOCASE) ORDER BY d.id",
+            " WHERE p.id IN (SELECT id FROM ids) ORDER BY d.id",
             (mpn, mpn)).fetchall()

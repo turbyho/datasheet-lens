@@ -189,6 +189,11 @@ def _parse(text: str, path: Path) -> tuple[str, str, list[dict]]:
             raise LensError(f"{path}: part {p['mpn']}: variants must be a list of MPNs")
         if variants:  # for information only: the store gives them
             part["variants"] = variants
+        base = p.get("base", "")
+        if not isinstance(base, str):
+            raise LensError(f"{path}: part {p['mpn']}: base must be an MPN")
+        if base.strip():  # mpn is a concrete orderable part of this base part
+            part["base"] = base.strip()
         out.append(part)
     return folder, layout, out
 
@@ -203,8 +208,8 @@ def load(start: Path | str | None = None) -> Project:
 
 def _summary(folder: str, layout: str, parts: list[dict]):
     """The data of a project with no order, to compare two projects."""
-    return folder, layout, sorted((p["mpn"], p["manufacturer"], p.get("category", ""), tuple(p.get("variants", [])),
-                                   tuple(sorted((d["sha256"], d["file"], d["role"], d.get("pinned", False))
+    return folder, layout, sorted((p["mpn"], p["manufacturer"], p.get("category", ""), p.get("base", ""),
+                                   tuple(p.get("variants", [])), tuple(sorted((d["sha256"], d["file"], d["role"], d.get("pinned", False))
                                                 for d in p["documents"]))) for p in parts)
 
 
@@ -367,6 +372,10 @@ def save(project: Project) -> None:
         used.add(id(table))
         _set(table, "mpn", part["mpn"], norm=_strip)
         _set(table, "manufacturer", part["manufacturer"], norm=_strip)
+        if part.get("base"):
+            _set(table, "base", part["base"], norm=_strip)
+        elif "base" in table:
+            del table["base"]
         _set(table, "category", part.get("category", ""), norm=_strip)
         if part.get("variants"):
             _set(table, "variants", part["variants"], norm=lambda v: [str(x) for x in v])
@@ -463,12 +472,19 @@ def _copy_name(project: Project, doc: Document, files: dict[str, str], subdir: s
 def _refresh(project: Project, store: Store, part: dict, part_id: int, files: dict[str, str]) -> list[str]:
     """Add the documents that the store links to the part. Give their file names.
     A reference to a file that the user put into the folder gets pinned = true.
-    The variants (the parts with the same datasheet) come from the store."""
-    variants = store.variants(part_id)
-    if variants:
-        part["variants"] = variants
+    The base part of a concrete part, and the variants of a base part (the parts
+    with the same datasheet), come from the store."""
+    base = store.base_of(part_id)
+    if base is not None:
+        part["base"] = base["mpn"]
+    if part.get("base"):
+        part.pop("variants", None)  # the variants belong to the base part
     else:
-        part.pop("variants", None)
+        variants = store.variants(part_id)
+        if variants:
+            part["variants"] = variants
+        else:
+            part.pop("variants", None)
     added = []
     refs = {d["sha256"]: d for d in part["documents"]}
     subdir = layout_dir(project, part)
@@ -509,20 +525,26 @@ def _fill(part: dict, row) -> None:
 
 
 def add_part(project: Project, store: Store, mpn: str, manufacturer: str = "", document: str = "",
-             role: str = "datasheet", category: str = "") -> dict:
+             role: str = "datasheet", category: str = "", base: str = "") -> dict:
     """Add a part to the project, with the documents that the store links to it.
     A document (ID or SHA-256 prefix) is first linked to the part in the store.
-    category: the function of the part (for example ADC), for the layout."""
+    category: the function of the part (for example ADC), for the layout.
+    base: mpn is a concrete orderable part (TLV75533PDBVR) of this base part
+    (TLV755P); the document is then linked to the base part."""
     if role not in ROLES:
         raise LensError(f"role must be one of {', '.join(ROLES)}")
     part_id = store.find_part(mpn, manufacturer, create=True)
+    owner = part_id
+    if base.strip() and base.strip().lower() != mpn.strip().lower():
+        owner = store.find_part(base.strip(), manufacturer, create=True)
+        store.set_base(part_id, owner)
     if category.strip():
         store.set_category(part_id, category.strip())
     if document:
         doc = store.document(document)
         if doc is None:
             raise LensError(f"document not found: {document}")
-        store.link(part_id, doc.id, role)
+        store.link(owner, doc.id, role)
     part = _entry(project, store, part_id)
     if category.strip():
         part["category"] = category.strip()
@@ -548,6 +570,23 @@ def suggest_parts(store: Store, filename: str) -> list:
         return []
     top = max(best.values())
     return [store.part(i) for i, n in sorted(best.items()) if n == top]
+
+
+def _store_base(store: Store, part: dict, part_id: int, report: dict) -> int | None:
+    """The base part that the project file names for a concrete part goes into
+    the store (the project file of a team is the source). Give its ID, or None."""
+    if not part.get("base"):
+        return None
+    base = store.base_of(part_id)
+    if base is not None:
+        return base["id"]
+    try:
+        base_id = store.find_part(part["base"], part["manufacturer"], create=True)
+        store.set_base(part_id, base_id)
+        return base_id
+    except LensError as e:
+        report["problems"].append(f"part {part['mpn']}: base part {part['base']}: {e}")
+        return None
 
 
 def sync(project: Project, store: Store, apply: bool = True, restore: bool = False) -> dict:
@@ -622,6 +661,8 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
                 f"{PROJECT_FILE} (" + ", ".join(r["manufacturer"] or "unknown" for r in rows) + ")")
         else:
             _fill(part, store.part(rows[0]["id"]))
+            if apply:
+                _store_base(store, part, rows[0]["id"], report)
             report["added"] += _refresh(project, store, part, rows[0]["id"], files)
 
     # 2. The copies of the referenced documents.
@@ -634,8 +675,10 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
                     doc = import_file(rel)
                     if doc is not None:
                         try:
-                            store.link(store.find_part(part["mpn"], part["manufacturer"], create=True),
-                                       doc.id, d["role"])
+                            part_id = store.find_part(part["mpn"], part["manufacturer"], create=True)
+                            # The document belongs to the base part, if the file names one.
+                            owner = _store_base(store, part, part_id, report) or part_id
+                            store.link(owner, doc.id, d["role"])
                         except LensError as e:
                             report["problems"].append(f"{rel}: not linked to a part: {e}")
                 # A copy that the user did not pin goes to the subfolder of the layout.
@@ -716,7 +759,9 @@ def format_parts(project: Project) -> list[str]:
     lines = [f"project {project.root} (folder {project.folder}/): {len(project.parts)} parts "
              f"(as in {PROJECT_FILE})"]
     for part in project.parts:
-        lines.append(f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'})")
+        lines.append(f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'})"
+                     + (f", base part {part['base']}" if part.get("base") else "")
+                     + (f", variants: {', '.join(part['variants'])}" if part.get("variants") else ""))
         for d in part["documents"]:
             lines.append(f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}")
     return lines

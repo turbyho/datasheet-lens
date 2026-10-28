@@ -19,6 +19,16 @@ def cmd_info(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _input(prompt: str) -> str:
+    """An answer of the user. End of input (Ctrl-D) is an empty answer: the
+    default."""
+    try:
+        return input(prompt).strip()
+    except EOFError:
+        print()
+        return ""
+
+
 def _ask_part(store: Store, doc, args: argparse.Namespace) -> tuple[str, str, list[str]]:
     """The part of a new document: --part, a part that the store links already,
     or the proposal from the PDF, which the user confirms. Also the variants that
@@ -36,7 +46,7 @@ def _ask_part(store: Store, doc, args: argparse.Namespace) -> tuple[str, str, li
         if not sys.stdin.isatty():
             print(f"  give the variant that you use with --part (for example --part {names[0]})")
             return "", "", []
-        answer = input("  Type the variant that you use (- = no part): ").strip()
+        answer = _input("  Type the variant that you use (- = no part): ")
         row = next((r for r in linked if r["mpn"].lower() == answer.lower()), None)
         if row is None:
             if answer and answer != "-":
@@ -59,7 +69,7 @@ def _ask_part(store: Store, doc, args: argparse.Namespace) -> tuple[str, str, li
         return "", "", []
     question = ("  Enter = yes, or type the variant that you use, or another MPN (- = no part): " if p.variants
                 else "  Enter = yes, or type another MPN (- = no part): ")
-    answer = input(question).strip()
+    answer = _input(question)
     if answer == "-":
         return "", "", []
     if not answer:
@@ -67,7 +77,7 @@ def _ask_part(store: Store, doc, args: argparse.Namespace) -> tuple[str, str, li
     chosen = next((v for v in p.variants if v.lower() == answer.lower()), "")
     if chosen:  # a variant of this datasheet: the same manufacturer
         return chosen, manufacturer, p.variants
-    return answer, input(f"  manufacturer [{manufacturer}]: ").strip() or manufacturer, []
+    return answer, _input(f"  manufacturer [{manufacturer}]: ") or manufacturer, []
 
 
 def cmd_add(args: argparse.Namespace) -> int:
@@ -120,8 +130,22 @@ def _add_to_project(store: Store, doc, mpn: str, manufacturer: str, category: st
     if not mpn:
         print(f"project {root}: not added (the document has no part)")
         return
+    # The project (the BOM) needs the concrete orderable MPN: the package, the
+    # voltage or the grade make it (TLV75533PDBVR of the base part TLV755P).
     project = load(root)
-    add_part(project, store, mpn, manufacturer, doc.sha256, args.role, category)
+    concrete = (args.orderable or "").strip()
+    users = [p["mpn"] for p in project.parts if p.get("base", "").lower() == mpn.lower()]
+    if not concrete and users:
+        # The project has concrete parts of this base part: they get the
+        # document through the base part. The base part is not a second BOM line.
+        print(f"project: {', '.join(users)} (base part {mpn}) get the document")
+    else:
+        if not concrete and not args.yes and sys.stdin.isatty():
+            concrete = _input(f"  the concrete orderable MPN that the design uses (package, voltage ...; "
+                              f"Enter = {mpn}): ")
+        part = add_part(project, store, concrete or mpn, manufacturer, doc.sha256, args.role, category, base=mpn)
+        if part.get("base"):
+            print(f"project part: {part['mpn']} (base part {part['base']})")
     report = sync(project, store)
     for text in report["problems"]:
         print(f"problem: {text}")
@@ -358,7 +382,7 @@ def cmd_project_add_part(args: argparse.Namespace) -> int:
     project = load(args.path)
     with Store() as store:
         part = add_part(project, store, args.mpn, args.manufacturer or "", args.document or "", args.role,
-                        args.category or "")
+                        args.category or "", args.base or "")
     print(f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'}): {len(part['documents'])} documents")
     for d in part["documents"]:
         print(f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}")
@@ -380,7 +404,11 @@ def build_parser() -> argparse.ArgumentParser:
                                      "to the project")
     add.add_argument("file", metavar="PATH|URL",
                      help="the path of a PDF file, or an http or https URL of a PDF to download")
-    add.add_argument("--part", help="the part number (MPN); without it, the tool proposes one from the PDF")
+    add.add_argument("--part", help="the base part number (MPN) of the datasheet; without it, the tool proposes "
+                                    "one from the PDF")
+    add.add_argument("--orderable", metavar="MPN",
+                     help="the concrete orderable MPN that the design uses (package, voltage ...), for the "
+                          "project; its base part is --part")
     add.add_argument("--yes", action="store_true", help="accept the proposed part without a question")
     add.add_argument("--project", help="the project folder (default: the current folder or a parent folder)")
     add.add_argument("--no-project", action="store_true", help="add to the store only, not to the project")
@@ -481,6 +509,8 @@ def build_parser() -> argparse.ArgumentParser:
     padd.add_argument("mpn", help="the part number (MPN) or an alias")
     padd.add_argument("--manufacturer", help="the manufacturer of the part")
     padd.add_argument("--category", help="the function of the part, for example ADC (for the layout)")
+    padd.add_argument("--base", metavar="MPN",
+                      help="mpn is a concrete orderable part of this base part (the part of the datasheet)")
     padd.add_argument("--document", help="link this document (ID or SHA-256 prefix) to the part first")
     padd.add_argument("--role", choices=ROLES, default="datasheet", help="the role of that document")
     padd.set_defaults(func=cmd_project_add_part)
@@ -493,6 +523,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
+    except KeyboardInterrupt:  # Ctrl-C, for example at a question
+        print("\ndatasheet-lens: stopped by the user", file=sys.stderr)
+        return 130
     except LensError as e:
         # A wrong input or a state that the user can repair: one line, no traceback.
         print(f"datasheet-lens: error: {e}", file=sys.stderr)
