@@ -5,6 +5,28 @@ import pypdfium2.raw as pdfium_c
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def close_stores(monkeypatch):
+    """Close each Store that a test opens (an open SQLite file blocks the removal
+    of the temporary directory on Windows)."""
+    from datasheet_lens.store import Store
+
+    opened = []
+    original = Store.__init__
+
+    def init(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        opened.append(self)
+
+    monkeypatch.setattr(Store, "__init__", init)
+    yield
+    for store in opened:
+        try:
+            store.close()
+        except Exception:
+            pass
+
+
 @pytest.fixture
 def store_home(tmp_path, monkeypatch):
     home = tmp_path / "store"

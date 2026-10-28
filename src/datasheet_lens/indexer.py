@@ -13,6 +13,7 @@ import re
 import pypdfium2 as pdfium
 
 from . import __version__
+from .errors import LensError
 from .pdftext import PageText, page_lines, raster_min_dpi
 from .store import Store, now
 
@@ -208,7 +209,7 @@ def search(store: Store, doc_ids: list[int], query: str, limit: int = 30) -> lis
     platform (no FTS5: its token match differs, and not every SQLite has it)."""
     needle = query.strip().lower()
     if not needle:
-        raise ValueError("the search text is empty")
+        raise LensError("the search text is empty")
     if not doc_ids:
         return []
     out = []

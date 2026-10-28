@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import store_home
+from .errors import LensError
+from .fileutil import temp_path
 
 SCHEMA_VERSION = 1
 
@@ -198,6 +200,12 @@ class Store:
     def close(self) -> None:
         self.db.close()
 
+    def __enter__(self) -> "Store":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
     # Files
 
     def blob_path(self, sha: str, suffix: str) -> Path:
@@ -212,7 +220,7 @@ class Store:
         suffix = path.suffix.lower()
         media_type = MEDIA_TYPES.get(suffix)
         if media_type is None:
-            raise ValueError(f"file type {suffix or '(none)'} is not supported: {path}")
+            raise LensError(f"file type {suffix or '(none)'} is not supported: {path}")
         sha = sha256_file(path)
         existing = self.document(sha)
         if existing:
@@ -226,16 +234,18 @@ class Store:
             try:
                 pdf = pdfium.PdfDocument(str(path))
             except pdfium.PdfiumError as e:
-                raise ValueError(f"cannot read the PDF (encrypted or damaged?): {path}: {e}") from e
+                raise LensError(f"cannot read the PDF (encrypted or damaged?): {path}: {e}") from e
             pages = len(pdf)
             if not title:
                 title = (pdf.get_metadata_dict().get("Title") or "").strip()
             pdf.close()
         target = self.blob_path(sha, suffix)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_suffix(target.suffix + ".part")
-        shutil.copyfile(path, tmp)
-        tmp.replace(target)
+        tmp = temp_path(target)
+        try:
+            shutil.copyfile(path, tmp)
+            tmp.replace(target)
+        finally:
+            tmp.unlink(missing_ok=True)
         self.db.execute(
             "INSERT INTO documents (sha256, filename, media_type, size, pages, title, source_url, added)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -254,7 +264,7 @@ class Store:
             rows = self.db.execute("SELECT * FROM documents WHERE sha256 LIKE ?",
                                    (ref.lower() + "%",)).fetchall() if len(ref) >= 8 else []
             if len(rows) > 1:
-                raise ValueError(f"document prefix {ref} is not unique")
+                raise LensError(f"document prefix {ref} is not unique")
             row = rows[0] if rows else None
         if row is None:
             return None

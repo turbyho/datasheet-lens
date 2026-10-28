@@ -52,7 +52,11 @@ def view_transform(page: pdfium.PdfPage):
     """Give a function that converts a box in PDF user space (left, bottom, right,
     top) to the page as it is shown (top-left origin, pt, after /Rotate and the
     CropBox origin), and the shown width and height."""
+    # pdfium shows the CropBox intersected with the MediaBox; use the same box,
+    # thus the index and the rendered images agree.
     cx0, cy0, cx1, cy1 = page.get_cropbox()
+    mx0, my0, mx1, my1 = page.get_mediabox()
+    cx0, cy0, cx1, cy1 = max(cx0, mx0), max(cy0, my0), min(cx1, mx1), min(cy1, my1)
     w, h = cx1 - cx0, cy1 - cy0
     rotation = page.get_rotation() % 360
 
