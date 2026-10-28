@@ -1,3 +1,5 @@
+import pytest
+
 from datasheet_lens.indexer import build_index, index_markdown, outline_under, search
 from datasheet_lens.store import Store
 
@@ -45,6 +47,33 @@ def test_search_finds_page_and_line(store_home, text_pdf):
     build_index(store, doc.id)
     hits = search(store, [doc.id], "real-time")
     assert hits == [(doc.id, 2, "The part is a real-time clock.")]
+
+
+def test_search_is_substring_and_rejects_empty(store_home, text_pdf):
+    store = Store()
+    doc = store.add_document(text_pdf("s.pdf", [[(50, 100, 10, "AVDD supply pin of OPA2134")]]))
+    build_index(store, doc.id)
+    assert search(store, [doc.id], "vdd")[0][1] == 1
+    assert search(store, [doc.id], "OPA213")[0][1] == 1
+    with pytest.raises(ValueError):
+        search(store, [doc.id], "  ")
+
+
+def test_heading_with_a_number_at_its_end(store_home, text_pdf):
+    store = Store()
+    doc = store.add_document(text_pdf("t.pdf", [[(50, 60, 12, "4. TIMERS"), (50, 90, 12, "4.2 Timer 2")]]))
+    build_index(store, doc.id)
+    assert [o["title"] for o in outline_under(store, doc.id, "4")] == ["4 TIMERS", "4.2 Timer 2"]
+
+
+def test_rotated_page_gives_horizontal_lines(store_home, text_pdf):
+    store = Store()
+    doc = store.add_document(text_pdf("r.pdf", [[(300, 700, 12, "Landscape Table Title")]], rotate=90))
+    build_index(store, doc.id)
+    row = store.db.execute("SELECT width_pt, height_pt, text FROM pages WHERE document_id = ?",
+                           (doc.id,)).fetchone()
+    assert (row["width_pt"], row["height_pt"]) == (842, 595)
+    assert row["text"] == "Landscape Table Title"
 
 
 def test_page_fingerprint_ignores_margins(store_home, text_pdf):

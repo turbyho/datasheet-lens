@@ -44,6 +44,31 @@ def test_part_with_document_set(store_home, make_pdf):
     assert [(r["filename"], r["role"]) for r in rows] == [("ds.pdf", "datasheet"), ("am.pdf", "manual")]
 
 
+def test_digit_only_prefix_is_a_hash_prefix(store_home, make_pdf):
+    store = Store()
+    doc = store.add_document(make_pdf())
+    # Give the document a hash that starts with 12 digits, as a real hash can.
+    store.db.execute("UPDATE documents SET sha256 = ? WHERE id = ?", ("204918337265" + "a" * 52, doc.id))
+    assert store.document("204918337265").id == doc.id
+    assert store.document(str(doc.id)).id == doc.id
+
+
+def test_part_is_found_without_case_and_manufacturer(store_home):
+    store = Store()
+    a = store.add_part("OPA2134", "TI")
+    assert store.add_part("opa2134") == a
+    assert store.add_part("OPA2134", "ti") == a
+    assert len(store.parts()) == 1
+
+
+def test_damaged_pdf_leaves_no_file(store_home, tmp_path):
+    bad = tmp_path / "bad.pdf"
+    bad.write_bytes(b"%PDF-1.7 not a real pdf")
+    with pytest.raises(ValueError):
+        Store().add_document(bad)
+    assert not any((store_home / "blobs").rglob("*.pdf"))
+
+
 def test_unsupported_file_type(store_home, tmp_path):
     f = tmp_path / "x.txt"
     f.write_text("x")

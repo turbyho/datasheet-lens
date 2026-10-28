@@ -28,8 +28,8 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 CREATE TABLE IF NOT EXISTS parts (
     id           INTEGER PRIMARY KEY,
-    mpn          TEXT NOT NULL,
-    manufacturer TEXT NOT NULL DEFAULT '',
+    mpn          TEXT NOT NULL COLLATE NOCASE,
+    manufacturer TEXT NOT NULL DEFAULT '' COLLATE NOCASE,
     family       TEXT NOT NULL DEFAULT '',
     created      TEXT NOT NULL,
     UNIQUE (mpn, manufacturer)
@@ -187,13 +187,6 @@ class Store:
         self.db.execute("PRAGMA journal_mode = WAL")
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.executescript(SCHEMA)
-        # Not every Python has SQLite with FTS5. Without it, search reads the pages.
-        try:
-            self.db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5("
-                            "text, document_id UNINDEXED, page UNINDEXED)")
-            self.has_fts = True
-        except sqlite3.OperationalError:
-            self.has_fts = False
         row = self.db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
         if row is None:
             self.db.execute("INSERT INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
@@ -224,20 +217,25 @@ class Store:
         existing = self.document(sha)
         if existing:
             return existing
+        pages = None
+        if media_type == "application/pdf":
+            # Open the source first: a PDF that pdfium cannot read (encrypted,
+            # damaged) must not leave a file in the store.
+            import pypdfium2 as pdfium
+
+            try:
+                pdf = pdfium.PdfDocument(str(path))
+            except pdfium.PdfiumError as e:
+                raise ValueError(f"cannot read the PDF (encrypted or damaged?): {path}: {e}") from e
+            pages = len(pdf)
+            if not title:
+                title = (pdf.get_metadata_dict().get("Title") or "").strip()
+            pdf.close()
         target = self.blob_path(sha, suffix)
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = target.with_suffix(target.suffix + ".part")
         shutil.copyfile(path, tmp)
         tmp.replace(target)
-        pages = None
-        if media_type == "application/pdf":
-            import pypdfium2 as pdfium
-
-            pdf = pdfium.PdfDocument(str(target))
-            pages = len(pdf)
-            if not title:
-                title = (pdf.get_metadata_dict().get("Title") or "").strip()
-            pdf.close()
         self.db.execute(
             "INSERT INTO documents (sha256, filename, media_type, size, pages, title, source_url, added)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -248,8 +246,9 @@ class Store:
 
     def document(self, ref: str | int) -> Document | None:
         """Find a document by ID, by SHA-256 or by a unique SHA-256 prefix (8 or more
-        characters)."""
-        if isinstance(ref, int) or (isinstance(ref, str) and ref.isdigit()):
+        characters). A string of digits with fewer than 8 characters is an ID; a
+        longer one is a prefix (a SHA-256 prefix can have only digits)."""
+        if isinstance(ref, int) or (isinstance(ref, str) and ref.isdigit() and len(ref) < 8):
             row = self.db.execute("SELECT * FROM documents WHERE id = ?", (int(ref),)).fetchone()
         else:
             rows = self.db.execute("SELECT * FROM documents WHERE sha256 LIKE ?",
@@ -272,12 +271,22 @@ class Store:
     # Parts
 
     def add_part(self, mpn: str, manufacturer: str = "", family: str = "") -> int:
-        self.db.execute(
-            "INSERT OR IGNORE INTO parts (mpn, manufacturer, family, created) VALUES (?, ?, ?, ?)",
-            (mpn, manufacturer, family, now()))
+        """Give the ID of the part, and make it if necessary. Case is ignored. A part
+        with no manufacturer, or a part that has no manufacturer yet, is the same
+        part when only one part has this MPN."""
+        rows = self.db.execute("SELECT id, manufacturer FROM parts WHERE mpn = ?", (mpn,)).fetchall()
+        for r in rows:
+            if r["manufacturer"].lower() == manufacturer.lower():
+                return r["id"]
+        if len(rows) == 1 and (not manufacturer or not rows[0]["manufacturer"]):
+            if manufacturer:
+                self.db.execute("UPDATE parts SET manufacturer = ? WHERE id = ?", (manufacturer, rows[0]["id"]))
+                self.db.commit()
+            return rows[0]["id"]
+        cur = self.db.execute("INSERT INTO parts (mpn, manufacturer, family, created) VALUES (?, ?, ?, ?)",
+                              (mpn, manufacturer, family, now()))
         self.db.commit()
-        return self.db.execute("SELECT id FROM parts WHERE mpn = ? AND manufacturer = ?",
-                               (mpn, manufacturer)).fetchone()["id"]
+        return cur.lastrowid
 
     def link(self, part_id: int, document_id: int, role: str = "datasheet") -> None:
         self.db.execute(

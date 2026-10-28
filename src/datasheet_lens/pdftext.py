@@ -8,6 +8,7 @@ in a layout text. Coordinates are in pt, origin top left.
 
 from __future__ import annotations
 
+import math
 import unicodedata
 from dataclasses import dataclass
 
@@ -47,6 +48,32 @@ class PageText:
         return "\n".join(line.text for line in self.lines)
 
 
+def view_transform(page: pdfium.PdfPage):
+    """Give a function that converts a box in PDF user space (left, bottom, right,
+    top) to the page as it is shown (top-left origin, pt, after /Rotate and the
+    CropBox origin), and the shown width and height."""
+    cx0, cy0, cx1, cy1 = page.get_cropbox()
+    w, h = cx1 - cx0, cy1 - cy0
+    rotation = page.get_rotation() % 360
+
+    def point(x: float, y: float) -> tuple[float, float]:
+        if rotation == 90:
+            return y - cy0, x - cx0
+        if rotation == 180:
+            return cx1 - x, y - cy0
+        if rotation == 270:
+            return cy1 - y, cx1 - x
+        return x - cx0, cy1 - y
+
+    def box(left: float, bottom: float, right: float, top: float) -> tuple[float, float, float, float]:
+        ax, ay = point(left, bottom)
+        bx, by = point(right, top)
+        return min(ax, bx), min(ay, by), max(ax, bx), max(ay, by)
+
+    shown_w, shown_h = (h, w) if rotation in (90, 270) else (w, h)
+    return box, shown_w, shown_h
+
+
 WORD_GAP = 0.25     # gap / char height: a space between two words
 COLUMN_GAP = 1.5    # gap / char height: a column gap (three spaces)
 
@@ -55,15 +82,27 @@ def page_lines(page: pdfium.PdfPage, number: int) -> PageText:
     """The lines of a page, from the char positions only (as a layout text): the
     chars are grouped by their vertical center, and sorted from left to right in a
     line. The order of the chars in the PDF content does not matter."""
-    width, height = page.get_size()
+    to_view, width, height = view_transform(page)
     textpage = page.get_textpage()
     count = textpage.count_chars()
     chars = []
     space_before = False
+    skip = False
     for i in range(count):
+        if skip:
+            skip = False
+            continue
         # One char for each index. get_text_range() expands ligatures ("ﬁ" to "fi"),
         # and then its string index is not the char index of get_charbox().
         code = pdfium_c.FPDFText_GetUnicode(textpage.raw, i)
+        if 0xD800 <= code < 0xDC00 and i + 1 < count:
+            # A UTF-16 surrogate pair (wchar_t has 16 bits on Windows).
+            low = pdfium_c.FPDFText_GetUnicode(textpage.raw, i + 1)
+            if 0xDC00 <= low < 0xE000:
+                code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                skip = True
+        if 0xD800 <= code < 0xE000:
+            code = 0xFFFD  # a lone surrogate cannot be encoded
         ch = chr(code) if code else ""
         if 0xFB00 <= code <= 0xFB06:
             # Only the Latin ligatures ("ﬁ" to "fi"). A full NFKC would also change
@@ -77,9 +116,10 @@ def page_lines(page: pdfium.PdfPage, number: int) -> PageText:
         left, bottom, right, top = textpage.get_charbox(i, loose=True)
         if right <= left and top <= bottom:
             continue  # a char that pdfium made (no box)
+        x0, y0, x1, y1 = to_view(left, bottom, right, top)
         # pdfium puts a space where it finds a word gap; keep it as a flag, because
         # the loose boxes of some fonts leave no measurable gap between words.
-        chars.append((left, height - top, right, height - bottom, ch, space_before))
+        chars.append((x0, y0, x1, y1, ch, space_before))
         space_before = False
     textpage.close()
 
@@ -119,8 +159,11 @@ def raster_min_dpi(page: pdfium.PdfPage, min_area_pt2: float = 6000.0) -> float 
     lowest = None
     for obj in page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_IMAGE], max_depth=5):
         w_px, h_px = obj.get_px_size()
-        left, bottom, right, top = obj.get_bounds()
-        w_pt, h_pt = right - left, top - bottom
+        # The image matrix maps the unit square to the page: the lengths of its
+        # two column vectors are the placed width and height, also for a rotated
+        # image (the axis-aligned bounds of a rotated image swap them).
+        m = obj.get_matrix()
+        w_pt, h_pt = math.hypot(m.a, m.b), math.hypot(m.c, m.d)
         if w_pt <= 0 or h_pt <= 0 or w_pt * h_pt < min_area_pt2:
             continue
         dpi = min(w_px / (w_pt / 72), h_px / (h_pt / 72))

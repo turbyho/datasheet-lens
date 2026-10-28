@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from datasheet_lens import __version__
 from datasheet_lens.cli import main
 from datasheet_lens.config import store_home
@@ -13,5 +15,6 @@ def test_info_shows_version_and_store(capsys, tmp_path, monkeypatch):
 
 def test_store_home_default(monkeypatch, tmp_path):
     monkeypatch.delenv("DATASHEET_LENS_HOME", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
+    # Path.home() reads HOME on Linux and macOS, USERPROFILE on Windows.
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     assert store_home() == tmp_path / ".datasheet-lens"

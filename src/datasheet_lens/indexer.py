@@ -23,8 +23,9 @@ from .store import Store, now
 # A title can hold "…" ("(address 00h…bits description)"), but no sentence end.
 HEADING_RE = re.compile(r"^((?:[0-9]{1,2}\.){1,3}[0-9]{0,2}\.?)\s*"
                         r"([A-Z][A-Za-z]+(?:_[A-Za-z0-9]+)*(?![A-Za-z0-9:])(?:[^.]|\.(?!\s|$)){0,100}?)\s*$")
-# A table of contents line: a dot leader, or a page number at its end.
-TOC_RE = re.compile(r"\.{4,}|\s[0-9]{1,4}\s*$")
+# A table of contents line: a dot leader, or a page number after a column gap. A
+# heading can end with a number ("4.2 Timer 2"): one space is not a column gap.
+TOC_RE = re.compile(r"\.{4,}|\s{3,}[0-9]{1,4}\s*$")
 # A caption at the start of a line or after a column gap. The text starts with an
 # upper-case letter or a digit: "Figure 6-1 shows ..." in body text is not a caption.
 # The text layer can have no space after the label ("Figure 4-1.OPA134: ...").
@@ -63,16 +64,11 @@ def build_index(store: Store, doc_id: int) -> dict:
     with db:
         for table in ("pages", "outline", "captions"):
             db.execute(f"DELETE FROM {table} WHERE document_id = ?", (doc.id,))
-        if store.has_fts:
-            db.execute("DELETE FROM pages_fts WHERE document_id = ?", (doc.id,))
         for pt, q in zip(pages, quality):
             text = pt.text
             db.execute("INSERT INTO pages VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                        (doc.id, pt.page, pt.width, pt.height, len(text), text, json.dumps(q),
                         page_fingerprint(pt)))
-            if store.has_fts:
-                db.execute("INSERT INTO pages_fts (text, document_id, page) VALUES (?, ?, ?)",
-                           (text, doc.id, pt.page))
         db.executemany("INSERT INTO outline VALUES (?, ?, ?, ?, ?, ?)",
                        [(doc.id, n, o["level"], o["title"], o["page"], o["source"])
                         for n, o in enumerate(outline)])
@@ -207,24 +203,20 @@ def outline_under(store: Store, doc_id: int, section: str) -> list:
 
 
 def search(store: Store, doc_ids: list[int], query: str, limit: int = 30) -> list[tuple]:
-    """Give (document_id, page, line) for the lines that hold the query text."""
-    needle = query.lower()
+    """Give (document_id, page, line) for the lines that hold the query text. The
+    match is a case-insensitive substring ("VDD" finds "AVDD"), the same on each
+    platform (no FTS5: its token match differs, and not every SQLite has it)."""
+    needle = query.strip().lower()
+    if not needle:
+        raise ValueError("the search text is empty")
+    if not doc_ids:
+        return []
     out = []
-    if store.has_fts:
-        # FTS5 finds the pages; the lines come from the page text.
-        terms = " ".join('"' + t.replace('"', '""') + '"' for t in query.split())
-        rows = store.db.execute(
-            "SELECT document_id, page FROM pages_fts WHERE pages_fts MATCH ? AND document_id IN"
-            f" ({','.join('?' * len(doc_ids))}) ORDER BY document_id, page",
-            (terms, *doc_ids)).fetchall()
-        pages = [(r["document_id"], r["page"]) for r in rows]
-    else:
-        pages = [(r["document_id"], r["page"]) for r in store.db.execute(
-            f"SELECT document_id, page FROM pages WHERE document_id IN ({','.join('?' * len(doc_ids))})"
-            " ORDER BY document_id, page", doc_ids)]
-    for doc_id, page in pages:
-        text = store.db.execute("SELECT text FROM pages WHERE document_id = ? AND page = ?",
-                                (doc_id, page)).fetchone()["text"]
+    rows = store.db.execute(
+        f"SELECT document_id, page, text FROM pages WHERE document_id IN ({','.join('?' * len(doc_ids))})"
+        " AND instr(lower(text), ?) > 0 ORDER BY document_id, page", (*doc_ids, needle)).fetchall()
+    for row in rows:
+        doc_id, page, text = row["document_id"], row["page"], row["text"]
         for line in text.splitlines():
             if needle in line.lower():
                 out.append((doc_id, page, re.sub(r"\s{2,}", "  ", line.strip())[:160]))
