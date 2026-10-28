@@ -21,6 +21,7 @@ def cmd_info(_args: argparse.Namespace) -> int:
 
 def cmd_add(args: argparse.Namespace) -> int:
     from .fetch import add_from_url, is_url
+    from .indexer import build_index
 
     with Store() as store:
         if is_url(args.file):
@@ -30,10 +31,14 @@ def cmd_add(args: argparse.Namespace) -> int:
         else:
             doc = store.add_document(Path(args.file), title=args.title or "", source_url=args.url or "")
         print(f"document {doc.id}: {doc.sha256[:12]} {doc.filename} ({doc.pages} pages)")
+        # The link first: an index error must not lose it.
         if args.part:
             part_id = store.add_part(args.part, args.manufacturer or "")
             store.link(part_id, doc.id, args.role)
             print(f"part {args.part}: {args.role}")
+        idx = build_index(store, doc.id)
+        if not idx["skipped"]:
+            print(f"index: {idx['outline']} outline entries, {idx['captions']} captions")
     return 0
 
 

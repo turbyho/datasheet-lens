@@ -88,3 +88,27 @@ def test_page_fingerprint_ignores_margins(store_home, text_pdf):
     shas = [store.db.execute("SELECT text_sha FROM pages WHERE document_id = ?", (i,)).fetchone()[0]
             for i in ids]
     assert shas[0] and shas[0] == shas[1]
+
+
+def test_raster_min_dpi_ignores_strips():
+    """Gradient strips (64 x 1 px over 325 x 20 pt, 256 x 4 px over 400 x 24 pt)
+    are not low resolution images. A figure of 100 x 100 px over 144 x 144 pt is:
+    50 dpi."""
+    import pypdfium2 as pdfium
+
+    from datasheet_lens.pdftext import raster_min_dpi
+
+    pdf = pdfium.PdfDocument.new()
+    page = pdf.new_page(612, 792)
+    for px, (x, y, w, h), expected in (((64, 1), (55, 36, 325, 20), None),
+                                       ((256, 4), (55, 700, 400, 24), None),
+                                       ((100, 100), (100, 300, 144, 144), pytest.approx(50))):
+        image = pdfium.PdfImage.new(pdf)
+        bitmap = pdfium.PdfBitmap.new_native(*px, pdfium.raw.FPDFBitmap_BGR)
+        image.set_bitmap(bitmap)
+        bitmap.close()
+        image.set_matrix(pdfium.PdfMatrix().scale(w, h).translate(x, y))
+        page.insert_obj(image)  # the page owns the image object now
+        assert raster_min_dpi(page) == expected
+    page.close()
+    pdf.close()

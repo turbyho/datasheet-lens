@@ -6,6 +6,7 @@ import pytest
 from datasheet_lens import project as prj
 from datasheet_lens.cli import main
 from datasheet_lens.errors import LensError
+from datasheet_lens.indexer import index_markdown
 from datasheet_lens.store import Store, sha256_file
 
 OPA = [[(50, 60, 12, "1 Features"), (50, 90, 10, "Supply voltage 36 V")]]
@@ -36,8 +37,14 @@ def test_copies_and_new_files(setup):
     with Store() as store:
         part = prj.add_part(project, store, "opa2134")
         assert part["manufacturer"] == "TI" and part["documents"][0]["file"] == "opa2134.pdf"
+        # The document came into the store with no index: the index says so,
+        # and sync builds the index.
+        doc_id = store.document(sha256_file(opa)).id
+        with pytest.raises(LensError, match="has no index"):
+            index_markdown(store, doc_id)
         report = prj.sync(project, store)
         assert report["copied"] == ["opa2134.pdf"]
+        assert "## Page map\n\n- p.1:" in index_markdown(store, doc_id)
         copy = project.folder_path / "opa2134.pdf"
         assert sha256_file(copy) == sha256_file(opa)
 

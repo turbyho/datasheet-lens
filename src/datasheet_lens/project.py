@@ -440,10 +440,12 @@ def suggest_parts(store: Store, filename: str) -> list:
 def sync(project: Project, store: Store, apply: bool = True, restore: bool = False) -> dict:
     """Compare the project with the store and the folder. If apply is true: add the
     documents that the store links to the parts, copy the missing copies, import
-    the new files of the folder into the store (with their index), and save the
-    project file. If restore is true, a changed copy is copied again from the store.
-    Give the report: lists of file names (and of document IDs in "documents").
-    If apply is false, the project does not change."""
+    the new files of the folder into the store, build the index of each document
+    of the project that has none (an index of an older version stays: the
+    command datasheet-lens index builds it again), and save the project file. If
+    restore is true, a changed copy is copied again from the store. Give the
+    report: lists of file names (and of document IDs in "documents"). If apply is
+    false, the project does not change."""
     from .indexer import build_index
 
     if not apply:
@@ -458,7 +460,6 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
         the report, not an error of the sync."""
         try:
             doc = store.add_document(project.file_path(rel))
-            build_index(store, doc.id)
         except (LensError, OSError, pdfium.PdfiumError) as e:
             report["problems"].append(f"{rel}: not imported: {e}")
             return None
@@ -541,9 +542,19 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
         if doc is not None:
             report["documents"].append(doc.id)
         known.add(sha)
-    if apply:
-        save(project)
     report["documents"] = sorted(set(report["documents"]))
+    if apply:
+        # A new document, or a document that came into the store with no index
+        # (for example through the command add of an older version).
+        for doc_id in report["documents"]:
+            if store.build(doc_id, "index") is not None:
+                continue
+            try:
+                build_index(store, doc_id)
+            except (LensError, OSError, pdfium.PdfiumError) as e:
+                doc = store.document(doc_id)
+                report["problems"].append(f"{doc.filename} ({doc.sha256[:12]}): no index: {e}")
+        save(project)
     return report
 
 

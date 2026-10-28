@@ -168,3 +168,30 @@ def test_errors_are_tool_errors(store_home, text_pdf, tmp_path, monkeypatch):
     assert "No such file" in tool_error("add_document", path=str(tmp_path / "missing.pdf"))
     monkeypatch.setattr("datasheet_lens.server.MAX_PDF_PAGES", 1)
     assert "1 pages or fewer" in tool_error("get_pdf_pages", document=doc, pages="1-2")
+
+
+def test_missing_index(store_home, text_pdf, monkeypatch):
+    """A document with no index: the library tools say so (not "no match"), and
+    the MCP tools build the index, because the model cannot run the CLI."""
+    from datasheet_lens.errors import LensError
+    from datasheet_lens.indexer import outline_under, search
+    from datasheet_lens.store import Store
+
+    with Store() as store:
+        doc = store.add_document(text_pdf("opa.pdf", [PAGE]))
+        for check in (lambda: search(store, [doc.id], "36 V"), lambda: outline_under(store, doc.id, "5")):
+            with pytest.raises(LensError, match="has no index"):
+                check()
+    assert "p.1: Supply voltage 36 V" in text_of(call("search_text", text="36 V", document=doc.sha256[:12]))
+
+    # The CLI command add keeps the link to the part when the index fails.
+    from datasheet_lens import indexer
+    from datasheet_lens.cli import main
+
+    def fail(*args, **kwargs):
+        raise LensError("index failed")
+
+    monkeypatch.setattr(indexer, "build_index", fail)
+    assert main(["add", str(text_pdf("rtc.pdf", [[(50, 60, 12, "1 RTC")]])), "--part", "RV-3149-C3"]) == 2
+    with Store() as store:
+        assert [r["filename"] for r in store.part_documents("RV-3149-C3")] == ["rtc.pdf"]

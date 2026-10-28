@@ -173,10 +173,16 @@ def page_lines(page: pdfium.PdfPage, number: int) -> PageText:
 
 def raster_min_dpi(page: pdfium.PdfPage, min_area_pt2: float = 6000.0) -> float | None:
     """Give the lowest effective dpi of the raster images of a page that are larger
-    than min_area_pt2 (logos and icons are smaller), or None."""
+    than min_area_pt2 (logos and icons are smaller), or None. A strip (a gradient,
+    a fill or a line: at most 8 pixels on its short side, and its long side 16
+    times longer or more) does not count: it has no detail that a low resolution
+    can lose."""
     lowest = None
     for obj in page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_IMAGE], max_depth=5):
         w_px, h_px = obj.get_px_size()
+        short, long = sorted((w_px, h_px))
+        if short <= 8 and long >= 16 * short:
+            continue
         # The image matrix maps the unit square to the page: the lengths of its
         # two column vectors are the placed width and height, also for a rotated
         # image (the axis-aligned bounds of a rotated image swap them).

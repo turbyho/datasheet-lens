@@ -92,6 +92,18 @@ def _doc(store: Store, ref: str):
     return doc
 
 
+def _indexed(store: Store, doc_ids: list[int]) -> list[int]:
+    """Build the index of a document that has none (for example a document that
+    an older version added with no index): the model cannot run the CLI."""
+    from .indexer import build_index
+
+    for doc_id in doc_ids:
+        if store.build(doc_id, "index") is None:
+            with _add_lock:
+                build_index(store, doc_id)
+    return doc_ids
+
+
 def _build_elements(doc_id: int) -> dict:
     """Start the element map build of a document in a background thread, if no
     build of the document runs. Give the build. A failed build starts again only
@@ -224,7 +236,7 @@ def get_index(document: str) -> str:
     from .indexer import index_markdown
 
     with Store() as store:
-        return index_markdown(store, _doc(store, document).id)
+        return index_markdown(store, _indexed(store, [_doc(store, document).id])[0])
 
 
 @tool
@@ -234,7 +246,7 @@ def get_outline(document: str, section: str) -> str:
     from .indexer import outline_under
 
     with Store() as store:
-        rows = outline_under(store, _doc(store, document).id, section)
+        rows = outline_under(store, _indexed(store, [_doc(store, document).id])[0], section)
         if not rows:
             return f"No outline entries under {section}."
         return "\n".join(f"{'  ' * r['level']}- {r['title']} (p.{r['page']})" for r in rows)
@@ -255,7 +267,7 @@ def search_text(text: str, document: str = "", part: str = "", max_lines: int = 
             shas = {r["id"]: r["sha256"] for r in store.part_documents(part)}
         else:
             raise LensError("give a document or a part")
-        hits = search(store, list(shas), text, max(1, min(max_lines, 200)))
+        hits = search(store, _indexed(store, list(shas)), text, max(1, min(max_lines, 200)))
         if not hits:
             return f"No line holds {text!r}."
         return "\n".join(f"{shas[d][:12]} p.{p}: {line}" for d, p, line in hits)

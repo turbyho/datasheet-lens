@@ -158,8 +158,20 @@ def _captions(pages: list[PageText]) -> list[dict]:
     return out
 
 
+def require_index(store: Store, doc_ids) -> None:
+    """Raise a LensError if a document has no index. Without this check, an
+    empty result of an outline or a search can look like "not in the document"."""
+    for doc_id in [doc_ids] if isinstance(doc_ids, int) else doc_ids:
+        if store.build(doc_id, "index") is None:
+            doc = store.document(doc_id)
+            name = f"{doc.sha256[:12]} {doc.filename}" if doc else str(doc_id)
+            raise LensError(f"the document {name} has no index (the command datasheet-lens index "
+                            "builds it)")
+
+
 def index_markdown(store: Store, doc_id: int) -> str:
     """The index of one document as Markdown, for the model."""
+    require_index(store, doc_id)
     doc = store.document(doc_id)
     db = store.db
     pages = db.execute("SELECT page, width_pt, height_pt, text, quality FROM pages"
@@ -212,6 +224,7 @@ def index_markdown(store: Store, doc_id: int) -> str:
 
 
 def outline_under(store: Store, doc_id: int, section: str) -> list:
+    require_index(store, doc_id)
     return store.db.execute(
         "SELECT level, title, page FROM outline WHERE document_id = ? AND (title LIKE ? OR title LIKE ?)"
         " ORDER BY seq", (doc_id, section + ".%", section + " %")).fetchall()
@@ -226,6 +239,7 @@ def search(store: Store, doc_ids: list[int], query: str, limit: int = 30) -> lis
         raise LensError("the search text is empty")
     if not doc_ids:
         return []
+    require_index(store, doc_ids)
     out = []
     rows = store.db.execute(
         f"SELECT document_id, page, text FROM pages WHERE document_id IN ({','.join('?' * len(doc_ids))})"
