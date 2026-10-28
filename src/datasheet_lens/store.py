@@ -48,7 +48,12 @@ CREATE TABLE IF NOT EXISTS documents (
     pages        INTEGER,
     title        TEXT NOT NULL DEFAULT '',
     manufacturer TEXT NOT NULL DEFAULT '',
-    revision     TEXT NOT NULL DEFAULT '',
+    -- Identity of the file: sha256. Identity of the document across revisions:
+    -- doc_number (for example "SBOS058") with revision ("B") and revision_date.
+    doc_number    TEXT NOT NULL DEFAULT '',
+    revision      TEXT NOT NULL DEFAULT '',
+    revision_date TEXT NOT NULL DEFAULT '',
+    supersedes_id INTEGER REFERENCES documents(id) ON DELETE SET NULL,
     source_url   TEXT NOT NULL DEFAULT '',
     added        TEXT NOT NULL
 );
@@ -76,11 +81,13 @@ CREATE TABLE IF NOT EXISTS pages (
     chars       INTEGER NOT NULL,
     text        TEXT NOT NULL,
     quality     TEXT NOT NULL DEFAULT '{}',
+    -- SHA-256 of the normalized page text (no white space, no header and footer
+    -- lines). Equal values find the same page in a changed copy of a document (a
+    -- distributor adds a cover page or a stamp).
+    text_sha    TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (document_id, page)
 );
-CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5(
-    text, document_id UNINDEXED, page UNINDEXED
-);
+CREATE INDEX IF NOT EXISTS pages_text_sha ON pages (text_sha);
 CREATE TABLE IF NOT EXISTS outline (
     document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     seq         INTEGER NOT NULL,
@@ -180,6 +187,13 @@ class Store:
         self.db.execute("PRAGMA journal_mode = WAL")
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.executescript(SCHEMA)
+        # Not every Python has SQLite with FTS5. Without it, search reads the pages.
+        try:
+            self.db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS pages_fts USING fts5("
+                            "text, document_id UNINDEXED, page UNINDEXED)")
+            self.has_fts = True
+        except sqlite3.OperationalError:
+            self.has_fts = False
         row = self.db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
         if row is None:
             self.db.execute("INSERT INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
