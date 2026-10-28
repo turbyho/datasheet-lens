@@ -19,11 +19,16 @@ from .store import Store, now
 
 # A numbered heading: "3.2.1. CONTROL_1 (address 00h)" or "5.1 Absolute Maximum Ratings".
 # The space after the number can be missing in the text layer ("3.2.1.CONTROL_1").
-# The first word of the title: two or more letters, digits only after "_"
-# ("CONTROL_1"). "6.91 Co: 7440-48-4", "1.00 Au80 / Sn20" and "5.0 V" are not headings.
+# Number: a chapter of 1 or 2 digits, then up to 4 levels of up to 3 digits
+# ("8.27.5.143 DOEPCTL3"); no level starts with 0. Values such as "105.0 Tj Max",
+# "125.0 MHz", "192.168.1.1" and "1.00 Au80" are not headings.
+# The first word of the title: two or more letters; digits after 3 or more capital
+# letters ("DOEPCTL3", "UART0") or after "_" ("CONTROL_1"). "6.91 Co: 7440-48-4"
+# and "5.0 V" are not headings.
 # A title can hold "…" ("(address 00h…bits description)"), but no sentence end.
-HEADING_RE = re.compile(r"^((?:[0-9]{1,2}\.){1,3}[0-9]{0,2}\.?)\s*"
-                        r"([A-Z][A-Za-z]+(?:_[A-Za-z0-9]+)*(?![A-Za-z0-9:])(?:[^.]|\.(?!\s|$)){0,100}?)\s*$")
+HEADING_RE = re.compile(r"^([1-9][0-9]?\.(?:[1-9][0-9]{0,2}\.){0,4}(?:[1-9][0-9]{0,2})?)\s*"
+                        r"((?:[A-Z]{3,}[0-9]*|[A-Z][A-Za-z]+)(?:_[A-Za-z0-9]+)*(?![A-Za-z0-9:])"
+                        r"(?:[^.]|\.(?!\s|$)){0,100}?)\s*$")
 # A table of contents line: a dot leader, or a page number after a column gap. A
 # heading can end with a number ("4.2 Timer 2"): one space is not a column gap.
 TOC_RE = re.compile(r"\.{4,}|\s{3,}[0-9]{1,4}\s*$")
@@ -40,8 +45,17 @@ LOW_DPI = 300           # raster images below this dpi are marked
 SHORT_DOCUMENT = 10     # a page map is in index.md for documents up to this length
 
 
-def build_index(store: Store, doc_id: int) -> dict:
+def build_index(store: Store, doc_id: int, force: bool = False) -> dict:
+    """Build the index of a document. An index of the same tool version is kept,
+    unless force is true."""
     doc = store.document(doc_id)
+    if doc is None:
+        raise LensError(f"document not found: {doc_id}")
+    if not force and store.build_current(doc.id, "index", __version__, "pdfium"):
+        count = lambda t: store.db.execute(f"SELECT count(*) FROM {t} WHERE document_id = ?",  # noqa: E731
+                                           (doc.id,)).fetchone()[0]
+        return {"pages": count("pages"), "outline": count("outline"), "captions": count("captions"),
+                "skipped": True}
     pdf = pdfium.PdfDocument(str(doc.path))
     pages: list[PageText] = []
     quality = []
@@ -78,7 +92,7 @@ def build_index(store: Store, doc_id: int) -> dict:
                          c["order"], c["count"]) for n, c in enumerate(captions)])
         db.execute("INSERT OR REPLACE INTO builds VALUES (?, 'index', ?, 'pdfium', ?)",
                    (doc.id, __version__, now()))
-    return {"pages": len(pages), "outline": len(outline), "captions": len(captions)}
+    return {"pages": len(pages), "outline": len(outline), "captions": len(captions), "skipped": False}
 
 
 MARGIN_PT = 50  # header and footer band: distributor stamps, page numbers, dates

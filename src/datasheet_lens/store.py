@@ -206,6 +206,13 @@ class Store:
     def __exit__(self, *exc) -> None:
         self.close()
 
+    def build_current(self, doc_id: int, kind: str, tool_version: str, backend: str) -> bool:
+        """True if the derived data of this kind was built with this tool version
+        and backend."""
+        row = self.db.execute("SELECT tool_version, backend FROM builds WHERE document_id = ? AND kind = ?",
+                              (doc_id, kind)).fetchone()
+        return row is not None and row["tool_version"] == tool_version and row["backend"] == backend
+
     # Files
 
     def blob_path(self, sha: str, suffix: str) -> Path:

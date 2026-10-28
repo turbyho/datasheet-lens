@@ -24,7 +24,8 @@ def test_index_without_bookmarks(store_home, text_pdf):
     store = Store()
     doc = store.add_document(text_pdf("manual.pdf", PAGES))
     result = build_index(store, doc.id)
-    assert result == {"pages": 2, "outline": 4, "captions": 2}
+    assert result == {"pages": 2, "outline": 4, "captions": 2, "skipped": False}
+    assert build_index(store, doc.id)["skipped"] is True
 
     md = index_markdown(store, doc.id)
     # Headings from the text layer, not from the table of contents (page 1).

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
@@ -25,6 +25,16 @@ class Line:
     y1: float
     # (offset in text, x0 in pt) of each run, to find the x of a text position
     runs: list[tuple[int, float]]
+    # The parts of the line between column gaps: (text, x0, x1). A line with no
+    # column gap has one part.
+    parts: list[tuple[str, float, float]] = field(default_factory=list)
+
+    def columns(self) -> list["Line"]:
+        """The parts of the line as separate lines (one for each column)."""
+        if len(self.parts) <= 1:
+            return [self]
+        return [Line(text, x0, self.y0, x1, self.y1, [(0, x0)], [(text, x0, x1)])
+                for text, x0, x1 in self.parts]
 
     def x_at(self, offset: int) -> float:
         """The x position of the run that holds the character at offset."""
@@ -140,20 +150,24 @@ def page_lines(page: pdfium.PdfPage, number: int) -> PageText:
     for _center, _size, members in groups:
         members.sort(key=lambda c: c[0])
         out, runs, prev = "", [], None
+        parts, part_start, part_x0 = [], 0, members[0][0]
         for c in members:
             size = max(1.0, c[3] - c[1])
             if prev is not None:
                 gap = c[0] - prev[2]
                 if gap > COLUMN_GAP * size:
+                    parts.append((out[part_start:], part_x0, prev[2]))
                     out += "   "
+                    part_start, part_x0 = len(out), c[0]
                 elif gap > WORD_GAP * size or c[5]:
                     out += " "
             if prev is None or out.endswith(" "):
                 runs.append((len(out), c[0]))
             out += c[4]
             prev = c
+        parts.append((out[part_start:], part_x0, prev[2]))
         lines.append(Line(out, min(c[0] for c in members), min(c[1] for c in members),
-                          max(c[2] for c in members), max(c[3] for c in members), runs))
+                          max(c[2] for c in members), max(c[3] for c in members), runs, parts))
     return PageText(number, width, height, lines)
 
 

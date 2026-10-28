@@ -39,16 +39,22 @@ def _doc(store: Store, ref: str):
     return doc
 
 
+def _docs(store: Store, refs: list[str]) -> list:
+    """The documents of the references, or all documents if there is none."""
+    if refs:
+        return [_doc(store, r) for r in refs]
+    return [store.document(r["id"]) for r in store.documents()]
+
+
 def cmd_index(args: argparse.Namespace) -> int:
     from .indexer import build_index
 
     with Store() as store:
-        docs = [_doc(store, r) for r in args.documents] if args.documents else \
-            [store.document(r["id"]) for r in store.documents()]
-        for doc in docs:
-            result = build_index(store, doc.id)
+        for doc in _docs(store, args.documents):
+            result = build_index(store, doc.id, force=args.force)
+            note = " (current, not built again; --force builds it)" if result["skipped"] else ""
             print(f"{doc.sha256[:12]} {doc.filename}: {result['pages']} pages, "
-                  f"{result['outline']} outline entries, {result['captions']} captions")
+                  f"{result['outline']} outline entries, {result['captions']} captions{note}")
     return 0
 
 
@@ -92,12 +98,79 @@ def parse_bbox(text: str) -> tuple[float, float, float, float]:
     return bbox
 
 
+def cmd_init(args: argparse.Namespace) -> int:
+    from .setup import init
+
+    return init(args.layout)
+
+
+def cmd_elements(args: argparse.Namespace) -> int:
+    from .elements import build_elements
+    from .setup import element_backend
+
+    backend = element_backend() if args.backend == "auto" else args.backend
+    with Store() as store:
+        for doc in _docs(store, args.documents):
+            result = build_elements(store, doc.id, backend, force=args.force)
+            note = " (current, not built again; --force builds it)" if result["skipped"] else ""
+            print(f"{doc.sha256[:12]} {doc.filename}: {result['elements']} elements ({result['backend']}){note}")
+    return 0
+
+
+def cmd_page_map(args: argparse.Namespace) -> int:
+    from .elements import page_map
+
+    with Store() as store:
+        for line in page_map(store, _doc(store, args.document).id, args.page, args.all):
+            print(line)
+    return 0
+
+
+def cmd_element_text(args: argparse.Namespace) -> int:
+    from .elements import element
+
+    with Store() as store:
+        doc = _doc(store, args.document)
+        for eid in args.ids:
+            e = element(store, doc.id, eid)
+            print(f"{eid} ({e['type']}, p.{e['page']}, [{e['x0']:.0f}, {e['y0']:.0f}, "
+                  f"{e['x1']:.0f}, {e['y1']:.0f}]): {e['text']}")
+    return 0
+
+
+def cmd_items(args: argparse.Namespace) -> int:
+    from .elements import list_items
+
+    with Store() as store:
+        for e in list_items(store, _doc(store, args.document).id, args.kind):
+            print(f"{e['element_id']:9} p.{e['page']:<4} [{e['x0']:.0f}, {e['y0']:.0f}, {e['x1']:.0f}, "
+                  f"{e['y1']:.0f}]  {e['text'][:90] or '(no caption)'}")
+    return 0
+
+
+ELEMENT_PAD = 6.0  # pt around an element region
+
+
 def cmd_page_image(args: argparse.Namespace) -> int:
     from .pages import page_image
 
+    if args.element and args.bbox:
+        raise LensError("give --element or --bbox, not the two")
     bbox = parse_bbox(args.bbox) if args.bbox else None
     with Store() as store:
-        img = page_image(store, _doc(store, args.document).id, args.page, bbox, args.max_px)
+        doc = _doc(store, args.document)
+        page = args.page
+        if args.element:
+            from .elements import element
+
+            e = element(store, doc.id, args.element)
+            if page is not None and page != e["page"]:
+                raise LensError(f"element {args.element} is on page {e['page']}, not on page {page}")
+            page = e["page"]
+            bbox = (e["x0"] - ELEMENT_PAD, e["y0"] - ELEMENT_PAD, e["x1"] + ELEMENT_PAD, e["y1"] + ELEMENT_PAD)
+        if page is None:
+            raise LensError("give a page number or --element")
+        img = page_image(store, doc.id, page, bbox, args.max_px)
         region = "full page" if img.bbox is None else "region " + ",".join(f"{v:.0f}" for v in img.bbox)
         print(f"{img.path}  page {img.page}, {region}, {img.dpi:.0f} dpi, {img.width_px} x {img.height_px} px")
     return 0
@@ -156,6 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     index = sub.add_parser("index", help="build the index of documents (default: all)")
     index.add_argument("documents", nargs="*", help="document ID or SHA-256 prefix")
+    index.add_argument("--force", action="store_true", help="build again also a current index")
     index.set_defaults(func=cmd_index)
 
     show = sub.add_parser("show", help="show the index of a document")
@@ -175,9 +249,38 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--max", type=int, default=30, help="maximum number of lines")
     search.set_defaults(func=cmd_search)
 
-    image = sub.add_parser("page-image", help="render a page, or a region of it, as PNG")
+    init = sub.add_parser("init", help="make the store; ask about the optional docling component")
+    init.add_argument("--layout", choices=("ask", "yes", "no"), default="ask",
+                      help="install docling for the element map (default: ask)")
+    init.set_defaults(func=cmd_init)
+
+    elements = sub.add_parser("elements", help="build the element map of documents (default: all)")
+    elements.add_argument("documents", nargs="*", help="document ID or SHA-256 prefix")
+    elements.add_argument("--backend", choices=("auto", "docling", "text"), default="auto",
+                          help="auto: the configured backend (see init)")
+    elements.add_argument("--force", action="store_true", help="build again also a current map")
+    elements.set_defaults(func=cmd_elements)
+
+    pmap = sub.add_parser("page-map", help="the structure of a page: headings, tables, figures, formulas")
+    pmap.add_argument("document", help="document ID or SHA-256 prefix")
+    pmap.add_argument("page", type=int, help="page number")
+    pmap.add_argument("--all", action="store_true", help="also the text elements")
+    pmap.set_defaults(func=cmd_page_map)
+
+    etext = sub.add_parser("element-text", help="the full text of elements")
+    etext.add_argument("document", help="document ID or SHA-256 prefix")
+    etext.add_argument("ids", nargs="+", help="element IDs, for example p7.T1")
+    etext.set_defaults(func=cmd_element_text)
+
+    items = sub.add_parser("items", help="the tables and figures of a document")
+    items.add_argument("document", help="document ID or SHA-256 prefix")
+    items.add_argument("kind", nargs="?", choices=("table", "figure", "caption"), help="only one type")
+    items.set_defaults(func=cmd_items)
+
+    image = sub.add_parser("page-image", help="render a page, a region or an element as PNG")
     image.add_argument("document", help="document ID or SHA-256 prefix")
-    image.add_argument("page", type=int, help="page number (1 is the first page)")
+    image.add_argument("page", type=int, nargs="?", help="page number (not necessary with --element)")
+    image.add_argument("--element", help="element ID from the element map, for example p9.F2")
     image.add_argument("--bbox", help="region x0,y0,x1,y1 in pt, top-left origin (300 to 600 dpi)")
     image.add_argument("--max-px", type=int, default=2576, help="maximum long edge in px (256 to 8000, default 2576)")
     image.set_defaults(func=cmd_page_image)
