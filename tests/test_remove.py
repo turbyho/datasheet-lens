@@ -71,7 +71,7 @@ def test_pinned_file_stays(store_home, text_pdf, tmp_path, capsys):
 def test_short_commands(store_home, text_pdf, tmp_path, capsys, monkeypatch):
     monkeypatch.setattr("datasheet_lens.setup.element_backend", lambda: "text")
     monkeypatch.chdir(tmp_path)
-    assert main(["new"]) == 0
+    assert main(["project", "init"]) == 0
     assert main(["add", str(text_pdf("tlv755p.pdf", [[(50, 60, 14, "TLV755P LDO")]])), "-y", "-m",
                  "TLV75533PDBVR", "-M", "TI", "-c", "LDO"]) == 0
     assert main(["ls"]) == 0

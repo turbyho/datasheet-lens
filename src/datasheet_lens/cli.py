@@ -1,6 +1,7 @@
 """Command line interface of datasheet-lens."""
 
 import argparse
+import contextlib
 import math
 import sys
 from pathlib import Path
@@ -355,11 +356,30 @@ PROJECT_ADD_HINT = "datasheet-lens project add-part \"{mpn}\" --document {sha}"
 
 
 def cmd_project_init(args: argparse.Namespace) -> int:
-    """The command new (project init): make the project file and its folder."""
-    from .project import init_project
+    """The command project init: make the project file and its folder, and put the
+    datasheet-lens block into AGENTS.md and CLAUDE.md. A second run changes only
+    a block that is not current."""
+    from . import agents
+    from .project import DEFAULT_FOLDER, DEFAULT_LAYOUT, PROJECT_FILE, find_project, init_project, load
 
-    project = init_project(args.path or Path.cwd(), args.folder, args.layout)
-    print(f"project file: {project.path}\nfolder: {project.folder_path}")
+    root = Path(args.path or Path.cwd()).expanduser().resolve()
+    if not args.path:  # in a subfolder of a project: that project, not a new one in the subfolder
+        with contextlib.suppress(LensError):
+            root = find_project(root)
+    if (root / PROJECT_FILE).is_file():
+        project = load(root)
+        print(f"project file: {project.path} (it exists: not changed)")
+        for option, value, current in (("--folder", args.folder, project.folder),
+                                       ("--layout", args.layout, project.layout)):
+            if value is not None and value != current:
+                print(f"  {option} {value!r} has no effect: the project has {current!r} (change it in "
+                      f"{PROJECT_FILE})")
+    else:
+        project = init_project(root, args.folder if args.folder is not None else DEFAULT_FOLDER,
+                               args.layout if args.layout is not None else DEFAULT_LAYOUT)
+        print(f"project file: {project.path}\nfolder: {project.folder_path}")
+    for name, action in agents.update(root, project.folder):
+        print(f"{name}: datasheet-lens block {action}")
     return 0
 
 
@@ -492,12 +512,7 @@ def build_parser() -> argparse.ArgumentParser:
     psync_short = sub.add_parser("sync", help="synchronize the project (project sync)")
     psync_short.add_argument("--restore", action="store_true", help="copy a changed copy again from the store")
     psync_short.set_defaults(func=cmd_project_sync)
-    new = sub.add_parser("new", help="make a project in this folder (project init)")
-    new.add_argument("--folder", default="datasheets", help="the document folder, relative to the project")
-    new.add_argument("--layout", default="{manufacturer}",
-                     help="the subfolder of each copy: {manufacturer}, {category}, {mpn}, or \"\"")
-    new.set_defaults(func=cmd_project_init)
-    for p in (rm, ls, psync_short, new):
+    for p in (rm, ls, psync_short):
         p.add_argument("-p", "--path", "--project", dest="path",
                        help="the project folder (default: the current folder or a parent folder)")
 
@@ -576,9 +591,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     project = sub.add_parser("project", help="the parts of a project and the copies of their documents")
     psub = project.add_subparsers(dest="project_command", required=True)
-    pinit = psub.add_parser("init", help="make the project file datasheet-lens.toml")
-    pinit.add_argument("--folder", default="datasheets", help="the document folder, relative to the project")
-    pinit.add_argument("--layout", default="{manufacturer}",
+    pinit = psub.add_parser("init", help="make the project file datasheet-lens.toml, and put the datasheet-lens "
+                                         "block into AGENTS.md and CLAUDE.md (a second run updates the block)")
+    pinit.add_argument("--folder", help="the document folder, relative to the project (default: datasheets)")
+    pinit.add_argument("--layout",
                        help="the subfolder of each copy: {manufacturer}, {category}, {mpn}, or \"\" (default: "
                             "{manufacturer})")
     pinit.set_defaults(func=cmd_project_init)
@@ -597,7 +613,8 @@ def build_parser() -> argparse.ArgumentParser:
     padd.add_argument("--role", choices=ROLES, default="datasheet", help="the role of that document")
     padd.set_defaults(func=cmd_project_add_part)
     for p in (pinit, pstatus, psync, padd):
-        p.add_argument("--path", help="the project folder (default: the current folder or a parent folder)")
+        p.add_argument("-p", "--path", "--project", dest="path",
+                       help="the project folder (default: the current folder or a parent folder)")
     return parser
 
 
