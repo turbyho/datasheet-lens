@@ -11,3 +11,5 @@ spike/*/verify/convert/*/raw/
 # tests. The datasheets are third-party documents.
 /datasheet-lens.toml
 /datasheets/
+# Files that the user gives for a task (for example datasheets to add).
+/tmp/
