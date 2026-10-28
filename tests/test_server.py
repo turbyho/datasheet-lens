@@ -1,7 +1,9 @@
 import asyncio
+import threading
 
 import pytest
 
+from datasheet_lens import server
 from datasheet_lens.server import mcp
 
 PAGE = [(50, 60, 12, "5.1 Absolute Maximum Ratings"),
@@ -28,8 +30,13 @@ def blocks_of(result):
 
 @pytest.fixture(autouse=True)
 def text_backend(monkeypatch):
-    """The text backend: the tests must not depend on an installed docling."""
+    """The text backend: the tests must not depend on an installed docling. The
+    background builds of a test end before the next test."""
     monkeypatch.setattr("datasheet_lens.setup.element_backend", lambda: "text")
+    yield
+    for job in list(server._builds.values()):
+        job["thread"].join(10)
+    server._builds.clear()
 
 
 def tool_error(name, **args):
@@ -98,6 +105,56 @@ def test_facts(store_home, text_pdf):
                                              element="p7.T1")
     assert "x0 < x1" in tool_error("save_fact", document=doc, page=1, subject="x", value="1",
                                    bbox=[100, 10, 50, 20])
+
+
+def test_background_build(store_home, text_pdf, monkeypatch):
+    from datasheet_lens import elements
+
+    build = elements.build_elements
+    go, fail = threading.Event(), []
+
+    def slow_build(store, doc_id, backend="auto", **kw):
+        go.wait(10)
+        if fail:
+            raise RuntimeError("layout model crashed")
+        return build(store, doc_id, backend, **kw)
+
+    monkeypatch.setattr(elements, "build_elements", slow_build)
+    monkeypatch.setattr(server, "ELEMENT_WAIT", 0.05)
+    path = str(text_pdf("opa.pdf", [PAGE]))
+    assert "a background thread builds the element map" in text_of(call("add_document", path=path))
+    doc = text_of(call("list_documents")).split()[0]
+    assert "a background thread builds" in tool_error("get_page_map", document=doc, page=1)
+    assert "a background thread builds" in tool_error("save_fact", document=doc, page=1, subject="x",
+                                                      value="1", element="p1.P1")
+    # The index and the page images do not wait for the element map.
+    assert "Absolute Maximum Ratings" in text_of(call("get_index", document=doc))
+    assert "dpi" in text_of(call("get_page_image", document=doc, page=1))
+
+    # A failed build gives its cause, and a read tool does not start it again.
+    fail.append(True)
+    go.set()
+    server._builds[1]["thread"].join(10)
+    for _ in range(2):
+        assert "layout model crashed" in tool_error("get_page_map", document=doc, page=1)
+    assert not server._builds[1]["thread"].is_alive()
+
+    # add_document starts it again.
+    fail.clear()
+    monkeypatch.setattr(server, "ELEMENT_WAIT", 10)
+    assert "element map: " in text_of(call("add_document", path=path))
+    assert "p1.H1" in text_of(call("get_page_map", document=doc, page=1))
+
+    # A document with no map and no build (for example after a restart of the
+    # server) starts the build at the first request of the map.
+    server._builds.clear()
+    from datasheet_lens.store import Store
+    with Store() as store:
+        store.db.execute("DELETE FROM builds WHERE kind = 'elements'")
+        store.db.commit()
+    assert "starts to build it now" in tool_error("get_page_map", document=doc, page=1)
+    server._builds[1]["thread"].join(10)
+    assert "p1.H1" in text_of(call("get_page_map", document=doc, page=1))
 
 
 def test_errors_are_tool_errors(store_home, text_pdf, tmp_path, monkeypatch):

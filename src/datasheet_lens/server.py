@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import functools
 import threading
+import time
 
 import pypdfium2 as pdfium
 from mcp.server.mcpserver import Image, MCPServer
@@ -33,6 +34,15 @@ MAX_PDF_PAGES = 50
 # then finds the current build and does not start a second one.
 _add_lock = threading.Lock()
 
+# The element map of a large document takes minutes with docling: longer than
+# the timeout of an MCP client. A background thread builds it, and add_document
+# waits only ELEMENT_WAIT seconds for it. The build state is in this process
+# only: two server processes can build the same map, and a build stops when its
+# process stops (the next request of the map then starts it again).
+ELEMENT_WAIT = 20.0
+_builds: dict[int, dict] = {}  # document ID -> {"thread", "started", "result", "error"}
+_builds_lock = threading.RLock()
+
 INSTRUCTIONS = """\
 datasheet-lens gives the content of component datasheets (PDF). It does not convert
 a datasheet to text: read the values from the original pages.
@@ -44,6 +54,8 @@ Go into a document step by step, and ask only for what the work needs:
 3. get_outline: the entries under one section (large documents).
 4. search_text: find a word or a value in the text layer (page and line).
 5. get_page_map: the headings, tables, figures and formulas of one page, with IDs.
+   The element map of a large new document can take minutes to build. Until it
+   is complete, use steps 2, 4 and 7 with a page or a region.
 6. get_element_text: the full text of elements.
 7. get_page_image (an element ID, a region, or a page) or get_pdf_pages: the
    original. Read the values here, never from the text layer alone (it can lose
@@ -78,6 +90,66 @@ def _doc(store: Store, ref: str):
     return doc
 
 
+def _build_elements(doc_id: int) -> dict:
+    """Start the element map build of a document in a background thread, if no
+    build of the document runs. Give the build. A failed build starts again only
+    from here (add_document), not from a read tool: a build that always fails must
+    not run again for each request."""
+    from .setup import element_backend
+
+    with _builds_lock:
+        job = _builds.get(doc_id)
+        if job and job["thread"].is_alive():
+            return job
+        job = {"started": time.monotonic(), "result": None, "error": None, "backend": element_backend()}
+
+        def run():
+            from .elements import build_elements
+
+            try:
+                with Store() as store:
+                    job["result"] = build_elements(store, doc_id, job["backend"])
+            except Exception as e:  # the next request of the map gives it to the model
+                job["error"] = f"{e.__class__.__name__}: {e}"
+            finally:
+                if job["result"] is None and job["error"] is None:
+                    job["error"] = "the build stopped"
+
+        job["thread"] = threading.Thread(target=run, name=f"elements-{doc_id}", daemon=True)
+        _builds[doc_id] = job
+        job["thread"].start()
+        return job
+
+
+def _state(job: dict | None) -> tuple[str, str]:
+    """The state of a build (none, running, failed, done) and its text."""
+    if job is None:
+        return "none", ""
+    if job["thread"].is_alive():
+        return "running", (f"a background thread builds the element map ({job['backend']}, "
+                           f"{time.monotonic() - job['started']:.0f} s)")
+    if job["error"]:
+        return "failed", f"the element map build failed: {job['error']} (add_document starts it again)"
+    return "done", f"{job['result']['elements']} elements ({job['result']['backend']})"
+
+
+def _elements_ready(store: Store, doc_id: int) -> str:
+    """Raise a LensError with the state of the build if the document has no
+    element map. Start the build if the document has no map and no build.
+    Give a note if the map is older than a rebuild that failed."""
+    from .elements import has_elements
+
+    alternative = "Until the map is complete, use get_index, search_text and get_page_image with a page or a bbox."
+    with _builds_lock:
+        state, text = _state(_builds.get(doc_id))
+        if has_elements(store, doc_id):
+            return f"note: {text}; this map is from an older build" if state == "failed" else ""
+        if state in ("running", "failed"):
+            raise LensError(f"{text}. {alternative}")
+        _build_elements(doc_id)
+    raise LensError(f"the document has no element map. A background thread starts to build it now. {alternative}")
+
+
 @tool
 def list_parts() -> str:
     """List the parts in the store, with the number of documents of each part."""
@@ -108,12 +180,12 @@ def list_documents(part: str = "") -> str:
 @tool
 def add_document(path: str, part: str = "", manufacturer: str = "", role: str = "datasheet") -> str:
     """Add a PDF file to the store, link it to a part, and build its index and
-    element map. role: datasheet, manual, errata, appnote or other."""
+    element map. role: datasheet, manual, errata, appnote or other. The element
+    map of a large document can take minutes: it is then built in the background,
+    and the index and the page tools are available at once."""
     from pathlib import Path
 
-    from .elements import build_elements
     from .indexer import build_index
-    from .setup import element_backend
 
     if role not in ROLES:
         raise LensError(f"role must be one of {', '.join(ROLES)}")
@@ -122,10 +194,13 @@ def add_document(path: str, part: str = "", manufacturer: str = "", role: str = 
         if part:
             store.link(store.add_part(part, manufacturer), doc.id, role)
         idx = build_index(store, doc.id)
-        el = build_elements(store, doc.id, element_backend())
-        return (f"document {doc.sha256[:12]}: {doc.filename}, {doc.pages} pages; index: "
-                f"{idx['outline']} outline entries, {idx['captions']} captions; element map: "
-                f"{el['elements']} elements ({el['backend']})")
+        job = _build_elements(doc.id)
+    job["thread"].join(ELEMENT_WAIT)
+    state, text = _state(job)
+    if state == "running":
+        text += "; get_page_map tells when the map is complete"
+    return (f"document {doc.sha256[:12]}: {doc.filename}, {doc.pages} pages; index: "
+            f"{idx['outline']} outline entries, {idx['captions']} captions; element map: {text}")
 
 
 @tool
@@ -180,7 +255,10 @@ def get_page_map(document: str, page: int, all_elements: bool = False) -> str:
     from .elements import page_map
 
     with Store() as store:
-        return "\n".join(page_map(store, _doc(store, document).id, page, all_elements)) or "(no elements)"
+        doc = _doc(store, document)
+        note = _elements_ready(store, doc.id)
+        lines = page_map(store, doc.id, page, all_elements) or ["(no elements)"]
+        return "\n".join(lines + ([note] if note else []))
 
 
 @tool
@@ -190,6 +268,7 @@ def get_element_text(document: str, element_ids: list[str]) -> str:
 
     with Store() as store:
         doc = _doc(store, document)
+        _elements_ready(store, doc.id)
         out = []
         for eid in element_ids:
             e = element(store, doc.id, eid)
@@ -205,7 +284,9 @@ def list_items(document: str, kind: str = "") -> str:
     from .elements import list_items as items
 
     with Store() as store:
-        rows = items(store, _doc(store, document).id, kind or None)
+        doc = _doc(store, document)
+        _elements_ready(store, doc.id)
+        rows = items(store, doc.id, kind or None)
         if not rows:
             return "No items."
         return "\n".join(f"{r['element_id']}  p.{r['page']}  [{r['x0']:.0f}, {r['y0']:.0f}, {r['x1']:.0f}, "
@@ -227,6 +308,7 @@ def get_page_image(document: str, page: int = 0, element: str = "", bbox: list[f
     with Store() as store:
         doc = _doc(store, document)
         if element:
+            _elements_ready(store, doc.id)
             e = get_element(store, doc.id, element)
             if page and page != e["page"]:
                 raise LensError(f"element {element} is on page {e['page']}, not on page {page}")
@@ -272,6 +354,8 @@ def save_fact(document: str, page: int, subject: str, value: str, unit: str = ""
 
     with Store() as store:
         doc = _doc(store, document)
+        if element:
+            _elements_ready(store, doc.id)
         fact_id = save(store, doc.id, page, subject, value, unit=unit, conditions=conditions, column=column,
                        element_id=element, bbox=bbox, note=note, source_kind="model", model=model, part=part)
         return f"fact #{fact_id} saved (unchecked)"

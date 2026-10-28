@@ -206,7 +206,7 @@ def page_map(store: Store, doc_id: int, page: int, everything: bool = False) -> 
         raise LensError(f"page {page} is not in the document (1 to {doc.pages})")
     rows = store.db.execute("SELECT * FROM elements WHERE document_id = ? AND page = ? ORDER BY page_order",
                             (doc_id, page)).fetchall()
-    if not rows and not _has_elements(store, doc_id):
+    if not rows and not has_elements(store, doc_id):
         raise LensError("the document has no element map (build it with the command: datasheet-lens elements)")
     lines, rest = [], []
     for r in rows:
@@ -224,8 +224,9 @@ def page_map(store: Store, doc_id: int, page: int, everything: bool = False) -> 
     return lines
 
 
-def _has_elements(store: Store, doc_id: int) -> bool:
-    return store.db.execute("SELECT 1 FROM elements WHERE document_id = ? LIMIT 1", (doc_id,)).fetchone() is not None
+def has_elements(store: Store, doc_id: int) -> bool:
+    """True if the document has an element map (it can have no elements)."""
+    return store.build(doc_id, "elements") is not None
 
 
 def element(store: Store, doc_id: int, element_id: str):
