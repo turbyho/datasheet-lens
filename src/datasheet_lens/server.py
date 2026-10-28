@@ -231,14 +231,18 @@ def list_documents(part: str = "") -> str:
 
 
 @tool
-def add_document(path: str, part: str = "", manufacturer: str = "", role: str = "datasheet") -> str:
+def add_document(path: str, part: str = "", manufacturer: str = "", role: str = "datasheet",
+                 variants: list[str] | None = None) -> str:
     """Add a PDF to the store, link it to a part, and build its index and element
     map. path: a local file, or an http or https URL of the PDF (for example the
     datasheet URL from a part registry, a distributor or a CAD symbol); the tool
-    downloads it and records the URL. role: datasheet, manual, errata, appnote or
-    other. The element map of a large document can take minutes: it is then built
-    in the background, and the index and the page tools are available at once. To
-    copy the document into the user project: project_add_part, then project_sync."""
+    downloads it and records the URL. part: the MPN of the part (the variant that
+    the design uses). variants: the other parts that the datasheet covers (for
+    example ADC34J22, ADC34J23, ADC34J25); the document is linked to each.
+    role: datasheet, manual, errata, appnote or other. The element map of a large
+    document can take minutes: it is then built in the background, and the index
+    and the page tools are available at once. To copy the document into the user
+    project: project_add_part, then project_sync."""
     from pathlib import Path
 
     from .config import store_home
@@ -247,6 +251,8 @@ def add_document(path: str, part: str = "", manufacturer: str = "", role: str = 
 
     if role not in ROLES:
         raise LensError(f"role must be one of {', '.join(ROLES)}")
+    if variants and not part.strip():
+        raise LensError("variants need part: the variant that the design uses")
     with contextlib.ExitStack() as stack:
         # The download runs before the lock: a slow server must not stop the other tools.
         if is_url(path):
@@ -256,16 +262,19 @@ def add_document(path: str, part: str = "", manufacturer: str = "", role: str = 
         with _add_lock, Store() as store:
             doc = store.add_document(file, source_url=source, move=bool(source))
             idx = build_index(store, doc.id)
-            if part:  # an MPN or an alias, as in the CLI command add
-                store.link(store.find_part(part, manufacturer, create=True), doc.id, role)
+            # An MPN or an alias, as in the CLI command add. A failure is a line of
+            # the result: the document, its index and its element map stay.
+            failures = store.link_parts(doc.id, part, variants or [], manufacturer, role)[1] if part.strip() else []
             job = _build_elements(doc.id)
-            proposal = "" if part or store.parts_of_document(doc.id) else _proposal(store, doc)
+            proposal = "" if part.strip() or store.parts_of_document(doc.id) else _proposal(store, doc)
     job["thread"].join(ELEMENT_WAIT)
     state, text = _state(job)
     if state == "running":
         text += "; get_page_map tells when the map is complete"
+    problems = "".join(f"\n{f} (give the manufacturer)" for f in failures)
     return (f"document {doc.sha256[:12]}: {doc.filename}, {doc.pages} pages; index: "
-            f"{idx['outline']} outline entries, {idx['captions']} captions; element map: {text}" + proposal)
+            f"{idx['outline']} outline entries, {idx['captions']} captions; element map: {text}"
+            + problems + proposal)
 
 
 def _proposal(store: Store, doc) -> str:
@@ -275,10 +284,12 @@ def _proposal(store: Store, doc) -> str:
     p = propose(store, doc)
     if not p.mpn:
         return "\nno part: the PDF gives no MPN; find it (title, ordering information) and link it"
+    covers = (f" The datasheet covers the variants {', '.join(p.variants)}: give the variant that the design "
+              "uses as part, and the others as variants." if p.variants else "")
     return (f"\nno part: the PDF proposes {p.mpn} ({p.manufacturer or 'manufacturer unknown'}; from "
             f"{', '.join(p.sources)}" + (f"; other candidates: {', '.join(p.candidates)}" if p.candidates else "")
-            + f"). Check it, then link it: project_add_part(mpn, manufacturer, document="
-            f"'{doc.sha256[:12]}') for the user project, or add_document again with part")
+            + f").{covers} Check it, then link it: add_document again with part (and variants), then "
+            f"project_add_part(mpn, manufacturer, document='{doc.sha256[:12]}') for the user project")
 
 
 @tool

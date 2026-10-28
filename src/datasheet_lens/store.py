@@ -369,6 +369,37 @@ class Store:
             raise LensError(f"part {mpn} is not unique: {names}")
         return rows[0]["id"]
 
+    def link_parts(self, doc_id: int, mpn: str, variants: list[str], manufacturer: str = "",
+                   role: str = "datasheet", category: str = "") -> tuple[int | None, list[str]]:
+        """Link a document to the part mpn (an MPN or an alias), and then to the
+        other variants that it covers. Give the ID of the part mpn (None if it
+        cannot be linked: then no variant is linked) and the failure messages."""
+        names = [mpn.strip()] + [v.strip() for v in variants if v.strip() and v.strip().lower() != mpn.strip().lower()]
+        failures: list[str] = []
+        first = None
+        for name in names:
+            try:
+                part_id = self.find_part(name, manufacturer, create=True)
+            except LensError as e:  # for example an MPN of two manufacturers
+                failures.append(f"part {name}: not linked: {e}")
+                if first is None:
+                    return None, failures
+                continue
+            if category:
+                self.set_category(part_id, category)
+            self.link(part_id, doc_id, role)
+            first = part_id if first is None else first
+        return first, failures
+
+    def variants(self, part_id: int) -> list[str]:
+        """The MPNs of the parts that share a datasheet with the part (the part
+        too), when there are more than one: the variants of one datasheet."""
+        rows = self.db.execute(
+            "SELECT DISTINCT p.mpn FROM part_documents a JOIN part_documents b ON b.document_id = a.document_id"
+            " JOIN parts p ON p.id = b.part_id WHERE a.part_id = ? AND a.role = 'datasheet'"
+            " AND b.role = 'datasheet' ORDER BY p.mpn", (part_id,)).fetchall()
+        return [r[0] for r in rows] if len(rows) > 1 else []
+
     def set_category(self, part_id: int, category: str) -> None:
         """The function of the part (for example ADC). The column is "family"."""
         self.db.execute("UPDATE parts SET family = ? WHERE id = ?", (category, part_id))

@@ -182,8 +182,14 @@ def _parse(text: str, path: Path) -> tuple[str, str, list[dict]]:
             if d.get("pinned"):
                 doc["pinned"] = True
             docs.append(doc)
-        out.append({"mpn": p["mpn"].strip(), "manufacturer": str(p.get("manufacturer", "")),
-                    "category": str(p.get("category", "")).strip(), "documents": docs})
+        part = {"mpn": p["mpn"].strip(), "manufacturer": str(p.get("manufacturer", "")),
+                "category": str(p.get("category", "")).strip(), "documents": docs}
+        variants = p.get("variants", [])
+        if not isinstance(variants, list) or not all(isinstance(v, str) for v in variants):
+            raise LensError(f"{path}: part {p['mpn']}: variants must be a list of MPNs")
+        if variants:  # for information only: the store gives them
+            part["variants"] = variants
+        out.append(part)
     return folder, layout, out
 
 
@@ -197,8 +203,9 @@ def load(start: Path | str | None = None) -> Project:
 
 def _summary(folder: str, layout: str, parts: list[dict]):
     """The data of a project with no order, to compare two projects."""
-    return folder, layout, sorted((p["mpn"], p["manufacturer"], p.get("category", ""), tuple(sorted(
-        (d["sha256"], d["file"], d["role"], d.get("pinned", False)) for d in p["documents"]))) for p in parts)
+    return folder, layout, sorted((p["mpn"], p["manufacturer"], p.get("category", ""), tuple(p.get("variants", [])),
+                                   tuple(sorted((d["sha256"], d["file"], d["role"], d.get("pinned", False))
+                                                for d in p["documents"]))) for p in parts)
 
 
 def _strip(value) -> str:
@@ -361,6 +368,10 @@ def save(project: Project) -> None:
         _set(table, "mpn", part["mpn"], norm=_strip)
         _set(table, "manufacturer", part["manufacturer"], norm=_strip)
         _set(table, "category", part.get("category", ""), norm=_strip)
+        if part.get("variants"):
+            _set(table, "variants", part["variants"], norm=lambda v: [str(x) for x in v])
+        elif "variants" in table:  # the store gives no variants now
+            del table["variants"]
         old_docs = _tables(table, "document")
         doc_tables = _match_documents(old_docs, part["documents"])
         for dt, d in zip(doc_tables, part["documents"]):
@@ -451,7 +462,13 @@ def _copy_name(project: Project, doc: Document, files: dict[str, str], subdir: s
 
 def _refresh(project: Project, store: Store, part: dict, part_id: int, files: dict[str, str]) -> list[str]:
     """Add the documents that the store links to the part. Give their file names.
-    A reference to a file that the user put into the folder gets pinned = true."""
+    A reference to a file that the user put into the folder gets pinned = true.
+    The variants (the parts with the same datasheet) come from the store."""
+    variants = store.variants(part_id)
+    if variants:
+        part["variants"] = variants
+    else:
+        part.pop("variants", None)
     added = []
     refs = {d["sha256"]: d for d in part["documents"]}
     subdir = layout_dir(project, part)

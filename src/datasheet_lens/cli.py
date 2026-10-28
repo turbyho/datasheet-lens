@@ -19,34 +19,55 @@ def cmd_info(_args: argparse.Namespace) -> int:
     return 0
 
 
-def _ask_part(store: Store, doc, args: argparse.Namespace) -> tuple[str, str]:
+def _ask_part(store: Store, doc, args: argparse.Namespace) -> tuple[str, str, list[str]]:
     """The part of a new document: --part, a part that the store links already,
-    or the proposal from the PDF, which the user confirms. ("", "") for no part."""
+    or the proposal from the PDF, which the user confirms. Also the variants that
+    the datasheet covers. ("", "", []) for no part."""
     from .identify import propose
 
     if args.part:
-        return args.part.strip(), (args.manufacturer or "").strip()
+        return args.part.strip(), (args.manufacturer or "").strip(), []
     linked = store.parts_of_document(doc.id)
-    if linked:
-        return linked[0]["mpn"], linked[0]["manufacturer"]
+    if len(linked) == 1:
+        return linked[0]["mpn"], linked[0]["manufacturer"], []
+    if linked:  # a datasheet of more variants: which one does the design use?
+        names = [r["mpn"] for r in linked]
+        print(f"part: the store links the document to {', '.join(names)}")
+        if not sys.stdin.isatty():
+            print(f"  give the variant that you use with --part (for example --part {names[0]})")
+            return "", "", []
+        answer = input("  Type the variant that you use (- = no part): ").strip()
+        row = next((r for r in linked if r["mpn"].lower() == answer.lower()), None)
+        if row is None:
+            if answer and answer != "-":
+                print(f"  {answer} is not one of them: give it with --part")
+            return "", "", []
+        return row["mpn"], row["manufacturer"], []
     p = propose(store, doc)
     if not p.mpn:
         print("part: no MPN found in the PDF; give it with --part")
-        return "", ""
+        return "", "", []
     manufacturer = (args.manufacturer or "").strip() or p.manufacturer
     print(f"part: {p.mpn} ({manufacturer or 'manufacturer unknown'})\n  from: {', '.join(p.sources)}"
           + (f"; other candidates: {', '.join(p.candidates)}" if p.candidates else ""))
+    if p.variants:
+        print(f"  the datasheet covers the variants: {', '.join(p.variants)}")
     if args.yes:
-        return p.mpn, manufacturer
+        return p.mpn, manufacturer, p.variants
     if not sys.stdin.isatty():
         print(f"  not confirmed (no terminal): give --yes, or --part {p.mpn}")
-        return "", ""
-    answer = input("  Enter = yes, or type another MPN (- = no part): ").strip()
+        return "", "", []
+    question = ("  Enter = yes, or type the variant that you use, or another MPN (- = no part): " if p.variants
+                else "  Enter = yes, or type another MPN (- = no part): ")
+    answer = input(question).strip()
     if answer == "-":
-        return "", ""
+        return "", "", []
     if not answer:
-        return p.mpn, manufacturer
-    return answer, input(f"  manufacturer [{manufacturer}]: ").strip() or manufacturer
+        return p.mpn, manufacturer, p.variants
+    chosen = next((v for v in p.variants if v.lower() == answer.lower()), "")
+    if chosen:  # a variant of this datasheet: the same manufacturer
+        return chosen, manufacturer, p.variants
+    return answer, input(f"  manufacturer [{manufacturer}]: ").strip() or manufacturer, []
 
 
 def cmd_add(args: argparse.Namespace) -> int:
@@ -61,20 +82,19 @@ def cmd_add(args: argparse.Namespace) -> int:
         else:
             doc = store.add_document(Path(args.file), title=args.title or "", source_url=args.url or "")
         print(f"document {doc.id}: {doc.sha256[:12]} {doc.filename} ({doc.pages} pages)")
-        mpn, manufacturer = _ask_part(store, doc, args)
+        mpn, manufacturer, variants = _ask_part(store, doc, args)
         category = (args.category or "").strip()
-        # The link first: an index error must not lose it.
+        # The link first: an index error must not lose it. The datasheet is also
+        # the datasheet of each variant that it covers.
         if mpn:
-            try:
-                part_id = store.find_part(mpn, manufacturer, create=True)
-            except LensError as e:  # for example an MPN of two manufacturers
-                print(f"part {mpn}: not linked: {e} (give --manufacturer)", file=sys.stderr)
+            part_id, failures = store.link_parts(doc.id, mpn, variants, manufacturer, args.role, category)
+            for text in failures:
+                print(f"{text} (give --manufacturer)", file=sys.stderr)
+            if part_id is None:
                 mpn = ""
             else:
-                if category:
-                    store.set_category(part_id, category)
-                store.link(part_id, doc.id, args.role)
-                print(f"part {mpn}: {args.role}")
+                linked = [v for v in variants if v != mpn and not any(f.startswith(f"part {v}:") for f in failures)]
+                print(f"part {mpn}: {args.role}" + (f"; also the variants {', '.join(linked)}" if linked else ""))
         idx = build_index(store, doc.id)
         if not idx["skipped"]:
             print(f"index: {idx['outline']} outline entries, {idx['captions']} captions")

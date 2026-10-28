@@ -16,6 +16,7 @@ and page 1.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -72,6 +73,9 @@ class Proposal:
     manufacturer: str = ""
     sources: list[str] = field(default_factory=list)
     candidates: list[str] = field(default_factory=list)  # other MPN candidates, best first
+    # The parts that the datasheet covers (mpn and the others), when there are
+    # more than one: ADC34J22, ADC34J23, ADC34J24, ADC34J25.
+    variants: list[str] = field(default_factory=list)
 
 
 def _norm(text: str) -> str:
@@ -162,7 +166,28 @@ def propose(store: Store, doc: Document) -> Proposal:
             add(spelling[key], 1, "file name")
     ranked = sorted((k for k in order if scores[k] > 0), key=lambda k: -scores[k])
     best = ranked[0] if ranked else ""
+    variants = [spelling[k] for k in sorted(
+        k for k in order if k == best or (best and _variant(spelling[best], spelling[k], found[k], k == stem_norm)))]
     return Proposal(mpn=spelling.get(best, ""),
                     manufacturer=_manufacturer(store, [title, page1[:3000], stem, meta.get("Author", ""),
                                                        meta.get("Creator", "")]),
-                    sources=found.get(best, []), candidates=[spelling[k] for k in ranked[1:5]])
+                    sources=found.get(best, []), candidates=[spelling[k] for k in ranked[1:5]],
+                    variants=variants if len(variants) > 1 else [])
+
+
+def _variant(best: str, other: str, sources: list[str], file_name: bool = False) -> bool:
+    """True if the candidate other is a variant of the best one. The title or
+    page 1 names it, or it is the file name, and it is one of:
+    - the same length, with only the last characters different (ADC34J22 and
+      ADC34J24, TL071 and TL072)
+    - the base with a suffix after a hyphen (LM20144 and LM20144-Q1)
+    An orderable code (LM358DR, SN74LV1T34DBVRG4) is not a variant: it is
+    longer, with no hyphen."""
+    b, o = _norm(best), _norm(other)
+    named = file_name or {"title", "page 1"} & set(sources)
+    if not b or o == b or not named or re.search(r"\dx", o):
+        return False
+    if len(o) == len(b):
+        return len(os.path.commonprefix([b, o])) >= max(4, len(b) - 2)
+    shorter, longer = sorted((best.upper(), other.upper()), key=len)
+    return longer.startswith(shorter + "-") and len(longer) - len(shorter) <= 4
