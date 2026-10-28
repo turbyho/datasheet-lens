@@ -181,22 +181,34 @@ def list_documents(part: str = "") -> str:
 
 @tool
 def add_document(path: str, part: str = "", manufacturer: str = "", role: str = "datasheet") -> str:
-    """Add a PDF file to the store, link it to a part, and build its index and
-    element map. role: datasheet, manual, errata, appnote or other. The element
-    map of a large document can take minutes: it is then built in the background,
-    and the index and the page tools are available at once."""
+    """Add a PDF to the store, link it to a part, and build its index and element
+    map. path: a local file, or an http or https URL of the PDF (for example the
+    datasheet URL from a part registry, a distributor or a CAD symbol); the tool
+    downloads it and records the URL. role: datasheet, manual, errata, appnote or
+    other. The element map of a large document can take minutes: it is then built
+    in the background, and the index and the page tools are available at once. To
+    copy the document into the user project: project_add_part, then project_sync."""
+    import contextlib
     from pathlib import Path
 
+    from .config import store_home
+    from .fetch import downloaded, is_url
     from .indexer import build_index
 
     if role not in ROLES:
         raise LensError(f"role must be one of {', '.join(ROLES)}")
-    with _add_lock, Store() as store:
-        doc = store.add_document(Path(path).expanduser())
-        if part:
-            store.link(store.add_part(part, manufacturer), doc.id, role)
-        idx = build_index(store, doc.id)
-        job = _build_elements(doc.id)
+    with contextlib.ExitStack() as stack:
+        # The download runs before the lock: a slow server must not stop the other tools.
+        if is_url(path):
+            file, source = stack.enter_context(downloaded(path, store_home())), path.strip()
+        else:
+            file, source = Path(path).expanduser(), ""
+        with _add_lock, Store() as store:
+            doc = store.add_document(file, source_url=source, move=bool(source))
+            if part:
+                store.link(store.add_part(part, manufacturer), doc.id, role)
+            idx = build_index(store, doc.id)
+            job = _build_elements(doc.id)
     job["thread"].join(ELEMENT_WAIT)
     state, text = _state(job)
     if state == "running":

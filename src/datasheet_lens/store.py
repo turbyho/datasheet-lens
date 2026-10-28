@@ -231,9 +231,10 @@ class Store:
 
     # Documents
 
-    def add_document(self, path: Path, title: str = "", source_url: str = "") -> Document:
+    def add_document(self, path: Path, title: str = "", source_url: str = "", move: bool = False) -> Document:
         """Copy a file into the store and record it. A file that is already in the
-        store (same SHA-256) is not copied again."""
+        store (same SHA-256) is not copied again; it gets the source URL if it has
+        none. move: move the file (a temporary file on the disk of the store)."""
         path = Path(path)
         suffix = path.suffix.lower()
         media_type = MEDIA_TYPES.get(suffix)
@@ -242,6 +243,10 @@ class Store:
         sha = sha256_file(path)
         existing = self.document(sha)
         if existing:
+            if source_url:
+                self.db.execute("UPDATE documents SET source_url = ? WHERE id = ? AND source_url = ''",
+                                (source_url, existing.id))
+                self.db.commit()
             return existing
         pages = None
         if media_type == "application/pdf":
@@ -260,7 +265,10 @@ class Store:
         target = self.blob_path(sha, suffix)
         tmp = temp_path(target)
         try:
-            shutil.copyfile(path, tmp)
+            if move:
+                path.replace(tmp)
+            else:
+                shutil.copyfile(path, tmp)
             tmp.replace(target)
         finally:
             tmp.unlink(missing_ok=True)

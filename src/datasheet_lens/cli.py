@@ -20,8 +20,15 @@ def cmd_info(_args: argparse.Namespace) -> int:
 
 
 def cmd_add(args: argparse.Namespace) -> int:
+    from .fetch import add_from_url, is_url
+
     with Store() as store:
-        doc = store.add_document(Path(args.file), title=args.title or "", source_url=args.url or "")
+        if is_url(args.file):
+            if args.url:
+                raise LensError("--url is only for a local file: a downloaded file records its own URL")
+            doc = add_from_url(store, args.file, title=args.title or "")
+        else:
+            doc = store.add_document(Path(args.file), title=args.title or "", source_url=args.url or "")
         print(f"document {doc.id}: {doc.sha256[:12]} {doc.filename} ({doc.pages} pages)")
         if args.part:
             part_id = store.add_part(args.part, args.manufacturer or "")
@@ -273,12 +280,12 @@ def build_parser() -> argparse.ArgumentParser:
     info.set_defaults(func=cmd_info)
 
     add = sub.add_parser("add", help="add a document to the central store")
-    add.add_argument("file", help="the document file (PDF)")
+    add.add_argument("file", help="the document file (PDF), or an http or https URL to download it from")
     add.add_argument("--part", help="the part number (MPN) of the component")
     add.add_argument("--manufacturer", help="the manufacturer of the part")
     add.add_argument("--role", choices=ROLES, default="datasheet", help="the role of the document")
     add.add_argument("--title", help="the title (default: from the PDF metadata)")
-    add.add_argument("--url", help="the source URL of the document")
+    add.add_argument("--url", help="the source URL of a local file (a downloaded file records its URL)")
     add.set_defaults(func=cmd_add)
 
     parts = sub.add_parser("parts", help="list the parts")
