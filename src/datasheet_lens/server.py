@@ -553,6 +553,48 @@ def project_add_part(mpn: str, manufacturer: str = "", document: str = "", role:
                         for d in part["documents"]])
 
 
+def _removal(result: dict, folder: str, dry_run: bool, what: str) -> str:
+    lines = [f"{'would remove' if dry_run else 'removed'}: {what}"]
+    lines += [f"  {'would delete' if dry_run else 'deleted'}: {folder}/{rel}" for rel in result["deleted"]]
+    lines += [f"  kept: {folder}/{text}" for text in result["kept"]]
+    return "\n".join(lines)
+
+
+@tool
+def project_remove_part(mpn: str, manufacturer: str = "", delete_pinned: bool = False, dry_run: bool = False,
+                        path: str = "") -> str:
+    """Remove a part from the user project, and delete its copies in the project
+    folder that no other part uses. A file that the user put into the folder
+    (pinned) stays, unless delete_pinned is true. The central store does not
+    change. dry_run: only tell what would change."""
+    from .project import load, remove_part
+
+    with _add_lock:
+        project = load(path or None)
+        result = remove_part(project, mpn, manufacturer, delete_pinned, not dry_run)
+    return _removal(result, project.folder, dry_run, f"part {result['part']}")
+
+
+@tool
+def project_remove_document(document: str, mpn: str = "", manufacturer: str = "", delete_pinned: bool = False,
+                            dry_run: bool = False, path: str = "") -> str:
+    """Remove a document (document ID, SHA-256 prefix or file name) from the parts
+    of the user project, or from part mpn only; the part stays. The project
+    remembers it (exclude), so that project_sync does not add it again;
+    project_add_part with the document adds it again. The copy is deleted when no
+    part uses it. The central store does not change."""
+    from .project import load, remove_document
+
+    with _add_lock:
+        if document.strip().isdigit() and len(document.strip()) < 8:  # a document ID
+            with Store() as store:
+                document = _doc(store, document.strip()).sha256
+        project = load(path or None)
+        result = remove_document(project, document, mpn, manufacturer, delete_pinned, not dry_run)
+    return _removal(result, project.folder, dry_run,
+                    f"document {result['document']} from {', '.join(result['parts'])}")
+
+
 def main() -> None:
     mcp.run("stdio")
 

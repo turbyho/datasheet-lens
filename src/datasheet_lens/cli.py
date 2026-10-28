@@ -376,6 +376,41 @@ def cmd_project_sync(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def _document_key(ref: str) -> str:
+    """A document ID of the store (docs, list_documents) as its SHA-256; else the
+    reference as it is (a SHA-256 prefix or a file name)."""
+    if ref.strip().isdigit() and len(ref.strip()) < 8:
+        with Store() as store:
+            doc = store.document(ref.strip())
+        if doc is None:
+            raise LensError(f"document not found: {ref}")
+        return doc.sha256
+    return ref
+
+
+def cmd_rm(args: argparse.Namespace) -> int:
+    from .project import load, remove_document, remove_part
+
+    if not args.mpn and not args.document:
+        raise LensError("give a part (MPN) or a document (-d)")
+    project = load(args.path)
+    apply = not args.dry_run
+    if args.document:
+        result = remove_document(project, _document_key(args.document), args.mpn or "", args.manufacturer or "",
+                                 args.pinned, apply)
+        what = f"document {result['document']} from {', '.join(result['parts'])}"
+    else:
+        result = remove_part(project, args.mpn, args.manufacturer or "", args.pinned, apply)
+        what = f"part {result['part']}"
+    prefix = "would remove" if args.dry_run else "removed"
+    print(f"{prefix}: {what}")
+    for rel in result["deleted"]:
+        print(f"  {'would delete' if args.dry_run else 'deleted'}: {project.folder}/{rel}")
+    for text in result["kept"]:
+        print(f"  kept: {project.folder}/{text}")
+    return 0
+
+
 def cmd_project_add_part(args: argparse.Namespace) -> int:
     from .project import add_part, load
 
@@ -404,20 +439,43 @@ def build_parser() -> argparse.ArgumentParser:
                                      "to the project")
     add.add_argument("file", metavar="PATH|URL",
                      help="the path of a PDF file, or an http or https URL of a PDF to download")
-    add.add_argument("--part", help="the base part number (MPN) of the datasheet; without it, the tool proposes "
-                                    "one from the PDF")
-    add.add_argument("--orderable", metavar="MPN",
+    add.add_argument("-m", "--mpn", "--orderable", dest="orderable", metavar="MPN",
                      help="the concrete orderable MPN that the design uses (package, voltage ...), for the "
-                          "project; its base part is --part")
-    add.add_argument("--yes", action="store_true", help="accept the proposed part without a question")
-    add.add_argument("--project", help="the project folder (default: the current folder or a parent folder)")
+                          "project")
+    add.add_argument("-b", "--base", "--part", dest="part", metavar="MPN",
+                     help="the base part of the datasheet; without it, the tool proposes one from the PDF")
+    add.add_argument("-y", "--yes", action="store_true", help="accept the proposed part without a question")
+    add.add_argument("-p", "--project", "--path", dest="project",
+                     help="the project folder (default: the current folder or a parent folder)")
     add.add_argument("--no-project", action="store_true", help="add to the store only, not to the project")
-    add.add_argument("--manufacturer", help="the manufacturer of the part")
-    add.add_argument("--category", help="the function of the part, for example ADC (for the project layout)")
+    add.add_argument("-M", "--manufacturer", help="the manufacturer of the part")
+    add.add_argument("-c", "--category", help="the function of the part, for example ADC (for the project layout)")
     add.add_argument("--role", choices=ROLES, default="datasheet", help="the role of the document")
     add.add_argument("--title", help="the title (default: from the PDF metadata)")
     add.add_argument("--url", help="the source URL of a local file (a downloaded file records its URL)")
     add.set_defaults(func=cmd_add)
+
+    # Short commands for the project (the long forms are under "project").
+    rm = sub.add_parser("rm", help="remove a part (MPN), or a document (-d), from the project")
+    rm.add_argument("mpn", nargs="?", metavar="MPN", help="the part; with -d: only from this part")
+    rm.add_argument("-d", "--document", metavar="DOC", help="a document: ID, SHA-256 prefix or file name")
+    rm.add_argument("-M", "--manufacturer", help="the manufacturer, if the project has more parts with the MPN")
+    rm.add_argument("--pinned", action="store_true", help="also delete a file that you put into the folder")
+    rm.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
+    rm.set_defaults(func=cmd_rm)
+    ls = sub.add_parser("ls", help="show the parts and documents of the project (project status)")
+    ls.set_defaults(func=cmd_project_status)
+    psync_short = sub.add_parser("sync", help="synchronize the project (project sync)")
+    psync_short.add_argument("--restore", action="store_true", help="copy a changed copy again from the store")
+    psync_short.set_defaults(func=cmd_project_sync)
+    new = sub.add_parser("new", help="make a project in this folder (project init)")
+    new.add_argument("--folder", default="datasheets", help="the document folder, relative to the project")
+    new.add_argument("--layout", default="{manufacturer}",
+                     help="the subfolder of each copy: {manufacturer}, {category}, {mpn}, or \"\"")
+    new.set_defaults(func=cmd_project_init)
+    for p in (rm, ls, psync_short, new):
+        p.add_argument("-p", "--path", "--project", dest="path",
+                       help="the project folder (default: the current folder or a parent folder)")
 
     parts = sub.add_parser("parts", help="list the parts")
     parts.set_defaults(func=cmd_parts)

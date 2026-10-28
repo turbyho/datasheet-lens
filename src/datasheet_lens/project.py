@@ -189,6 +189,12 @@ def _parse(text: str, path: Path) -> tuple[str, str, list[dict]]:
             raise LensError(f"{path}: part {p['mpn']}: variants must be a list of MPNs")
         if variants:  # for information only: the store gives them
             part["variants"] = variants
+        exclude = p.get("exclude", [])
+        if not isinstance(exclude, list) or not all(isinstance(s, str) and re.fullmatch(r"[0-9a-f]{64}", s)
+                                                    for s in exclude):
+            raise LensError(f"{path}: part {p['mpn']}: exclude must be a list of SHA-256 values")
+        if exclude:  # documents that the project does not want for this part
+            part["exclude"] = exclude
         base = p.get("base", "")
         if not isinstance(base, str):
             raise LensError(f"{path}: part {p['mpn']}: base must be an MPN")
@@ -209,7 +215,7 @@ def load(start: Path | str | None = None) -> Project:
 def _summary(folder: str, layout: str, parts: list[dict]):
     """The data of a project with no order, to compare two projects."""
     return folder, layout, sorted((p["mpn"], p["manufacturer"], p.get("category", ""), p.get("base", ""),
-                                   tuple(p.get("variants", [])), tuple(sorted((d["sha256"], d["file"], d["role"], d.get("pinned", False))
+                                   tuple(p.get("variants", [])), tuple(sorted(p.get("exclude", []))), tuple(sorted((d["sha256"], d["file"], d["role"], d.get("pinned", False))
                                                 for d in p["documents"]))) for p in parts)
 
 
@@ -381,6 +387,10 @@ def save(project: Project) -> None:
             _set(table, "variants", part["variants"], norm=lambda v: [str(x) for x in v])
         elif "variants" in table:  # the store gives no variants now
             del table["variants"]
+        if part.get("exclude"):
+            _set(table, "exclude", part["exclude"], norm=lambda v: [str(x) for x in v])
+        elif "exclude" in table:
+            del table["exclude"]
         old_docs = _tables(table, "document")
         doc_tables = _match_documents(old_docs, part["documents"])
         for dt, d in zip(doc_tables, part["documents"]):
@@ -488,7 +498,10 @@ def _refresh(project: Project, store: Store, part: dict, part_id: int, files: di
     added = []
     refs = {d["sha256"]: d for d in part["documents"]}
     subdir = layout_dir(project, part)
+    excluded = set(part.get("exclude", []))
     for row in store.documents_of_part(part_id):
+        if row["sha256"] in excluded:  # the project does not want it (remove_document)
+            continue
         if row["sha256"] in refs:
             refs[row["sha256"]]["role"] = row["role"]
             continue
@@ -548,9 +561,108 @@ def add_part(project: Project, store: Store, mpn: str, manufacturer: str = "", d
     part = _entry(project, store, part_id)
     if category.strip():
         part["category"] = category.strip()
+    if document and doc.sha256 in part.get("exclude", []):
+        # An explicit request adds a document that remove_document took away.
+        part["exclude"] = [s for s in part["exclude"] if s != doc.sha256]
+        if not part["exclude"]:
+            del part["exclude"]
     _refresh(project, store, part, part_id, _folder_files(project))
     save(project)
     return part
+
+
+def _prune_empty(project: Project, folder: Path) -> None:
+    """Remove empty folders from folder up to the project folder. An error is no
+    problem: the file operation is done."""
+    with contextlib.suppress(OSError):
+        while folder != project.folder_path and folder.is_dir() and not any(folder.iterdir()):
+            folder.rmdir()
+            folder = folder.parent
+
+
+def _drop_copies(project: Project, removed: list[dict], delete_pinned: bool, apply: bool) -> dict:
+    """Delete the copies of removed references that no other reference of the
+    project uses. A file that the user put into the folder (pinned) stays,
+    unless delete_pinned is true. A file with a different content (for example a
+    new revision that the user put there) stays. Give {"deleted": [...],
+    "kept": [...]}."""
+    used = _used(project)
+    out = {"deleted": [], "kept": []}
+    for d in {d["file"]: d for d in removed}.values():
+        path = project.file_path(d["file"])
+        if d["file"] in used:
+            out["kept"].append(f"{d['file']} (an other part uses it)")
+        elif d.get("pinned") and not delete_pinned:
+            out["kept"].append(f"{d['file']} (pinned: you put it there; sync shows it as a file with no part; "
+                               "delete_pinned deletes it)")
+        elif path.is_file() and _hash(path) != d["sha256"]:
+            out["kept"].append(f"{d['file']} (its content is not the document: not deleted)")
+        elif path.is_file():
+            if apply:
+                path.unlink()
+                _prune_empty(project, path.parent)
+            out["deleted"].append(d["file"])
+    return out
+
+
+def _one_part(project: Project, mpn: str, manufacturer: str = "") -> dict:
+    """The project part with this MPN (and manufacturer, if more parts have it)."""
+    found = [p for p in project.parts if p["mpn"].lower() == mpn.strip().lower()
+             and (not manufacturer or p["manufacturer"].lower() == manufacturer.strip().lower())]
+    if not found:
+        raise LensError(f"the project has no part {mpn}")
+    if len(found) > 1:
+        raise LensError(f"the project has more parts {mpn}: give the manufacturer ("
+                        + ", ".join(p["manufacturer"] or "unknown" for p in found) + ")")
+    return found[0]
+
+
+def remove_part(project: Project, mpn: str, manufacturer: str = "", delete_pinned: bool = False,
+                apply: bool = True) -> dict:
+    """Remove a part from the project, and delete its copies (see _drop_copies).
+    The central store does not change: other projects can use the part. If apply
+    is false, nothing changes: the result tells what would change."""
+    part = _one_part(project, mpn, manufacturer)
+    rest = [p for p in project.parts if p is not part]
+    result = _drop_copies(Project(project.root, project.folder, rest, project.layout), part["documents"],
+                          delete_pinned, apply)
+    if apply:
+        project.parts[:] = rest
+        save(project)
+    return {"part": part["mpn"], **result}
+
+
+def remove_document(project: Project, document: str, mpn: str = "", manufacturer: str = "",
+                    delete_pinned: bool = False, apply: bool = True) -> dict:
+    """Remove a document (SHA-256 prefix of 8 or more characters, or its file
+    name, with or without the folder) from the parts of the project, or from part
+    mpn only. Each part remembers it in "exclude", so that sync does not add it
+    again (add_part with the document adds it again). The copies are deleted when
+    no part uses them (see _drop_copies). The central store does not change."""
+    key = document.strip()
+    if key.startswith(project.folder + "/"):
+        key = key[len(project.folder) + 1:]
+    parts = [_one_part(project, mpn, manufacturer)] if mpn else project.parts
+    hits = [(p, d) for p in parts for d in p["documents"]
+            if (len(key) >= 8 and d["sha256"].startswith(key.lower())) or d["file"] == _norm_rel(key)]
+    if not hits:
+        raise LensError(f"no part of the project has the document {document}"
+                        + (f" (part {mpn})" if mpn else ""))
+    if len({d["sha256"] for _, d in hits}) > 1:
+        raise LensError(f"{document} gives more documents: give a longer SHA-256 prefix")
+    sha = hits[0][1]["sha256"]
+    hit_ids = {id(p) for p, _ in hits}
+    changed = copy.deepcopy(project.parts)
+    for p, src in zip(changed, project.parts):
+        if id(src) in hit_ids:
+            p["documents"] = [d for d in p["documents"] if d["sha256"] != sha]
+            p["exclude"] = sorted(set(p.get("exclude", [])) | {sha})
+    result = _drop_copies(Project(project.root, project.folder, changed, project.layout),
+                          [d for _, d in hits], delete_pinned, apply)
+    if apply:
+        project.parts[:] = changed
+        save(project)
+    return {"document": sha[:12], "parts": [p["mpn"] for p, _ in hits], **result}
 
 
 def _norm(name: str) -> str:
@@ -625,12 +737,7 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
             else:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(source, target)
-            # The file moved: an error in the removal of empty folders is no problem.
-            with contextlib.suppress(OSError):
-                parent = source.parent
-                while parent != project.folder_path and parent.is_dir() and not any(parent.iterdir()):
-                    parent.rmdir()
-                    parent = parent.parent
+            _prune_empty(project, source.parent)
         files[want] = files.pop(rel)
         for p in project.parts:
             for d in p["documents"]:
@@ -714,8 +821,10 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
             if doc is not None:
                 report["documents"].append(doc.id)
 
-    # 3. The new files of the folder.
+    # 3. The new files of the folder. A document that the project does not want
+    # (exclude) is not a new file: the user kept its copy.
     known = {d["sha256"] for part in project.parts for d in part["documents"]}
+    known |= {sha for part in project.parts for sha in part.get("exclude", [])}
     for rel, sha in files.items():
         if rel in referenced or sha in known:
             continue
@@ -726,7 +835,7 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
         assigned = False
         for row in linked:
             part = project.find(row["mpn"], row["manufacturer"])
-            if part is not None:
+            if part is not None and sha not in part.get("exclude", []):
                 if apply:  # the user put the file there: it stays there
                     part["documents"].append({"sha256": sha, "file": rel, "role": row["role"], "pinned": True})
                 report["added"].append(rel)
