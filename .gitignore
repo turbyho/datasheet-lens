@@ -7,3 +7,7 @@ dist/
 # Raw output of the converters in spike 2. convert.py makes it again.
 spike/*/verify/convert/*/raw/
 *.py[cod]
+# A project of datasheet-lens in the root of this repository, for development
+# tests. The datasheets are third-party documents.
+/datasheet-lens.toml
+/datasheets/
