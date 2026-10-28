@@ -376,8 +376,10 @@ def build_parser() -> argparse.ArgumentParser:
     info = sub.add_parser("info", help="show the version and the store location")
     info.set_defaults(func=cmd_info)
 
-    add = sub.add_parser("add", help="add a document: to the store, and in a project folder also to the project")
-    add.add_argument("file", help="the document file (PDF), or an http or https URL to download it from")
+    add = sub.add_parser("add", help="add a document (PATH|URL): to the store, and in a project folder also "
+                                     "to the project")
+    add.add_argument("file", metavar="PATH|URL",
+                     help="the path of a PDF file, or an http or https URL of a PDF to download")
     add.add_argument("--part", help="the part number (MPN); without it, the tool proposes one from the PDF")
     add.add_argument("--yes", action="store_true", help="accept the proposed part without a question")
     add.add_argument("--project", help="the project folder (default: the current folder or a parent folder)")
