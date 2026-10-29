@@ -100,7 +100,7 @@ each change of the CAD project, do these steps:
    PDF). Then project_add_part(mpn, base, document). mpn is the concrete
    orderable MPN of the BOM (TLV75533PDBVR, get_ordering_codes gives them), base
    is the part of the datasheet (TLV755P). If you cannot get the datasheet, tell
-   the user the MPN and the reason.
+   the user the MPN, the reason and the search links of part_links(mpn).
 4. Tell the user about each different or extra part, and when a CAD MPN and its
    datasheet do not agree (value, package, variant). Change a part with
    project_update_part, and remove one only when the user agrees.
@@ -766,6 +766,24 @@ def project_add_part(
                       f"{len(part['documents'])} documents"]
                      + [f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}"
                         for d in part["documents"]] + ([note] if note else []))
+
+
+@tool
+def part_links(
+        mpn: Annotated[str, Field(description="The MPN, best the concrete orderable one, for example TPS7A0233PYCHR.")]
+) -> str:
+    """Search links for a part: datasheet, price and stock (DigiKey, Mouser,
+    Farnell, LCSC, Octopart, Findchips), and symbol, footprint and 3D model
+    (Component Search Engine, SnapMagic, Ultra Librarian). Use them when the store
+    and the CAD project have no datasheet, and for the CAD files. datasheet-lens
+    does not open these pages: open one with a web tool, or give the links to the
+    user. A datasheet that you find: add_document with its URL. Gives one line
+    for each site."""
+    from .links import format_links
+
+    if not mpn.strip():
+        raise LensError("the MPN is empty")
+    return "\n".join(format_links(mpn))
 
 
 @tool

@@ -903,7 +903,8 @@ def format_check(result: dict, cli: bool = False) -> list[str]:
                        else f"add_document(path='{m['datasheet']}'), then {add(m['mpn'], '<base part>', '<doc>')}"))
         else:
             step = ("the store has no datasheet, and the CAD part has no Datasheet field: find the datasheet "
-                    "(a distributor), or tell the user")
+                    + (f'(datasheet-lens links "{m["mpn"]}")' if cli else f"(part_links(mpn='{m['mpn']}'))")
+                    + ", or tell the user")
         lines.append(f"missing: {m['mpn']}{refs}: {step}")
     for mpn in result["extra"]:
         lines.append(f"extra: {mpn}: the CAD project does not have it. Tell the user; remove it only when the "

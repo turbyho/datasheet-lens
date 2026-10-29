@@ -488,6 +488,14 @@ def _base_note(store: Store, part: dict) -> str:
     return project_base_note(store, part, 'datasheet-lens set "{mpn}" -m "{code}" -b {base}')
 
 
+def cmd_links(args: argparse.Namespace) -> int:
+    """The command links: search links for a part (datasheet, stock, CAD files)."""
+    from .links import format_links
+
+    print("\n".join(format_links(args.mpn)))
+    return 0
+
+
 def cmd_codes(args: argparse.Namespace) -> int:
     """The command codes: the orderable codes of a datasheet."""
     from .identify import ordering_codes
@@ -626,6 +634,9 @@ def build_parser() -> argparse.ArgumentParser:
     cd = sub.add_parser("codes", help="show the orderable codes of a datasheet")
     cd.add_argument("document", metavar="DOC", help="document ID or SHA-256 prefix")
     cd.set_defaults(func=cmd_codes)
+    lk = sub.add_parser("links", help="show search links for a part: datasheet, stock, symbol, footprint, 3D model")
+    lk.add_argument("mpn", metavar="MPN")
+    lk.set_defaults(func=cmd_links)
     ls = sub.add_parser("ls", help="show the parts and documents of the project (project status)")
     ls.set_defaults(func=cmd_project_status)
     psync_short = sub.add_parser("sync", help="synchronize the project (project sync)")

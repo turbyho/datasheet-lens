@@ -218,3 +218,11 @@ def test_instructions_fit_the_client_limit():
     from datasheet_lens.server import INSTRUCTIONS
 
     assert len(INSTRUCTIONS) < 3800
+
+
+def test_part_links():
+    """Search links for each site, with the MPN in the URL (encoded)."""
+    out = text_of(call("part_links", mpn="MAX20361BEWC+"))
+    assert "Findchips: https://www.findchips.com/search/MAX20361BEWC%2B" in out
+    assert "symbol, footprint, 3D model:" in out and "componentsearchengine.com/search?term=MAX20361BEWC%2B" in out
+    assert "the MPN is empty" in tool_error("part_links", mpn=" ")

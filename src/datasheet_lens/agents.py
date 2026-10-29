@@ -41,7 +41,8 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
   `datasheet-lens check BOM.csv`). It gives the missing, extra and different
   parts with the next step. project_status (CLI `datasheet-lens ls`) gives the
   parts and documents of the file. If you cannot get a datasheet, tell the
-  user. Tell the user about each different or extra part, and when the MPN of
+  user, with the search links of part_links (CLI `datasheet-lens links MPN`;
+  also for symbols, footprints and 3D models). Tell the user about each different or extra part, and when the MPN of
   the CAD project and the datasheet do not agree. Remove a part only when the
   user agrees: project_remove_part (CLI `datasheet-lens rm MPN`). The MCP server
   instructions give the full procedure.
