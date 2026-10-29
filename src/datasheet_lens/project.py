@@ -87,6 +87,9 @@ class Project:
     layout: str = DEFAULT_LAYOUT
     # The text of the project file that load() read or save() wrote.
     text: str | None = field(default=None, repr=False, compare=False)
+    # The distributors that the project asks (the key distributors), or None:
+    # the global configuration. save() keeps the key; set_distributors() writes it.
+    distributors: list[str] | None = field(default=None, compare=False)
 
     @property
     def path(self) -> Path:
@@ -158,10 +161,18 @@ def _check_layout(layout) -> str:
 
 def _parse(text: str, path: Path) -> tuple[str, str, list[dict]]:
     """The folder, the layout and the parts of the text of a project file."""
+    return _parse_data(_toml(text, path), path)
+
+
+def _toml(text: str, path: Path) -> dict:
     try:
-        data = tomllib.loads(text)
+        return tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
         raise LensError(f"{path}: {e}") from e
+
+
+def _parse_data(data: dict, path: Path) -> tuple[str, str, list[dict]]:
+    """The folder, the layout and the parts of the data of a project file."""
     folder = _rel(data.get("folder", DEFAULT_FOLDER), "the folder")
     try:
         # No layout key: a project file of a version with no layout. Its copies
@@ -219,8 +230,44 @@ def load(start: Path | str | None = None) -> Project:
     root = find_project(start)
     path = root / PROJECT_FILE
     text = path.read_text(encoding="utf-8")
-    folder, layout, parts = _parse(text, path)
-    return Project(root, folder, parts, layout, text=text)
+    data = _toml(text, path)
+    folder, layout, parts = _parse_data(data, path)
+    names = data.get("distributors")
+    if names is not None and (not isinstance(names, list) or not all(isinstance(n, str) for n in names)):
+        raise LensError(f"{path}: distributors must be a list of names, for example [\"mouser\"]")
+    return Project(root, folder, parts, layout, text=text, distributors=names)
+
+
+def load_optional(start: Path | str | None = None) -> Project | None:
+    """The project that holds start, or None when there is no project file. A
+    project file with an error gives the error (not None)."""
+    try:
+        find_project(start)
+    except LensError:
+        return None
+    return load(start)
+
+
+def set_distributors(project: Project, names: list[str] | None) -> None:
+    """Write the key distributors of the project file, or remove it (None: the
+    project then uses the global configuration). The rest of the file stays."""
+    text = project.path.read_text(encoding="utf-8")
+    if project.text is not None and text != project.text:
+        raise LensError(f"{project.path} changed after datasheet-lens read it: run the command again")
+    doc = tomlkit.parse(text)
+    if names is None:
+        if "distributors" in doc:
+            del doc["distributors"]
+    else:
+        doc["distributors"] = names
+    new = tomlkit.dumps(doc)
+    # Read back before the write: a key after a table belongs to the table.
+    if tomllib.loads(new).get("distributors") != names:
+        raise LensError(f"{project.path}: cannot write the key distributors (nothing changed)")
+    if new != text:
+        write_atomic(project.path, new.encode("utf-8"))
+        project.text = new
+    project.distributors = names
 
 
 def _summary(folder: str, layout: str, parts: list[dict]):

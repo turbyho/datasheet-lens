@@ -128,3 +128,59 @@ def test_offers_of_one_mpn_and_failures(store_home, monkeypatch, tmp_path):
     assert "Findchips" in "\n".join(distributors.search_lines("TPS7A02"))
     with pytest.raises(LensError, match="the MPN is empty"):
         distributors.search_lines(" ")
+
+
+def test_enabled_distributors_and_notes(store_home, monkeypatch, tmp_path, capsys):
+    """The list of the project file wins over the global list, and that over the
+    default. An enabled distributor with no key gives a note with the steps."""
+    import pytest
+    from datasheet_lens.errors import LensError
+
+    distributors._cache.clear()
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "TPS7A0233PYCHR")
+    root = str(project.root)
+    assert distributors.enabled(prj.load(root)) == (["mouser"], "the default", [])
+    assert main(["dist", "mouser", "-p", root]) == 0
+    assert distributors.enabled(None)[1] == "the global configuration"
+    out = capsys.readouterr().out
+    assert 'run "datasheet-lens key mouser"' in out and "mouser.com/api-hub" in out
+    # The project list: an empty list asks no distributor.
+    assert main(["dist", "--local", "-p", root]) == 0
+    text = (project.root / "datasheet-lens.toml").read_text(encoding="utf-8")
+    assert "distributors" not in text
+    prj.set_distributors(prj.load(root), [])
+    loaded = prj.load(root)
+    assert loaded.distributors == [] and loaded.parts[0]["mpn"] == "TPS7A0233PYCHR"
+    assert distributors.availability(loaded) == ['No enabled distributor: "datasheet-lens dist" shows the settings.']
+    with pytest.raises(LensError, match="not supported yet"):
+        distributors.check_names(["farnell"])
+    # No key: the note goes to the agent, with the search links.
+    prj.set_distributors(prj.load(root), ["mouser"])
+    lines = distributors.search_lines("TPS7A02", project=prj.load(root))
+    assert lines[0].startswith("Mouser is enabled (the project file") and "Search links:" in lines
+    fake_api(monkeypatch, [PART])
+    assert distributors.availability(prj.load(root))[1].startswith("TPS7A0233PYCHR: New Product")
+
+
+def test_distributor_settings_with_problems(store_home, tmp_path, capsys):
+    """A name that is not supported is left out with a note. A project file with
+    an error gives the error. A configuration that cannot be read is not
+    written over."""
+    import pytest
+    from datasheet_lens.errors import LensError
+    from datasheet_lens.setup import config_path, save_config
+
+    save_config({"element_backend": "text", "distributors": ["mouser", "farnell"]})
+    names, source, skipped = distributors.enabled(None)
+    assert names == ["mouser"] and "farnell (in the global configuration) is not supported yet" in skipped[0]
+    project = prj.init_project(tmp_path / "board")
+    project.path.write_text(project.path.read_text(encoding="utf-8").replace(
+        'folder = "datasheets"', 'distributors = "mouser"\nfolder = "datasheets"'), encoding="utf-8")
+    with pytest.raises(LensError, match="distributors must be a list"):
+        prj.load_optional(project.root)
+    assert prj.load_optional(tmp_path / "elsewhere") is None
+    config_path().write_text("{broken", encoding="utf-8")
+    assert main(["dist", "mouser"]) == 2
+    assert config_path().read_text(encoding="utf-8") == "{broken"

@@ -10,6 +10,7 @@ import sys
 
 from .config import store_home
 from .elements import docling_available
+from .errors import LensError
 from .fileutil import write_atomic
 
 DOCLING_SPEC = "docling>=2.144"
@@ -36,12 +37,23 @@ def config_path():
     return store_home() / "config.json"
 
 
-def load_config() -> dict:
-    """The configuration, or {} if there is none or it cannot be read."""
+def load_config(strict: bool = False) -> dict:
+    """The configuration, or {} if there is none or it cannot be read. strict:
+    a file that cannot be read gives a LensError (before a change of the file)."""
+    path = config_path()
     try:
-        return json.loads(config_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError) as e:
+        if strict:
+            raise LensError(f"{path}: cannot read the configuration ({e}): correct or remove the file") from None
+        return {}
+    if not isinstance(data, dict):
+        if strict:
+            raise LensError(f"{path}: the configuration is not a JSON object: correct or remove the file")
+        return {}
+    return data
 
 
 def save_config(cfg: dict) -> None:

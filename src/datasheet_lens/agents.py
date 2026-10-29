@@ -54,8 +54,11 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
 - project_availability (CLI `datasheet-lens stock`) gives the lifecycle state
   and the stock of each part at the distributors; tell the user about each
   warning. search_distributors (CLI `datasheet-lens find MPN`) gives the
-  concrete orderable MPNs of a part. They need a personal API key in the
-  environment (DATASHEET_LENS_MOUSER_KEY).
+  concrete orderable MPNs of a part. They ask the enabled distributors
+  (distributor_status; the user sets them with `datasheet-lens dist`, globally
+  or with `--local` for the project). Each needs a personal API key, which the
+  user saves with `datasheet-lens key mouser`: give the user each note about a
+  missing key.
 - To change the MPN, the base part or the category of a part:
   project_update_part (CLI `datasheet-lens set MPN -m NEW`), not remove and add.
 - project_sync (CLI `datasheet-lens sync`) keeps `datasheet-lens.toml` and

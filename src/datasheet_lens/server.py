@@ -107,7 +107,8 @@ each change of the CAD project, do these steps:
 5. project_sync: it copies the documents into the project folder. Then
    project_check again: it must give no missing, extra or different part.
 6. project_availability: tell the user about each part that is not orderable
-   or has no stock. search_distributors gives the concrete MPNs of a part.
+   or has no stock, and give the user each note about a missing API key.
+   search_distributors gives the concrete MPNs of a part.
 
 The store identifies a document by its SHA-256: add_document of a file that it
 has copies nothing and gives the reference. Do not match a file to a document
@@ -795,30 +796,52 @@ def search_distributors(
         )],
         exact: Annotated[bool, Field(description=(
             "True: only this MPN. False: each MPN that starts with it (the concrete MPNs of a base part, "
-            "up to 50)."))] = False) -> str:
-    """The orderable parts at the distributors, from their official APIs:
-    lifecycle state, stock, prices, package and datasheet URL. A part that is
-    obsolete or discontinued is marked NOT ORDERABLE. Use it to select the
+            "up to 50)."))] = False,
+        path: ProjectPath = "") -> str:
+    """The orderable parts at the enabled distributors, from their official
+    APIs: lifecycle state, stock, prices, package and datasheet URL. A part that
+    is obsolete or discontinued is marked NOT ORDERABLE. Use it to select the
     concrete MPN of the BOM, and to check that it can be ordered. Each result
-    names its source (the terms of the distributors ask for it). Needs a
-    personal API key in an environment variable; without one, the result tells
-    which, and part_links gives search links."""
+    names its source (the terms of the distributors ask for it). The enabled
+    distributors come from the project file or the global configuration
+    (distributor_status). Each needs a personal API key: for a distributor with
+    no key, the result has a note with the steps for the user. Give the note
+    to the user. With no key at all, the result gives the search links of
+    part_links."""
     from .distributors import search_lines
 
-    return "\n".join(search_lines(mpn, exact))
+    from .project import load_optional
+
+    return "\n".join(search_lines(mpn, exact, load_optional(path or None)))
 
 
 @tool
 def project_availability(path: ProjectPath = "") -> str:
     """The lifecycle state and the stock of each part of the user project at
-    the distributors (official APIs). Gives one line for each part, and a
-    warning for a part that is not orderable (obsolete, discontinued, with the
-    replacement), that no distributor has, or that has no stock. Tell the user
-    about each warning. Needs a personal API key (see search_distributors)."""
+    the enabled distributors (official APIs). Gives one line for each part, and
+    a warning for a part that is not orderable (obsolete, discontinued, with the
+    replacement), that the distributor does not have, or that has no stock. Tell
+    the user about each warning, and give the user each note about a missing
+    API key (see search_distributors)."""
     from .distributors import availability
     from .project import load
 
     return "\n".join(availability(load(path or None)))
+
+
+@tool
+def distributor_status(path: ProjectPath = "") -> str:
+    """The distributors that datasheet-lens asks (from the project file, the
+    global configuration or the default), and if each has an API key (no key
+    values). For a distributor with no key, a note with the steps for the user:
+    give it to the user. The user changes the list with the CLI command
+    "datasheet-lens dist NAME ..." (global) or "datasheet-lens dist --local NAME ..."
+    (this project)."""
+    from .distributors import status_lines
+
+    from .project import load_optional
+
+    return "\n".join(status_lines(load_optional(path or None)))
 
 
 @tool

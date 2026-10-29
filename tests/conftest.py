@@ -13,6 +13,11 @@ def isolated(tmp_path_factory, monkeypatch):
     work = tmp_path_factory.mktemp("work")
     monkeypatch.chdir(work)
     monkeypatch.setenv("DATASHEET_LENS_HOME", str(work / ".datasheet-lens"))
+    # Not the API keys of the user: no environment variable, no key store.
+    from datasheet_lens import keys
+    for env in keys.KEYS.values():
+        monkeypatch.delenv(env, raising=False)
+    monkeypatch.setattr(keys, "_keyring", lambda: None)
 
 
 @pytest.fixture(autouse=True)

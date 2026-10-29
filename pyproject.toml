@@ -21,6 +21,8 @@ dependencies = [
     "mcp>=2.3",
     # Writes the project file and keeps the comments and the keys of the user.
     "tomlkit>=0.15",
+    # The API keys of the distributors in the key store of the system.
+    "keyring>=25.6",
 ]
 
 [project.urls]

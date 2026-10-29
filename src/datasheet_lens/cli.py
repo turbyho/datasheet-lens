@@ -488,11 +488,61 @@ def _base_note(store: Store, part: dict) -> str:
     return project_base_note(store, part, 'datasheet-lens set "{mpn}" -m "{code}" -b {base}')
 
 
+def cmd_key(args: argparse.Namespace) -> int:
+    """The command key: save, remove or show the API keys of the distributors."""
+    import getpass
+
+    from .keys import KEYS, delete_key, key_source, key_sources, set_key
+
+    if not args.name:
+        if args.delete:
+            raise LensError("give the key to remove, for example: datasheet-lens key mouser --delete")
+        for name, where in key_sources().items():
+            print(f"{name}: {where}")
+        return 0
+    if args.delete:
+        delete_key(args.name)
+        print(f"{args.name}: removed from the key store and the file")
+        where = key_source(args.name)
+        if where != "not set":  # an environment variable, or a key store that did not answer
+            print(f"{args.name}: a key is still in {where}")
+        return 0
+    # Not on the screen and not in the shell history.
+    value = getpass.getpass(f"{args.name} API key: ") if sys.stdin.isatty() else sys.stdin.readline()
+    print(f"{args.name}: saved in {set_key(args.name, value)}")
+    env = KEYS[args.name.lower()]
+    if key_source(args.name).startswith("environment"):
+        print(f"{args.name}: the environment variable {env} comes first: remove it, else the saved key is not used")
+    return 0
+
+
+def cmd_dist(args: argparse.Namespace) -> int:
+    """The command dist: show or set the distributors that datasheet-lens asks,
+    globally or (--local) for the project."""
+    from .distributors import check_names, status_lines
+    from .project import load, load_optional, set_distributors
+    from .setup import load_config, save_config
+
+    if args.local:
+        project = load(args.path)
+        set_distributors(project, check_names(args.names) if args.names else None)
+        print(f"project {project.root}: " + (f"distributors {', '.join(project.distributors)}"
+                                            if project.distributors is not None else "the global configuration"))
+    elif args.names:
+        cfg = load_config(strict=True)  # a file that cannot be read is not written over
+        cfg["distributors"] = check_names(args.names)
+        save_config(cfg)
+        print(f"global: distributors {', '.join(cfg['distributors'])}")
+    print("\n".join(status_lines(load_optional(args.path))))
+    return 0
+
+
 def cmd_find(args: argparse.Namespace) -> int:
     """The command find: the parts at the distributors (official APIs)."""
     from .distributors import search_lines
+    from .project import load_optional
 
-    print("\n".join(search_lines(args.mpn, args.exact)))
+    print("\n".join(search_lines(args.mpn, args.exact, load_optional(args.path))))
     return 0
 
 
@@ -655,10 +705,22 @@ def build_parser() -> argparse.ArgumentParser:
     lk.add_argument("mpn", metavar="MPN")
     lk.set_defaults(func=cmd_links)
     fd = sub.add_parser("find", help="find a part at the distributors: concrete MPNs, state, stock, prices "
-                                     "(needs DATASHEET_LENS_MOUSER_KEY)")
+                                     "(needs a key: datasheet-lens key mouser)")
     fd.add_argument("mpn", metavar="MPN", help="an MPN, or the start of the MPNs (a base part)")
     fd.add_argument("-x", "--exact", action="store_true", help="only this MPN")
     fd.set_defaults(func=cmd_find)
+    ds = sub.add_parser("dist", help="show or set the distributors that datasheet-lens asks (global, or with "
+                                     "--local for the project)")
+    ds.add_argument("names", nargs="*", metavar="NAME", help="the distributors, for example mouser")
+    ds.add_argument("--local", action="store_true",
+                    help="set them in the project file; with no NAME, the project uses the global setting")
+    ds.add_argument("-p", "--path", "--project", dest="path", help="the project folder (default: the current folder or a parent "
+                                                      "folder)")
+    ds.set_defaults(func=cmd_dist)
+    ky = sub.add_parser("key", help="save the API key of a distributor (asks for it), or show where the keys are")
+    ky.add_argument("name", nargs="?", metavar="NAME", help="the distributor: mouser. Empty: show the keys")
+    ky.add_argument("--delete", action="store_true", help="remove the saved key")
+    ky.set_defaults(func=cmd_key)
     sk = sub.add_parser("stock", help="show the lifecycle state and the stock of each project part")
     sk.set_defaults(func=cmd_stock)
     ls = sub.add_parser("ls", help="show the parts and documents of the project (project status)")
@@ -666,7 +728,7 @@ def build_parser() -> argparse.ArgumentParser:
     psync_short = sub.add_parser("sync", help="synchronize the project (project sync)")
     psync_short.add_argument("--restore", action="store_true", help="copy a changed copy again from the store")
     psync_short.set_defaults(func=cmd_project_sync)
-    for p in (rm, st, ck, sk, ls, psync_short):
+    for p in (rm, st, ck, sk, fd, ls, psync_short):
         p.add_argument("-p", "--path", "--project", dest="path",
                        help="the project folder (default: the current folder or a parent folder)")
 
