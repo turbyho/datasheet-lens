@@ -64,7 +64,7 @@ of each use.
 datasheet-lens needs Python 3.11 or newer. It works on Linux, macOS and Windows.
 
 ```sh
-pipx install git+https://github.com/turbyho/datasheet-lens.git
+pipx install datasheet-lens
 datasheet-lens init
 ```
 

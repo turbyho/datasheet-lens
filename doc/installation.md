@@ -20,11 +20,14 @@ The installation gives two commands:
 
 ## Install the tool
 
-1. Install the package from the GitHub repository:
+1. Install the package from PyPI:
 
    ```sh
-   pipx install git+https://github.com/turbyho/datasheet-lens.git
+   pipx install datasheet-lens
    ```
+
+   To install the code that is not released yet, install from the GitHub
+   repository: `pipx install git+https://github.com/turbyho/datasheet-lens.git`.
 
 2. Make the central store, and select the element map backend:
 
@@ -148,7 +151,7 @@ The tool makes a file in `render/` again when the file is not there.
    pipx upgrade datasheet-lens
    ```
 
-   If pipx does not find a new version, install the package again:
+   If you installed the package from the GitHub repository, install it again:
 
    ```sh
    pipx install --force git+https://github.com/turbyho/datasheet-lens.git
