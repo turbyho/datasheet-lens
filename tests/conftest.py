@@ -18,6 +18,8 @@ def isolated(tmp_path_factory, monkeypatch):
     for env in keys.KEYS.values():
         monkeypatch.delenv(env, raising=False)
     monkeypatch.setattr(keys, "_keyring", lambda: None)
+    # No request to PyPI from a test (see version_check).
+    monkeypatch.setenv("DATASHEET_LENS_NO_UPDATE_CHECK", "1")
 
 
 @pytest.fixture(autouse=True)

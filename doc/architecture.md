@@ -71,7 +71,7 @@ The database tables:
 | `part_aliases` | More names of a part. |
 | `documents` | SHA-256, file name, size, pages, title, source URL. |
 | `part_documents` | The links between parts and documents, with the role. |
-| `builds` | The version and the backend of each index and element map. |
+| `builds` | The format version (`indexer.INDEX_FORMAT`, `elements.ELEMENTS_FORMAT`) and the backend of each index and element map. A new release of the package does not build them again; a new format does. |
 | `pages`, `outline`, `captions` | The index. |
 | `elements` | The element map. |
 | `knowledge` | The facts. |
@@ -197,6 +197,7 @@ or the database.
 | Module | Function |
 |---|---|
 | `__init__.py` | The version and the project URL. |
+| `version_check.py` | The update check: a newer release on PyPI, and a server that runs an older version than the installed one. |
 | `agents.py` | The datasheet-lens block in `AGENTS.md` and `CLAUDE.md`. |
 | `cli.py` | The command line interface. |
 | `config.py` | The location of the central store (`DATASHEET_LENS_HOME`). |

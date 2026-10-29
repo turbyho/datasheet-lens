@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.turbyho/datasheet-lens -->
+
 # datasheet-lens
 
 datasheet-lens gives the content of component datasheets (PDF) to an LLM agent,
@@ -54,7 +56,7 @@ check the BOM, and check the design against the original datasheets.
   are at once available in each other project of the same user.
 
 datasheet-lens does not read the schematic itself. The parts come from the CAD tool,
-its MCP server or a BOM file. See [doc/use-cases.md](doc/use-cases.md) for the steps
+its MCP server or a BOM file. See [doc/use-cases.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/use-cases.md) for the steps
 of each use.
 
 ## Installation
@@ -79,7 +81,7 @@ claude mcp add --scope user datasheet-lens -- datasheet-lens-mcp
 
 For a different MCP client, set the command `datasheet-lens-mcp` with no
 arguments. The server gives its instructions to the agent. See
-[doc/installation.md](doc/installation.md) and [doc/mcp-server.md](doc/mcp-server.md).
+[doc/installation.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/installation.md) and [doc/mcp-server.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/mcp-server.md).
 
 ## Quick start
 
@@ -111,25 +113,25 @@ only the files that exist: make one of them first if you want the block.
 | `key NAME` | Save the API key of a distributor |
 | `dist NAME ...` | Select the distributors (globally, or `--local` for the project) |
 
-All commands and options are in [doc/cli.md](doc/cli.md).
+All commands and options are in [doc/cli.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/cli.md).
 
 Each user has a personal API key for each distributor. Get a free Mouser key at
 the [Mouser API Hub](https://www.mouser.com/api-hub/) (Search API), then run
-`datasheet-lens key mouser`. See [doc/distributors.md](doc/distributors.md).
+`datasheet-lens key mouser`. See [doc/distributors.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/distributors.md).
 
 ## Documentation
 
 | Document | Content |
 |---|---|
-| [doc/installation.md](doc/installation.md) | Requirements, installation, `init`, docling, store location, upgrade, uninstall |
-| [doc/use-cases.md](doc/use-cases.md) | Typical uses, step by step |
-| [doc/mcp-server.md](doc/mcp-server.md) | MCP server: registration, instructions, all tools |
-| [doc/agent-workflow.md](doc/agent-workflow.md) | How an agent reads a datasheet, with an example |
-| [doc/projects.md](doc/projects.md) | Project file, layout, sync, team workflow, consistency with the CAD project |
-| [doc/cli.md](doc/cli.md) | Reference of all CLI commands and options |
-| [doc/distributors.md](doc/distributors.md) | Distributor data, API keys, distributor selection, search links |
-| [doc/architecture.md](doc/architecture.md) | For developers: design decisions and module map |
-| [doc/development.md](doc/development.md) | Development setup, tests, code and text style |
+| [doc/installation.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/installation.md) | Requirements, installation, `init`, docling, store location, upgrade, uninstall |
+| [doc/use-cases.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/use-cases.md) | Typical uses, step by step |
+| [doc/mcp-server.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/mcp-server.md) | MCP server: registration, instructions, all tools |
+| [doc/agent-workflow.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/agent-workflow.md) | How an agent reads a datasheet, with an example |
+| [doc/projects.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/projects.md) | Project file, layout, sync, team workflow, consistency with the CAD project |
+| [doc/cli.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/cli.md) | Reference of all CLI commands and options |
+| [doc/distributors.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/distributors.md) | Distributor data, API keys, distributor selection, search links |
+| [doc/architecture.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/architecture.md) | For developers: design decisions and module map |
+| [doc/development.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/development.md) | Development setup, tests, code and text style |
 
 ## Development
 
@@ -139,7 +141,7 @@ python3 -m venv .venv
 .venv/bin/python -m pytest
 ```
 
-See [doc/development.md](doc/development.md).
+See [doc/development.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/development.md).
 
 ## License
 

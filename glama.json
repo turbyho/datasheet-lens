@@ -1,0 +1,29 @@
+{
+  "$schema": "https://glama.ai/schemas/glama.json",
+  "maintainers": [
+    "turbyho"
+  ],
+  "title": "datasheet-lens",
+  "version": "0.1.0",
+  "description": "Gives component datasheets (PDF) to LLM agents for electronics design and firmware: an index, a text search and the original pages and regions on demand. Keeps the datasheets of a design project consistent with the CAD project and the BOM, and checks the parts at the distributors.",
+  "tags": [
+    "datasheet",
+    "pdf",
+    "electronics",
+    "pcb",
+    "kicad",
+    "eagle",
+    "bom",
+    "firmware",
+    "embedded",
+    "components"
+  ],
+  "repository": "https://github.com/turbyho/datasheet-lens",
+  "license": "MIT",
+  "categories": [
+    "developer-tools",
+    "embedded-systems"
+  ],
+  "language": "Python",
+  "runtime": "python"
+}

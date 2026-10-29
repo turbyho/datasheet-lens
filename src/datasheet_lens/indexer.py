@@ -12,11 +12,14 @@ import re
 
 import pypdfium2 as pdfium
 
-from . import __version__
 from .errors import LensError
 from .pdflock import pdfium_locked
 from .pdftext import PageText, page_lines, raster_min_dpi
 from .store import Store, now
+
+# The version of the format of an index. Change it when an index of the old
+# format must be built again (a new version of the package does not).
+INDEX_FORMAT = "1"
 
 # A numbered heading: "3.2.1. CONTROL_1 (address 00h)" or "5.1 Absolute Maximum Ratings".
 # The space after the number can be missing in the text layer ("3.2.1.CONTROL_1").
@@ -74,12 +77,12 @@ def _read_pages(path: str) -> tuple[list[PageText], list[dict], list[dict]]:
 
 
 def build_index(store: Store, doc_id: int, force: bool = False) -> dict:
-    """Build the index of a document. An index of the same tool version is kept,
-    unless force is true."""
+    """Build the index of a document. An index of the same format (INDEX_FORMAT)
+    is kept, unless force is true."""
     doc = store.document(doc_id)
     if doc is None:
         raise LensError(f"document not found: {doc_id}")
-    if not force and store.build_current(doc.id, "index", __version__, "pdfium"):
+    if not force and store.build_current(doc.id, "index", INDEX_FORMAT, "pdfium"):
         count = lambda t: store.db.execute(f"SELECT count(*) FROM {t} WHERE document_id = ?",  # noqa: E731
                                            (doc.id,)).fetchone()[0]
         return {"pages": count("pages"), "outline": count("outline"), "captions": count("captions"),
@@ -103,7 +106,7 @@ def build_index(store: Store, doc_id: int, force: bool = False) -> dict:
                        [(doc.id, n, c["kind"], c["label"], c["caption"], c["page"], c["x"], c["y"],
                          c["order"], c["count"]) for n, c in enumerate(captions)])
         db.execute("INSERT OR REPLACE INTO builds VALUES (?, 'index', ?, 'pdfium', ?)",
-                   (doc.id, __version__, now()))
+                   (doc.id, INDEX_FORMAT, now()))
     return {"pages": len(pages), "outline": len(outline), "captions": len(captions), "skipped": False}
 
 

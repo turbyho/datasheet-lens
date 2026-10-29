@@ -16,9 +16,18 @@ from .store import ROLES, Store
 
 
 def cmd_info(_args: argparse.Namespace) -> int:
-    """The command info: show the version and the store folder."""
+    """The command info: show the version, the store folder, and a newer release
+    on PyPI (it asks PyPI each time, and waits for the answer a few seconds at
+    most)."""
+    from .version_check import TIMEOUT, start_update_check, user_notes
+
     print(f"datasheet-lens {__version__}")
     print(f"store: {store_home()}")
+    thread = start_update_check(force=True)
+    if thread is not None:
+        thread.join(TIMEOUT)
+    for note in user_notes():
+        print(note)
     return 0
 
 
@@ -394,13 +403,15 @@ def cmd_project_init(args: argparse.Namespace) -> int:
 
 
 def cmd_project_status(args: argparse.Namespace) -> int:
-    """The command ls (project status): print the parts, documents and copies."""
+    """The command ls (project status): print the parts, documents and copies,
+    and a newer release that an earlier check found."""
     from .project import format_parts, format_report, load, sync
+    from .version_check import user_notes
 
     project = load(args.path)
     with Store() as store:
         report = sync(project, store, apply=False)
-    print("\n".join(format_parts(project) + format_report(report, False, PROJECT_ADD_HINT)))
+    print("\n".join(user_notes() + format_parts(project) + format_report(report, False, PROJECT_ADD_HINT)))
     return 0
 
 

@@ -30,6 +30,11 @@ MIGRATIONS = {
     # datasheet (TLV755P).
     2: "ALTER TABLE parts ADD COLUMN base_id INTEGER REFERENCES parts(id) ON DELETE SET NULL",
 }
+# A build records the version of its format (indexer.INDEX_FORMAT,
+# elements.ELEMENTS_FORMAT), not the version of the package. The builds of the
+# development versions recorded the package version 0.1.0.dev0: format 1. No
+# schema change for this: a server of the old version must still open the store.
+LEGACY_FORMATS = {"1": ("0.1.0",)}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -259,11 +264,15 @@ class Store:
         return self.db.execute("SELECT * FROM builds WHERE document_id = ? AND kind = ?",
                                (doc_id, kind)).fetchone()
 
-    def build_current(self, doc_id: int, kind: str, tool_version: str, backend: str) -> bool:
-        """True if the derived data of this kind was built with this tool version
-        and backend."""
+    def build_current(self, doc_id: int, kind: str, fmt: str, backend: str) -> bool:
+        """True if the derived data of this kind has this format version (the
+        column tool_version) and backend. A build of a development version has
+        its format in LEGACY_FORMATS."""
         row = self.build(doc_id, kind)
-        return row is not None and row["tool_version"] == tool_version and row["backend"] == backend
+        if row is None or row["backend"] != backend:
+            return False
+        stored = row["tool_version"]
+        return stored == fmt or stored.startswith(LEGACY_FORMATS.get(fmt, ()))
 
     # Files
 

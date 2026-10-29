@@ -121,7 +121,8 @@ datasheet-lens index [--force] [documents ...]
 
 Build the index of documents: the page text, the outline, the captions and the page
 quality. With no document, build it for all documents. The command does not build
-again an index that the same version of the tool built.
+again an index of the current format (`INDEX_FORMAT`): a new release of the tool
+alone does not build it again.
 
 | Argument or option | Effect |
 |---|---|

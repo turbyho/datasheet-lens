@@ -155,18 +155,39 @@ The tool makes a file in `render/` again when the file is not there.
    ```
 
 2. Restart the MCP client, so that it starts the new MCP server.
-3. Build the index and the element map again for the new version:
 
-   ```sh
-   datasheet-lens index
-   datasheet-lens elements
-   ```
+Each index and each element map records the version of its format, not the version
+of the package. A new release builds them again only when it changes the format;
+its release notes then tell it. To build them again by hand:
 
-Each index and each element map records the version of the tool that built it. The
-two commands build again only the documents that a different version built. The
-first start of a new version updates the database schema of the store. An older
+```sh
+datasheet-lens index --force
+datasheet-lens elements --force
+```
+
+The first start of a new version updates the database schema of the store. An older
 version of the tool cannot open a store that a newer version updated. It stops with
 an error that tells you to install a newer version.
+
+### Update check
+
+datasheet-lens tells you when PyPI has a newer release, and when the MCP server runs
+an older version than the installed one:
+
+- The MCP server asks PyPI in a background thread, at most one time in 24 hours,
+  and keeps the answer in `update_check.json` in the store folder. The tools never
+  wait for the network.
+- `project_status`, `project_check` and `distributor_status` (MCP) show a line
+  when a newer release is available, or when the LLM client must restart after an
+  upgrade. The server gives each line one time while it runs. The agent tells
+  you; it does not upgrade the tool itself.
+- `datasheet-lens info` and `datasheet-lens ls` (CLI) show a newer release with
+  the upgrade command.
+- `datasheet-lens info` asks PyPI each time, and waits a few seconds at most.
+- An editable install (`pip install -e`) gets no check.
+
+To stop the check, set the environment variable `DATASHEET_LENS_NO_UPDATE_CHECK=1`,
+or add `"update_check": false` to `config.json` in the store folder.
 
 ## Uninstall
 

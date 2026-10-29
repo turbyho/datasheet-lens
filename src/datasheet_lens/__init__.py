@@ -4,6 +4,6 @@ The tool does not convert the content of a datasheet. It finds the content (outl
 captions, element map, text search) and gives the original pages to the model.
 """
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0"
 # The same URL is in pyproject.toml ([project.urls]): change the two together.
 PROJECT_URL = "https://github.com/turbyho/datasheet-lens"

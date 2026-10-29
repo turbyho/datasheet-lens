@@ -148,3 +148,33 @@ def test_search_keeps_register_lines_and_signs(store_home, text_pdf):
     assert pages_of("nRF9151") == []  # the header with its page number
     assert pages_of("-40", mode="word") == [1, 2, 3, 4]
     assert pages_of("offset:  0x524", mode="regex") == [] and pages_of("offset: 0x524", mode="regex") == [2]
+
+
+def test_format_versions_follow_the_rules():
+    """A change of the rules of the index or of the element map needs a new
+    format version (indexer.INDEX_FORMAT, elements.ELEMENTS_FORMAT): else the
+    stores of the users keep the indexes of the old rules. When this test fails,
+    increase the format version, and then write the new fingerprint here."""
+    import hashlib
+
+    from datasheet_lens import elements, indexer
+
+    rules = [indexer.HEADING_RE.pattern, indexer.TOC_RE.pattern, indexer.CAPTION_RE.pattern,
+             indexer.CAPS_RE.pattern]
+    index = hashlib.sha256("\n".join(rules).encode()).hexdigest()[:16]
+    element_map = hashlib.sha256(repr(sorted(elements.DOCLING_CODE.items())).encode()).hexdigest()[:16]
+    assert (indexer.INDEX_FORMAT, index) == ("1", "4b9f1cf3854401c4")
+    assert (elements.ELEMENTS_FORMAT, element_map) == ("1", "1c0620ff86a3f055")
+
+
+def test_builds_of_the_development_versions_are_format_1(store_home, text_pdf):
+    """A build that recorded the package version 0.1.0.dev0 is format 1: no new build."""
+    store = Store()
+    doc = store.add_document(text_pdf("s.pdf", [[(50, 100, 10, "OPA2134")]]))
+    build_index(store, doc.id)
+    store.db.execute("UPDATE builds SET tool_version = '0.1.0.dev0' WHERE document_id = ?", (doc.id,))
+    store.db.commit()
+    assert build_index(store, doc.id)["skipped"] is True
+    store.db.execute("UPDATE builds SET tool_version = '0' WHERE document_id = ?", (doc.id,))
+    store.db.commit()
+    assert build_index(store, doc.id)["skipped"] is False

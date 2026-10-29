@@ -83,7 +83,8 @@ INSTRUCTIONS = """\
 datasheet-lens gives the content of component datasheets (PDF): an index, a text
 search and the original pages. Read each value from the original (get_page_image
 or get_pdf_pages), never from the text layer alone: the text layer can lose
-signs, units, subscripts and the structure of tables.
+signs, units, subscripts and the structure of tables. When a tool tells about a
+newer release or a restart of the client, tell the user one time.
 
 User project: the project file datasheet-lens.toml must hold the same parts as
 the CAD project (schematic, BOM). This is critical: the team uses the file as
@@ -686,13 +687,16 @@ def project_status(path: ProjectPath = "") -> str:
     """The parts and documents of the user project, and the state of the copies
     in the project folder: missing or changed copies, new files, problems. It
     changes nothing. Gives one line for each part (MPN, manufacturer, base part,
-    variants) and one line for each document (reference, role, file)."""
+    variants) and one line for each document (reference, role, file). A first
+    line can tell about a newer release or a necessary restart of the LLM
+    client: tell the user."""
     from .project import format_parts, format_report, load, sync
+    from .version_check import version_notes
 
     project = load(path or None)
     with Store() as store:
         report = sync(project, store, apply=False)
-    return "\n".join(format_parts(project) + format_report(report, False, PROJECT_ADD_HINT))
+    return "\n".join(version_notes() + format_parts(project) + format_report(report, False, PROJECT_ADD_HINT))
 
 
 @tool
@@ -838,10 +842,10 @@ def distributor_status(path: ProjectPath = "") -> str:
     "datasheet-lens dist NAME ..." (global) or "datasheet-lens dist --local NAME ..."
     (this project)."""
     from .distributors import status_lines
-
     from .project import load_optional
+    from .version_check import version_notes
 
-    return "\n".join(status_lines(load_optional(path or None)))
+    return "\n".join(version_notes() + status_lines(load_optional(path or None)))
 
 
 @tool
@@ -895,11 +899,12 @@ def project_check(
     Datasheet field, and the next call; an alternative of a part is missing
     too) or extra. It changes nothing."""
     from .project import check_parts, format_check, load
+    from .version_check import version_notes
 
     with Store() as store:
         project = load(path or None)
         result = check_parts(project, store, [p.model_dump() for p in parts])
-    return "\n".join(format_check(result))
+    return "\n".join(version_notes() + format_check(result))
 
 
 @tool
@@ -989,7 +994,11 @@ def project_remove_document(
 
 
 def main() -> None:
-    """Run the MCP server on stdin and stdout."""
+    """Run the MCP server on stdin and stdout. A background thread asks PyPI for
+    a newer release (see version_check)."""
+    from .version_check import start_update_check
+
+    start_update_check()
     mcp.run("stdio")
 
 

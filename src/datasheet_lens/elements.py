@@ -19,13 +19,14 @@ import re
 
 import pypdfium2 as pdfium
 
-from . import __version__
 from .errors import LensError
 from .indexer import CAPS_RE, CAPTION_RE, HEADING_RE, TOC_RE
 from .pdflock import pdfium_locked
 from .pdftext import Line, page_lines
 from .store import Store, now
 
+# The version of the format of an element map (see indexer.INDEX_FORMAT).
+ELEMENTS_FORMAT = "1"
 STRUCTURE = ("H", "T", "F", "Q", "C")   # the codes that page_map shows by default
 DOCLING_CODE = {"section_header": "H", "title": "H", "text": "P", "paragraph": "P",
                 "list_item": "L", "table": "T", "picture": "F", "chart": "F", "formula": "Q",
@@ -41,13 +42,13 @@ def docling_available() -> bool:
 def build_elements(store: Store, doc_id: int, backend: str = "auto", chunk: int = 50,
                    force: bool = False) -> dict:
     """Build the element map of a document, and replace the old one. A map of the
-    same tool version and backend is kept, unless force is true."""
+    same format (ELEMENTS_FORMAT) and backend is kept, unless force is true."""
     if backend == "auto":
         backend = "docling" if docling_available() else "text"
     doc = store.document(doc_id)
     if doc is None:
         raise LensError(f"document not found: {doc_id}")
-    if not force and store.build_current(doc.id, "elements", __version__, backend):
+    if not force and store.build_current(doc.id, "elements", ELEMENTS_FORMAT, backend):
         count = store.db.execute("SELECT count(*) FROM elements WHERE document_id = ?", (doc.id,)).fetchone()[0]
         return {"elements": count, "backend": backend, "skipped": True}
     if backend == "docling":
@@ -66,7 +67,7 @@ def build_elements(store: Store, doc_id: int, backend: str = "auto", chunk: int 
             [(doc.id, e["id"], e["page"], e["type"], e["code"], e["order"], *e["bbox"], e["text"])
              for e in rows])
         store.db.execute("INSERT OR REPLACE INTO builds VALUES (?, 'elements', ?, ?, ?)",
-                         (doc.id, __version__, backend, now()))
+                         (doc.id, ELEMENTS_FORMAT, backend, now()))
     return {"elements": len(rows), "backend": backend, "skipped": False}
 
 
