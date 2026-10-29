@@ -70,7 +70,7 @@ def test_mouser_errors_hide_the_key(monkeypatch):
         distributors.mouser_search("X1")
     assert "401" in str(e.value) and "secret-key" not in str(e.value)
     fake_api(monkeypatch, [], errors=["Invalid unique identifier."])
-    with pytest.raises(LensError, match="Invalid unique identifier"):
+    with pytest.raises(LensError, match="Invalid unique identifier.*not approved it yet"):
         distributors.mouser_search("X1")
     monkeypatch.delenv(distributors.MOUSER_ENV)
     with pytest.raises(LensError, match=distributors.MOUSER_ENV):

@@ -202,7 +202,11 @@ def mouser_search(mpn: str, exact: bool = True, key: str = "") -> list[Offer]:
         raise LensError("Mouser API: the answer has no search results")
     errors = [e.get("Message") or e.get("Code") or "error" for e in data.get("Errors") or [] if isinstance(e, dict)]
     if errors:
-        raise LensError(f"Mouser API: {'; '.join(errors)}")
+        text = "; ".join(errors).rstrip(".")
+        if "unique identifier" in text.lower():  # the answer of Mouser for a wrong key or a key not approved yet
+            text += (". The API key is not valid, or Mouser has not approved it yet. Tell the user: check the "
+                     "key at https://www.mouser.com/api-hub/, then save it again with \"datasheet-lens key mouser\"")
+        raise LensError(f"Mouser API: {text}")
     parts = (data.get("SearchResults") or {}).get("Parts") or []
     offers = [_mouser_offer(p) for p in parts if isinstance(p, dict) and p.get("ManufacturerPartNumber")]
     if len(_cache) >= MAX_CACHE:  # remove the old answers
