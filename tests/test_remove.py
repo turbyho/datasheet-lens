@@ -34,7 +34,7 @@ def test_rm_part_keeps_a_shared_copy(store_home, text_pdf, tmp_path, capsys):
     assert main(["rm", "OPA2134", "-p", root]) == 0
     out = capsys.readouterr().out
     assert "removed: part OPA2134" in out and "deleted: datasheets/errata.pdf" in out
-    assert "kept: datasheets/opa2134.pdf (an other part uses it)" in out
+    assert "kept: datasheets/opa2134.pdf (a different part uses it)" in out
     assert [p["mpn"] for p in prj.load(project.root).parts] == ["OPA134"]
     assert (project.folder_path / "opa2134.pdf").is_file() and not (project.folder_path / "errata.pdf").exists()
     with Store() as store:  # the central store does not change

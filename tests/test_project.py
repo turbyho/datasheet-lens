@@ -57,8 +57,10 @@ def test_copies_and_new_files(setup):
         assert report["imported"] == ["RV3149C3_datasheet.pdf"]
         item = report["suggested"][0]
         assert item["parts"] == ["RV-3149-C3 (Micro Crystal)"]
-        lines = prj.format_report(report, True, "add {mpn} {sha}")
-        assert any("proposal: RV-3149-C3" in l and f"add RV-3149-C3 {item['sha256'][:12]}" in l for l in lines)
+        lines = prj.format_report(report, True, ("add {part}{base} {sha}", " -b {base}"))
+        sha = item["sha256"][:12]
+        assert any("proposal: RV-3149-C3" in l and f"add RV-3149-C3 {sha}" in l and f"add <MPN> -b RV-3149-C3 {sha}" in l
+                   for l in lines), lines
 
         # The assignment uses the file that is in the folder: no second copy.
         part = prj.add_part(project, store, "RV-3149-C3", document=item["sha256"][:12], role="datasheet")
@@ -370,7 +372,7 @@ def test_moved_document_block(store_home, text_pdf, tmp_path):
         report = prj.sync(prj.load(project.root), store)
     item = report["misplaced"][0]
     assert (item["part"], item["linked"]) == ("OPA2134", ["RV-3149-C3 (Micro Crystal)"])
-    lines = prj.format_report(report, True, "add {mpn} {sha}")
+    lines = prj.format_report(report, True, ("add {part}{base} {sha}", " -b {base}"))
     assert any("was the block moved?" in line and f"add OPA2134 {doc.sha256[:12]}" in line for line in lines)
     assert (project.folder_path / "Micro Crystal/rtc.pdf").is_file()
     assert not (project.folder_path / "TI/rtc.pdf").exists()
@@ -419,10 +421,31 @@ def test_one_copy_for_a_document_of_two_parts(store_home, text_pdf, tmp_path):
         project = prj.init_project(tmp_path / "board")
         prj.add_part(project, store, "TPS7A0233PYCHR", base="TPS7A02")
         prj.add_part(project, store, "TPS7A0218PYCHR", base="TPS7A02")
-        lines = prj.format_report(prj.sync(project, store), True, "{mpn} {sha}")
+        lines = prj.format_report(prj.sync(project, store), True, ("", ""))
         assert lines == ["copied: TI/tps7a02.pdf", "1 copies are current"], lines
         # The next sync and a move to a new layout count the file one time too.
-        assert prj.format_report(prj.sync(project, store), True, "") == ["1 copies are current"]
+        assert prj.format_report(prj.sync(project, store), True, ("", "")) == ["1 copies are current"]
         project.layout = "{category}"
-        lines = prj.format_report(prj.sync(project, store), True, "")
+        lines = prj.format_report(prj.sync(project, store), True, ("", ""))
     assert lines == ["moved to its subfolder: TI/tps7a02.pdf -> _unknown/tps7a02.pdf", "1 copies are current"], lines
+
+
+def test_the_add_hints_of_the_cli_and_the_server():
+    """The hints of the real CLI and MCP templates: the base argument only when
+    there is a base part."""
+    from datasheet_lens import cli, server
+
+    report = {k: [] for k in ("ok", "copied", "restored", "changed", "missing", "imported", "added", "moved",
+                              "unknown_parts", "problems", "misplaced", "suggested", "unassigned")}
+    report["misplaced"] = [{"file": "a.pdf", "mpn": "TLV755P", "part": "TLV75533PDBVR", "base": "TLV755P",
+                            "sha256": "a" * 64, "linked": ["X"]},
+                           {"file": "b.pdf", "mpn": "OPA2134", "part": "OPA2134", "base": "", "sha256": "b" * 64,
+                            "linked": ["Y"]}]
+    report["unassigned"] = [{"file": "c.pdf", "sha256": "c" * 64}]
+    mcp = "\n".join(prj.format_report(report, False, server.PROJECT_ADD_HINT))
+    assert "project_add_part(mpn='TLV75533PDBVR', base='TLV755P', document='aaaaaaaaaaaa')" in mcp
+    assert "project_add_part(mpn='OPA2134', document='bbbbbbbbbbbb')" in mcp
+    assert "project_add_part(mpn='<MPN>', document='cccccccccccc')" in mcp
+    text = "\n".join(prj.format_report(report, False, cli.PROJECT_ADD_HINT))
+    assert 'project add-part "TLV75533PDBVR" --base "TLV755P" --document aaaaaaaaaaaa' in text
+    assert 'project add-part "OPA2134" --document bbbbbbbbbbbb' in text

@@ -356,7 +356,7 @@ def cmd_docs(args: argparse.Namespace) -> int:
     return 0
 
 
-PROJECT_ADD_HINT = "datasheet-lens project add-part \"{mpn}\" --document {sha}"
+PROJECT_ADD_HINT = ("datasheet-lens project add-part \"{part}\"{base} --document {sha}", " --base \"{base}\"")
 
 
 def cmd_project_init(args: argparse.Namespace) -> int:

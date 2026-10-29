@@ -266,7 +266,7 @@ def base_hint(store: Store, part_id: int, mpn: str) -> tuple[bool, list[tuple[st
     Not a code: a document number (BST-BMI323-DS000-10, GD25LE64E-Rev1.3), a
     footnote mark of one digit directly after mpn, when mpn ends with a digit
     (RR123-1H02-612 with the mark 1; a mark after a longer code stays in it),
-    a placeholder (TMP112DX) and an other part of the same datasheet (a variant)."""
+    a placeholder (TMP112DX) and a different part of the same datasheet (a variant)."""
     docs = [r for r in store.documents_of_part(part_id) if r["role"] == "datasheet"]
     if not docs or not mpn.strip():
         return False, []

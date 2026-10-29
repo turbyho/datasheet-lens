@@ -250,13 +250,13 @@ DOCUMENT_KEYS = ("sha256", "file", "role", "pinned")
 
 def _reorder(table, order: tuple[str, ...]) -> None:
     """Put the keys of order in a table into this sequence (a file of an older
-    version, or of a person, can have an other one). A comment at the end of the
+    version, or of a person, can have a different one). A comment at the end of the
     line of a key moves with the key; other keys and lines do not move."""
     container = table if isinstance(table, Container) else table.value
     present = [k.key for k, _ in container.body if k is not None and k.key in order]
     wanted = [k for k in order if k in present]
     if present == wanted or not hasattr(container, "_insert_after"):  # tomlkit: no public API for this
-        return  # an other tomlkit: the keys stay where they are
+        return  # a different tomlkit: the keys stay where they are
     for previous, key in zip(wanted, wanted[1:]):
         item = container.item(key)
         container.remove(key)
@@ -283,7 +283,7 @@ def _set(table, key: str, value: str, default: str = "", norm=str, order: tuple[
                 container._insert_after(before[-1], key, value)  # tomlkit: no public API for this
                 return
             except (AttributeError, KeyError):
-                pass  # an other tomlkit: the key goes to the end
+                pass  # a different tomlkit: the key goes to the end
     table[key] = value
 
 
@@ -656,7 +656,7 @@ def _drop_copies(project: Project, removed: list[dict], delete_pinned: bool, app
     for d in {d["file"]: d for d in removed}.values():
         path = project.file_path(d["file"])
         if d["file"] in used:
-            out["kept"].append(f"{d['file']} (an other part uses it)")
+            out["kept"].append(f"{d['file']} (a different part uses it)")
         elif d.get("pinned") and not delete_pinned:
             out["kept"].append(f"{d['file']} (pinned: you put it there; sync shows it as a file with no part; "
                                "delete_pinned deletes it)")
@@ -872,7 +872,8 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
                 misplaced = _misplaced(store, part_docs, doc.id)
                 if misplaced:
                     report["misplaced"].append({"file": rel, "mpn": part.get("base") or part["mpn"],
-                                                "part": part["mpn"], "sha256": doc.sha256, "linked": misplaced})
+                                                "part": part["mpn"], "base": part.get("base", ""),
+                                                "sha256": doc.sha256, "linked": misplaced})
             if rel in files and files[rel] == d["sha256"]:
                 if apply and (doc is None or d["sha256"] in imported):  # a project from a different machine
                     doc = doc or import_file(rel)
@@ -979,9 +980,15 @@ def format_parts(project: Project) -> list[str]:
     return lines
 
 
-def format_report(report: dict, apply: bool, add_hint: str) -> list[str]:
+def format_report(report: dict, apply: bool, add_hint: tuple[str, str]) -> list[str]:
     """The report of sync as lines. add_hint tells how to assign a document to a
-    part, with {mpn} and {sha} in it."""
+    part: a template with {part} (the concrete MPN), {base} and {sha}, and the
+    template of the base argument with {base} (left out when there is no base)."""
+    template, base_arg = add_hint
+
+    def hint(part: str, sha: str, base: str = "") -> str:
+        return template.format(part=part, base=base_arg.format(base=base) if base else "", sha=sha[:12])
+
     lines = []
     for key, text in (("added", "new reference"), ("copied", "copied" if apply else "copy missing"),
                       ("restored", "copied again" if apply else "copy to restore"),
@@ -998,14 +1005,17 @@ def format_report(report: dict, apply: bool, add_hint: str) -> list[str]:
         lines.append(f"problem: {item['file']}: the project file has it under part {item['part']}, but the store "
                      f"links it to {', '.join(item['linked'])}. A [[part.document]] block belongs to the [[part]] "
                      "above it: was the block moved? If the part is correct, link it with "
-                     + add_hint.format(mpn=item["mpn"], sha=item["sha256"][:12]))
+                     + hint(item["part"], item["sha256"], item["base"]))
+    # A proposal is the part of the datasheet. The BOM can have a concrete MPN
+    # of it (TLV75533PDBVR of TLV755P): then the proposal is the base part.
     for item in report["suggested"]:
         mpn = item["parts"][0].split(" (")[0]
         lines.append(f"no part: {item['file']} ({item['sha256'][:12]}); proposal: {', '.join(item['parts'])}; "
-                     "assign it with " + add_hint.format(mpn=mpn, sha=item["sha256"][:12]))
+                     f"assign it with {hint(mpn, item['sha256'])}. If the BOM has a different concrete MPN of "
+                     f"{mpn}, give it as the MPN and {mpn} as the base part: {hint('<MPN>', item['sha256'], mpn)}")
     for item in report["unassigned"]:
         lines.append(f"no part: {item['file']} ({item['sha256'][:12]}); assign it with "
-                     + add_hint.format(mpn="<MPN>", sha=item["sha256"][:12]))
+                     f"{hint('<MPN>', item['sha256'])}, with the concrete orderable MPN of the BOM")
     # One copy can belong to two parts: count the files.
     current = set(report["ok"])
     if apply:  # after a sync, the copied and the moved copies are current too

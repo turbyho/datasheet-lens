@@ -34,6 +34,14 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
   get_page_map, then get_page_image.
 - Before you read a value, look for it with find_facts. Save a value that the
   work uses with save_fact, with its page and element.
+- `datasheet-lens.toml` must hold the same parts as the CAD project (schematic
+  and BOM). This consistency is critical. For each CAD part with an MPN that
+  the file does not have: find its datasheet in the store (list_documents), or
+  add it from the Datasheet field or a distributor (add_document). Then add the
+  part (project_add_part). If you cannot get the datasheet, tell the user. Tell
+  the user when the MPN of the CAD project and the datasheet do not agree, and
+  about a part of the file that the CAD project does not have. Then
+  project_sync. The MCP server instructions give the full procedure.
 - To add a datasheet: add_document with a file or a URL and the base part of the
   datasheet (for example TLV755P). Then project_add_part with the concrete
   orderable MPN of the BOM (for example TLV75533PDBVR) and base. CLI:

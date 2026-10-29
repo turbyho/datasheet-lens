@@ -84,10 +84,49 @@ you the original pages. Read each value from the original (an image or PDF pages
 never from the text layer alone: the text layer can lose superscripts, signs,
 units and the structure of tables.
 
+A user project has the project file datasheet-lens.toml. It must hold the same
+parts as the CAD project (the schematic and the BOM). This consistency is
+critical: the team uses the file as the list of the datasheets of the design.
+When the work in a user project starts, and when the CAD project changes, do
+these steps:
+1. Get the parts of the CAD project: the MPN and the Datasheet field of each
+   symbol, or the BOM. A part with no MPN (a generic resistor, a test point)
+   needs no datasheet.
+2. Get the parts of the project file: project_status. Give path (the project
+   folder) when the working folder of the server is not in the project.
+3. For each CAD part that the project file does not have:
+   a. Find its datasheet in the store: list_documents(part) with the MPN or the
+      base part.
+   b. If the store has no datasheet, add it: add_document with the URL of the
+      Datasheet field, a URL from a distributor tool, or a local PDF file.
+   c. Add the part: project_add_part(mpn, base, document).
+   d. If you cannot get the datasheet, tell the user the MPN and the reason.
+4. Tell the user when the MPN of the CAD project and the datasheet do not
+   agree, for example a different value, package or variant.
+5. Tell the user about each part of the project file that the CAD project does
+   not have. Remove it only when the user agrees: project_remove_part.
+6. project_sync: it copies the documents into the project folder.
+
+The parameters of project_add_part:
+- mpn: the concrete orderable MPN of the BOM, for example TLV75533PDBVR.
+- base: the part of the datasheet, for example TLV755P.
+- document: the reference of the datasheet, from project_status, list_documents
+  or add_document.
+
+The store identifies a document by its SHA-256. add_document with the path of a
+datasheet that the store has copies nothing: it gives the reference of the same
+content. Do not match a file to a document by its file name only. Use
+add_document only for a datasheet of a project part: it adds each new file to
+the store. project_sync imports only the PDF files of the project folder (the
+key folder of datasheet-lens.toml), and it copies each document into that
+folder. If the repository keeps its datasheets in a different folder, tell the
+user: the key folder can name that folder.
+
 Find the content step by step, and ask only for what the work needs:
-1. Find the document: list_parts, list_documents(part). A part can have a
-   datasheet, a manual and errata. project_status gives the parts and the
-   documents of the user project.
+1. Find the document. In a user project, project_status gives the documents of
+   the project. list_parts and list_documents(part) give the central store,
+   with the documents of other projects. A part can have a datasheet, a manual
+   and errata.
 2. find_facts: values that a session read before, with their source.
 3. get_index: the outline and the table and figure captions, with pages. For a
    large document, get_outline gives the entries under one section.
@@ -100,16 +139,10 @@ Find the content step by step, and ask only for what the work needs:
    as a PDF.
 7. save_fact: save a value that the work uses, with its page and element.
 
-When the store has no datasheet for a part: add_document with a local file or a
-URL (for example from a distributor tool or the Datasheet field of a CAD symbol).
-Give part when you know it. Without part, the result gives a rough proposal from
-the text of the PDF, which can be wrong: read the MPN in the title of page 1 and
-in the ordering information of the original, then call add_document with part.
-
-A part of the user project is the concrete orderable MPN of the BOM (for example
-TLV75533PDBVR). Its base part is the part of the datasheet (TLV755P):
-project_add_part(mpn, base, document). project_sync copies the documents into
-the project folder.
+add_document: give part when you know it. Without part, the result gives a
+rough proposal from the text of the PDF, which can be wrong: read the MPN in the
+title of page 1 and in the ordering information of the original, then call
+add_document with part.
 
 The element map of a large new document can take minutes to build. Until it is
 complete, get_page_map tells so: use get_index, search_text and get_page_image
@@ -597,7 +630,7 @@ def set_fact_status(
         return f"fact #{fact_id}: {status}"
 
 
-PROJECT_ADD_HINT = "project_add_part(mpn='{mpn}', document='{sha}')"
+PROJECT_ADD_HINT = ("project_add_part(mpn='{part}'{base}, document='{sha}')", ", base='{base}'")
 
 
 @tool
