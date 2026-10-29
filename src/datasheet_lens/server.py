@@ -676,10 +676,13 @@ def project_add_part(
     with _add_lock, Store() as store:
         project = load(path or None)
         part = add_part(project, store, mpn, manufacturer, document, role, category, base)
+        from .identify import project_base_note
+
+        note = project_base_note(store, part, "project_add_part(mpn='{code}', base='{base}')")
     return "\n".join([f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'}): "
                       f"{len(part['documents'])} documents"]
                      + [f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}"
-                        for d in part["documents"]])
+                        for d in part["documents"]] + ([note] if note else []))
 
 
 def _removal(result: dict, folder: str, dry_run: bool, what: str) -> str:

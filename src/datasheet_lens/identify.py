@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 
+from .errors import LensError
 from .pdflock import pdfium_locked
 from .store import Document, Store
 
@@ -184,6 +185,75 @@ def propose(store: Store, doc: Document) -> Proposal:
                                                        meta.get("Creator", "")]),
                     sources=found.get(best, []), candidates=[spelling[k] for k in ranked[1:5]],
                     variants=variants if len(variants) > 1 else [])
+
+
+def project_base_note(store: Store, part: dict, how: str) -> str:
+    """The note for a project part with no base part that is probably the base
+    part of its datasheet, or "". how tells how to give the concrete MPN, with
+    {code} and {base} in it. An error of the hint gives no note: the hint is
+    optional."""
+    if part.get("base"):
+        return ""
+    rows = store.match_parts(part["mpn"], part["manufacturer"])
+    if len(rows) != 1:
+        return ""
+    try:
+        return base_note(store, rows[0]["id"], part["mpn"], how)
+    except (LensError, OSError, pdfium.PdfiumError):
+        return ""
+
+
+def base_note(store: Store, part_id: int, mpn: str, how: str) -> str:
+    """A note for a part that is probably a base part, or "" (see base_hint)."""
+    probable, codes = base_hint(store, part_id, mpn)
+    if not probable:
+        return ""
+    found = ("; orderable codes in the datasheet text: " + ", ".join(f"{c} ({p})" for c, p in codes)
+             if codes else "; the datasheet text has no list of codes (it can give a scheme only)")
+    return (f"note: {mpn} is probably the base part of its datasheet. The BOM needs the concrete orderable "
+            f"MPN (package, voltage, grade, packing){found}. Read the ordering information of the original, "
+            "and check with a distributor that the code is sold. Then: "
+            + how.format(code=codes[0][0] if codes else "<CODE>", base=mpn))
+
+
+# A token after the MPN that is not an orderable code of the part: an
+# evaluation board or a kit.
+NOT_ORDERABLE_RE = re.compile(r"(?i)(EVM|EVK|EVB|EVAL|DEMO|KIT|BOARD)")
+# The words of a line of an ordering table (not "active-low").
+ORDER_WORDS = r"\b(active|obsolete|nrnd|preview|tape|reel|t&r|tube|rail|tray)\b(?!-)"
+
+
+def base_hint(store: Store, part_id: int, mpn: str) -> tuple[bool, list[tuple[str, str]]]:
+    """Is mpn probably the base part of its datasheet, and not a concrete
+    orderable MPN? Give (probably a base part, orderable codes in the text with
+    their page). The codes are the tokens of the text layer that start with mpn
+    and go on (ADC34J24 -> ADC34J24IRGZR on page 81, MCP1827 -> MCP1827-ADJE/ET).
+    mpn is a concrete code when a line of an ordering table starts with it.
+    Else, with no codes, mpn is probably a base part when it is the MPN that the
+    PDF proposes. It is a hint only: a datasheet can give only the scheme of its
+    codes, and a code of the scheme is not always sold. A distributor tells which
+    codes exist."""
+    docs = [r for r in store.documents_of_part(part_id) if r["role"] == "datasheet"]
+    if not docs or not mpn.strip():
+        return False, []
+    key = mpn.strip()
+    rx = re.compile(rf"(?<![A-Za-z0-9]){re.escape(key)}[A-Za-z0-9\-][A-Za-z0-9/\-]{{0,14}}", re.I)
+    order_line = re.compile(rf"(?im)^\s*{re.escape(key)}(?![A-Za-z0-9/\-]).*{ORDER_WORDS}")
+    codes: dict[str, str] = {}
+    for row in store.db.execute(
+            f"SELECT document_id, page, text FROM pages WHERE document_id IN ({','.join('?' * len(docs))})"
+            " AND instr(ulower(text), ?) > 0 ORDER BY document_id, page", (*[d["id"] for d in docs], key.lower())):
+        if order_line.search(row["text"]):
+            return False, []
+        where = f"p.{row['page']}" if len(docs) == 1 else f"{store.document(row['document_id']).sha256[:12]} p.{row['page']}"
+        for code in rx.findall(row["text"]):
+            code = code.rstrip("-/").upper()
+            if len(code) > len(key) and not NOT_ORDERABLE_RE.search(code[len(key):]) and code not in codes:
+                codes[code] = where
+    if codes:
+        return True, list(codes.items())[:8]
+    proposed = {_norm(propose(store, store.document(d["id"])).mpn) for d in docs}
+    return _norm(key) in proposed, []
 
 
 def _variant(best: str, other: str, sources: list[str], file_name: bool = False) -> bool:

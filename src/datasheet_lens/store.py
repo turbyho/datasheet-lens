@@ -10,6 +10,7 @@ type and the path of each file.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import shutil
 import sqlite3
@@ -452,6 +453,12 @@ class Store:
         """The part with this ID, or None."""
         return self.db.execute("SELECT * FROM parts WHERE id = ?", (part_id,)).fetchone()
 
+    def fill_manufacturer(self, part_id: int, manufacturer: str) -> None:
+        """Give a part with no manufacturer this manufacturer (a part with one keeps it)."""
+        self.db.execute("UPDATE parts SET manufacturer = ? WHERE id = ? AND manufacturer = ''",
+                        (manufacturer, part_id))
+        self.db.commit()
+
     def set_base(self, part_id: int, base_id: int) -> None:
         """A concrete orderable part (TLV75533PDBVR) refers to the base part of its
         datasheet (TLV755P). It then has the documents of the base part too."""
@@ -466,6 +473,11 @@ class Store:
         if self.db.execute("SELECT 1 FROM parts WHERE base_id = ? LIMIT 1", (part_id,)).fetchone():
             raise LensError(f"{self.part(part_id)['mpn']} is the base part of other parts: it cannot get a base part")
         self.db.execute("UPDATE parts SET base_id = ? WHERE id = ?", (base_id, part_id))
+        # A concrete part with no manufacturer gets the one of its base part (not
+        # when a part with this MPN and manufacturer is there: the pair is unique).
+        with contextlib.suppress(sqlite3.IntegrityError):
+            self.db.execute("UPDATE parts SET manufacturer = ? WHERE id = ? AND manufacturer = ''",
+                            (base["manufacturer"], part_id))
         self.db.commit()
 
     def base_of(self, part_id: int) -> sqlite3.Row | None:

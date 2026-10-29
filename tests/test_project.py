@@ -393,3 +393,18 @@ def test_shared_document_on_a_new_machine(store_home, text_pdf, tmp_path, monkey
             assert not report["misplaced"], report["misplaced"]
         assert {r["mpn"] for r in store.parts_of_document(store.document(doc.sha256).id)} == {"ADC34J24",
                                                                                             "ADC34J22"}
+
+
+def test_key_order(store_home, text_pdf, tmp_path):
+    """A new key goes to its place, and sync puts the keys of a file in their
+    sequence; a comment at the end of a line moves with its key."""
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board", layout="")
+        project.path.write_text(
+            'folder = "datasheets"\n\n[[part]]\nbase = "TLV755P"\nmpn = "TLV75533PDBVR"  # LDO 3.3 V\n'
+            'note = "keep"\n', encoding="utf-8")
+        loaded = prj.load(project.root)
+        loaded.parts[0]["manufacturer"] = "TI"
+        prj.save(loaded)
+    text = project.path.read_text(encoding="utf-8")
+    assert ('mpn = "TLV75533PDBVR"  # LDO 3.3 V\nmanufacturer = "TI"\nbase = "TLV755P"\nnote = "keep"' in text), text

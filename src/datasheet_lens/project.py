@@ -241,14 +241,49 @@ def _norm_rel(value) -> str:
         return str(value)
 
 
-def _set(table, key: str, value: str, default: str = "", norm=str) -> None:
+# The sequence of the keys in the project file. A new key goes after the key
+# before it in this sequence, not to the end of its table.
+ROOT_KEYS = ("folder", "layout")
+PART_KEYS = ("mpn", "manufacturer", "base", "category", "variants", "exclude")
+DOCUMENT_KEYS = ("sha256", "file", "role", "pinned")
+
+
+def _reorder(table, order: tuple[str, ...]) -> None:
+    """Put the keys of order in a table into this sequence (a file of an older
+    version, or of a person, can have an other one). A comment at the end of the
+    line of a key moves with the key; other keys and lines do not move."""
+    container = table if isinstance(table, Container) else table.value
+    present = [k.key for k, _ in container.body if k is not None and k.key in order]
+    wanted = [k for k in order if k in present]
+    if present == wanted or not hasattr(container, "_insert_after"):  # tomlkit: no public API for this
+        return  # an other tomlkit: the keys stay where they are
+    for previous, key in zip(wanted, wanted[1:]):
+        item = container.item(key)
+        container.remove(key)
+        try:
+            container._insert_after(previous, key, item)
+        except (AttributeError, KeyError, ValueError):
+            container.append(key, item)  # the key stays in the table, at its end
+            return
+
+
+def _set(table, key: str, value: str, default: str = "", norm=str, order: tuple[str, ...] = ()) -> None:
     """Set a value only if it changed (norm gives the form to compare): an
     unchanged value keeps its format and its comment. A missing key with the
-    default value is not added."""
+    default value is not added. A new key goes to its place in order."""
     if key in table and norm(table[key]) == value:
         return
     if key not in table and value == default:
         return
+    if key not in table and key in order:
+        before = [k for k in order[:order.index(key)] if k in table]
+        if before:
+            container = table if isinstance(table, Container) else table.value
+            try:
+                container._insert_after(before[-1], key, value)  # tomlkit: no public API for this
+                return
+            except (AttributeError, KeyError):
+                pass  # an other tomlkit: the key goes to the end
     table[key] = value
 
 
@@ -370,8 +405,9 @@ def save(project: Project) -> None:
             doc = tomlkit.parse(source)
         except tomlkit.exceptions.ParseError as e:
             raise LensError(f"{project.path}: {e}") from e
-        _set(doc, "folder", project.folder, default=DEFAULT_FOLDER, norm=_norm_rel)
-        _set(doc, "layout", project.layout, default="")
+        _set(doc, "folder", project.folder, default=DEFAULT_FOLDER, norm=_norm_rel, order=ROOT_KEYS)
+        _set(doc, "layout", project.layout, default="", order=ROOT_KEYS)
+        _reorder(doc, ROOT_KEYS)
     elif project.text is not None:
         raise LensError(f"{project.path} was removed after datasheet-lens read it: run the command again")
     else:
@@ -390,28 +426,30 @@ def save(project: Project) -> None:
     for part in project.parts:
         table = next((t for t in old_parts if id(t) not in used and _same_part(t, part)), None) or tomlkit.table()
         used.add(id(table))
-        _set(table, "mpn", part["mpn"], norm=_strip)
-        _set(table, "manufacturer", part["manufacturer"], norm=_strip)
+        _set(table, "mpn", part["mpn"], norm=_strip, order=PART_KEYS)
+        _set(table, "manufacturer", part["manufacturer"], norm=_strip, order=PART_KEYS)
         if part.get("base"):
-            _set(table, "base", part["base"], norm=_strip)
+            _set(table, "base", part["base"], norm=_strip, order=PART_KEYS)
         elif "base" in table:
             del table["base"]
-        _set(table, "category", part.get("category", ""), norm=_strip)
+        _set(table, "category", part.get("category", ""), norm=_strip, order=PART_KEYS)
         if part.get("variants"):
-            _set(table, "variants", part["variants"], norm=lambda v: [str(x) for x in v])
+            _set(table, "variants", part["variants"], norm=lambda v: [str(x) for x in v], order=PART_KEYS)
         elif "variants" in table:  # the store gives no variants now
             del table["variants"]
         if part.get("exclude"):
-            _set(table, "exclude", part["exclude"], norm=lambda v: [str(x) for x in v])
+            _set(table, "exclude", part["exclude"], norm=lambda v: [str(x) for x in v], order=PART_KEYS)
         elif "exclude" in table:
             del table["exclude"]
+        _reorder(table, PART_KEYS)
         old_docs = _tables(table, "document")
         doc_tables = _match_documents(old_docs, part["documents"])
         for dt, d in zip(doc_tables, part["documents"]):
-            _set(dt, "sha256", d["sha256"])
-            _set(dt, "file", d["file"], norm=_norm_rel)
-            _set(dt, "role", d["role"], default="datasheet")
-            _set(dt, "pinned", d.get("pinned", False), default=False, norm=bool)
+            _set(dt, "sha256", d["sha256"], order=DOCUMENT_KEYS)
+            _set(dt, "file", d["file"], norm=_norm_rel, order=DOCUMENT_KEYS)
+            _set(dt, "role", d["role"], default="datasheet", order=DOCUMENT_KEYS)
+            _set(dt, "pinned", d.get("pinned", False), default=False, norm=bool, order=DOCUMENT_KEYS)
+            _reorder(dt, DOCUMENT_KEYS)
         _set_tables(table, "document", old_docs, doc_tables)
         tables.append(table)
     _set_tables(doc, "part", old_parts, tables)
@@ -561,11 +599,23 @@ def add_part(project: Project, store: Store, mpn: str, manufacturer: str = "", d
     (TLV755P); the document is then linked to the base part."""
     if role not in ROLES:
         raise LensError(f"role must be one of {', '.join(ROLES)}")
-    part_id = store.find_part(mpn, manufacturer, create=True)
-    owner = part_id
+    owner = None
+    existing = store.match_parts(mpn)  # an existing concrete part, with any spelling of its manufacturer
     if base.strip() and base.strip().lower() != mpn.strip().lower():
         owner = store.find_part(base.strip(), manufacturer, create=True)
-        store.set_base(part_id, owner)
+        if not manufacturer and len(existing) == 1:
+            manufacturer = existing[0]["manufacturer"]
+    if not manufacturer and len(existing) == 1:
+        part_id = existing[0]["id"]
+    else:
+        part_id = store.find_part(mpn, manufacturer or (store.part(owner)["manufacturer"] if owner else ""),
+                                  create=True)
+    if manufacturer:
+        store.fill_manufacturer(part_id, manufacturer)
+    if owner is not None:
+        store.set_base(part_id, owner)  # it also gives a part with no manufacturer the one of the base part
+    else:
+        owner = part_id
     if category.strip():
         store.set_category(part_id, category.strip())
     if document:
@@ -797,9 +847,15 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
                 f"part {part['mpn']}: more parts in the store have this MPN; give the manufacturer in "
                 f"{PROJECT_FILE} (" + ", ".join(r["manufacturer"] or "unknown" for r in rows) + ")")
         else:
-            _fill(part, store.part(rows[0]["id"]))
+            _fill(part, store.part(rows[0]["id"]))  # first: the base part search needs the manufacturer
             if apply:
                 _store_base(store, part, rows[0]["id"], report)
+            # A concrete part with no manufacturer (an older version) gets the one of its base part.
+            base = store.base_of(rows[0]["id"])
+            if base is not None and base["manufacturer"] and not part["manufacturer"]:
+                if apply:
+                    store.fill_manufacturer(rows[0]["id"], base["manufacturer"])
+                part["manufacturer"] = base["manufacturer"]
             report["added"] += _refresh(project, store, part, rows[0]["id"], files)
             part_ids[id(part)] = rows[0]["id"]
 

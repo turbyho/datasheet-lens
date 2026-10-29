@@ -149,6 +149,10 @@ def _add_to_project(store: Store, doc, mpn: str, manufacturer: str, category: st
         part = add_part(project, store, concrete or mpn, manufacturer, doc.sha256, args.role, category, base=mpn)
         if part.get("base"):
             print(f"project part: {part['mpn']} (base part {part['base']})")
+        else:
+            note = _base_note(store, part)
+            if note:
+                print(note)
     report = sync(project, store)
     for text in report["problems"]:
         print(f"problem: {text}")
@@ -461,11 +465,22 @@ def cmd_project_add_part(args: argparse.Namespace) -> int:
     with Store() as store:
         part = add_part(project, store, args.mpn, args.manufacturer or "", args.document or "", args.role,
                         args.category or "", args.base or "")
+        note = _base_note(store, part)
     print(f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'}): {len(part['documents'])} documents")
     for d in part["documents"]:
         print(f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}")
-    print("run 'datasheet-lens project sync' to copy the documents into the folder")
+    if any(not project.file_path(d["file"]).is_file() for d in part["documents"]):
+        print("run 'datasheet-lens sync' to copy the documents into the folder")
+    if note:
+        print(note)
     return 0
+
+
+def _base_note(store: Store, part: dict) -> str:
+    """The note for a project part that is probably a base part (see identify)."""
+    from .identify import project_base_note
+
+    return project_base_note(store, part, 'datasheet-lens project add-part "{code}" --base {base}')
 
 
 def build_parser() -> argparse.ArgumentParser:

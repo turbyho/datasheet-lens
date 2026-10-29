@@ -143,3 +143,79 @@ def test_migration_by_two_processes(tmp_path):
     finally:
         first.close()
         second.close()
+
+
+def test_concrete_part_gets_the_manufacturer_of_its_base(store_home, text_pdf, tmp_path):
+    with Store() as store:
+        doc = store.add_document(text_pdf("tlv755p.pdf", LDO))
+        store.link(store.add_part("TLV755P", "TI"), doc.id)
+        project = prj.init_project(tmp_path / "board")
+        part = prj.add_part(project, store, "TLV75533PDBVR", base="TLV755P")
+        assert part["manufacturer"] == "TI"
+        assert store.part(store.find_part("TLV75533PDBVR"))["manufacturer"] == "TI"
+        assert prj.sync(project, store)["moved"] == []  # the copy stays in TI/
+    assert part["documents"][0]["file"] == "TI/tlv755p.pdf"
+
+
+def test_sync_gives_a_concrete_part_the_manufacturer_of_its_base(store_home, text_pdf, tmp_path):
+    """A concrete part that came with no manufacturer (an older version): sync
+    takes the manufacturer of its base part, in the store and in the file."""
+    with Store() as store:
+        doc = store.add_document(text_pdf("tlv755p.pdf", LDO))
+        base = store.add_part("TLV755P", "TI")
+        store.link(base, doc.id)
+        concrete = store.add_part("TLV75533PDBVR", "")
+        store.set_base(concrete, base)
+        project = prj.init_project(tmp_path / "board", layout="")
+        project.parts.append({"mpn": "TLV75533PDBVR", "manufacturer": "", "base": "TLV755P", "documents": []})
+        prj.save(project)
+        prj.sync(prj.load(project.root), store)
+        assert store.part(concrete)["manufacturer"] == "TI"
+    assert prj.load(project.root).parts[0]["manufacturer"] == "TI"
+
+
+def test_base_part_note(store_home, text_pdf, tmp_path, capsys, monkeypatch):
+    """A project part that is probably the base part of its datasheet gets a note
+    with the orderable codes of the text, or with the hint to read the scheme."""
+    from datasheet_lens.identify import base_note
+    from datasheet_lens.indexer import build_index
+
+    pages = [[(50, 60, 14, "ADC34J24 Quad-Channel ADC")],
+             [(50, 40, 9, "Order the ADC34J24EVM board."), (50, 60, 9, "ADC34J24IRGZR  Active  VQFN (RGZ) 48"),
+              (50, 80, 9, "ADC34J24IRGZT.A  Active  VQFN 48")]]
+    with Store() as store:
+        doc = store.add_document(text_pdf("adc34j24.pdf", pages))
+        build_index(store, doc.id)  # the codes come from the text of the index
+        base = store.add_part("ADC34J24", "TI")
+        store.link(base, doc.id)
+        note = base_note(store, base, "ADC34J24", "add {code} --base {base}")
+        assert "ADC34J24IRGZR (p.2), ADC34J24IRGZT (p.2)" in note and "EVM" not in note and "add ADC34J24IRGZR --base ADC34J24" in note
+        # A scheme only (no list of codes): the hint to read the original.
+        ldo = store.add_document(text_pdf("mcp1827.pdf", [[(50, 60, 14, "MCP1827 1.5A LDO")]]))
+        mcp = store.add_part("MCP1827", "Microchip")
+        store.link(mcp, ldo.id)
+        assert "no list of codes" in base_note(store, mcp, "MCP1827", "{code}")
+        # A concrete part: no note.
+        concrete = store.add_part("ADC34J24IRGZR", "TI")
+        store.set_base(concrete, base)
+        assert base_note(store, concrete, "ADC34J24IRGZR", "{code}") == ""
+
+    project = prj.init_project(tmp_path / "board")
+    assert main(["project", "add-part", "ADC34J24", "-p", str(project.root)]) == 0
+    out = capsys.readouterr().out
+    assert "probably the base part" in out and 'project add-part "ADC34J24IRGZR" --base ADC34J24' in out
+    assert "run 'datasheet-lens sync'" in out  # the copy is not in the folder yet
+
+
+def test_no_second_concrete_part_for_an_other_spelling(store_home, text_pdf, tmp_path):
+    with Store() as store:
+        doc = store.add_document(text_pdf("tlv755p.pdf", LDO))
+        store.link(store.add_part("TLV755P", "TI"), doc.id)
+        store.add_part("TLV75533PDBVR", "Texas Instruments")
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "TLV75533PDBVR", base="TLV755P")
+        assert len(store.match_parts("TLV75533PDBVR")) == 1
+        # set_base gives a concrete part with no manufacturer the one of its base part.
+        concrete = store.add_part("TLV75518PDQNR", "")
+        store.set_base(concrete, store.find_part("TLV755P"))
+        assert store.part(concrete)["manufacturer"] == "TI"
