@@ -517,3 +517,12 @@ class Store:
             " JOIN part_documents pd ON pd.part_id = p.id JOIN documents d ON d.id = pd.document_id"
             " WHERE p.id IN (SELECT id FROM ids) ORDER BY d.id",
             (mpn, mpn)).fetchall()
+
+    def prefix_parts(self, mpn: str, least: int = 4) -> list[str]:
+        """The MPNs and aliases (least characters or more) that start mpn, the
+        longest first: probably its base part (TMP112D of TMP112D0IDPWR)."""
+        rows = self.db.execute(
+            "SELECT mpn AS name FROM parts UNION SELECT alias FROM part_aliases", ()).fetchall()
+        key = mpn.upper()
+        return sorted({r["name"] for r in rows if len(r["name"]) >= least and r["name"].upper() != key
+                       and key.startswith(r["name"].upper())}, key=len, reverse=True)

@@ -24,7 +24,7 @@ import pypdfium2 as pdfium
 from mcp.server.mcpserver import Image, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import BlobResourceContents, EmbeddedResource
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from . import __version__
 from .errors import LensError
@@ -90,19 +90,20 @@ each change of the CAD project, do these steps:
 1. Get the parts of the CAD project (MPN, Datasheet field) from the CAD tool,
    for example its MCP server or its BOM export. A part with no MPN (a generic
    resistor, a test point) needs no datasheet.
-2. project_status: the parts of the project file. Give path when the working
+2. project_check(parts) with all of these parts: it gives the parts that are
+   missing, extra or different, with the next call. Give path when the working
    folder of the server is not in the project.
-3. For each CAD part that the file does not have: find its datasheet with
-   list_documents(part), or add it with add_document (the URL of the Datasheet
-   field or of a distributor, or a local PDF). Then project_add_part(mpn, base,
-   document). mpn is the concrete orderable MPN of the BOM (TLV75533PDBVR), base
-   is the part of the datasheet (TLV755P). If you cannot get the datasheet, tell
-   the user the MPN and the reason.
-4. Tell the user when a CAD MPN and its datasheet do not agree (value, package,
-   variant), and about each part of the file that the CAD project does not
-   have. Remove a part (project_remove_part) only when the user agrees. Change
-   the MPN of a part with project_update_part.
-5. project_sync: it copies the documents into the project folder.
+3. For each missing part: find its datasheet (list_documents), or add it with
+   add_document (the URL of the Datasheet field or of a distributor, or a local
+   PDF). Then project_add_part(mpn, base, document). mpn is the concrete
+   orderable MPN of the BOM (TLV75533PDBVR), base is the part of the datasheet
+   (TLV755P). If you cannot get the datasheet, tell the user the MPN and the
+   reason.
+4. Tell the user about each different or extra part, and when a CAD MPN and its
+   datasheet do not agree (value, package, variant). Change a part with
+   project_update_part, and remove one only when the user agrees.
+5. project_sync: it copies the documents into the project folder. Then
+   project_check again: it must give no missing, extra or different part.
 
 The store identifies a document by its SHA-256: add_document of a file that it
 has copies nothing and gives the reference. Do not match a file to a document
@@ -731,6 +732,32 @@ def project_add_part(
                       f"{len(part['documents'])} documents"]
                      + [f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}"
                         for d in part["documents"]] + ([note] if note else []))
+
+
+class CadPart(BaseModel):
+    """One part of the CAD project (a symbol or a BOM line)."""
+    mpn: str = Field(description="The MPN of the part, for example from the MPN or the Value field.")
+    datasheet: str = Field("", description="The Datasheet field: a URL or a path. Empty if there is none.")
+    reference: str = Field("", description="The reference of the symbol, for example U3.")
+
+
+@tool
+def project_check(
+        parts: Annotated[list[CadPart], Field(description=(
+            "The parts of the CAD project with an MPN, from the CAD tool (for example its MCP server or its "
+            "BOM export). One item for each symbol or BOM line; give each part, not only the new ones."))],
+        path: ProjectPath = "") -> str:
+    """Compare the project file with the parts of the CAD project, so that the
+    two hold the same parts. Gives the number of the same parts, and one line for
+    each part that is different (one part with two MPNs), missing (with the
+    documents of the store or the Datasheet field, and the next call) or extra.
+    It changes nothing."""
+    from .project import check_parts, format_check, load
+
+    with Store() as store:
+        project = load(path or None)
+        result = check_parts(project, store, [p.model_dump() for p in parts])
+    return "\n".join(format_check(result))
 
 
 @tool

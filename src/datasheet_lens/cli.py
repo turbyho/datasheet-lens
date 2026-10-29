@@ -488,6 +488,56 @@ def _base_note(store: Store, part: dict) -> str:
     return project_base_note(store, part, 'datasheet-lens set "{mpn}" -m "{code}" -b {base}')
 
 
+MPN_COLUMNS = ("MPN", "Manufacturer_Part_Number", "Manufacturer Part Number", "Mfr. Part Number", "Part Number",
+               "Value")
+REFERENCE_COLUMNS = ("Reference", "References", "Refs", "Designator")
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    """The command check: compare the project with a BOM file (CSV) of the CAD
+    project, for example from "kicad-cli sch export bom"."""
+    import csv
+    import re
+
+    from .identify import _is_mpn
+    from .project import check_parts, format_check, load
+
+    try:
+        with open(args.bom, encoding="utf-8-sig", newline="") as f:
+            sample = f.read(4096)
+            f.seek(0)
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+            except csv.Error:  # one column, or a sample that the sniffer cannot read
+                dialect = csv.excel
+            rows = list(csv.DictReader(f, dialect=dialect))
+    except UnicodeDecodeError as e:
+        raise LensError(f"{args.bom}: not UTF-8 text ({e.reason}): export the BOM as UTF-8") from e
+    names = list(rows[0]) if rows else []
+    column = args.column or next((c for c in MPN_COLUMNS if c in names), "")
+    if column not in names:
+        raise LensError(f"{args.bom}: no MPN column; give one with --column ({', '.join(names)})")
+    ref_column = next((c for c in REFERENCE_COLUMNS if c in names), "")
+    cad = []
+    dnp = next((c for c in names if c.upper() in ("DNP", "DO NOT POPULATE")), "")
+    for row in rows:
+        mpn = (row.get(column) or "").strip()
+        if dnp and (row.get(dnp) or "").strip().lower() not in ("", "0", "no", "false"):
+            continue  # not fitted
+        # The Value field also holds values of passive parts (100nF, 10k, >=120R,
+        # 4.7uF/10V) and names of generic symbols (Conn_01x05_Socket, Battery
+        # LiPo - 1 cell). An MPN can have a slash: LM358DR/NOPB.
+        if not mpn or (column == "Value" and (not _is_mpn(mpn) or re.search(r"[\s_]|^\W|^\d+(\.\d+)?\w*/", mpn))):
+            continue
+        cad.append({"mpn": mpn, "datasheet": (row.get("Datasheet") or "").strip(),
+                    "reference": (row.get(ref_column) or "").strip() if ref_column else ""})
+    with Store() as store:
+        result = check_parts(load(args.path), store, cad)
+    print(f"{args.bom}: column {column}, {len(cad)} lines with an MPN")
+    print("\n".join(format_check(result, cli=True)))
+    return 0
+
+
 def cmd_set(args: argparse.Namespace) -> int:
     """The command set: change a part of the project in place (MPN, base part,
     category, manufacturer)."""
@@ -552,12 +602,17 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--of", metavar="MANUFACTURER", help="the manufacturer now, if the project has more parts "
                                                          "with the MPN")
     st.set_defaults(func=cmd_set)
+    ck = sub.add_parser("check", help="compare the project with a BOM file (CSV) of the CAD project")
+    ck.add_argument("bom", metavar="BOM.csv", help="the BOM, for example from kicad-cli sch export bom")
+    ck.add_argument("--column", help="the column of the MPN (default: MPN, Manufacturer_Part_Number ... "
+                                     "or Value)")
+    ck.set_defaults(func=cmd_check)
     ls = sub.add_parser("ls", help="show the parts and documents of the project (project status)")
     ls.set_defaults(func=cmd_project_status)
     psync_short = sub.add_parser("sync", help="synchronize the project (project sync)")
     psync_short.add_argument("--restore", action="store_true", help="copy a changed copy again from the store")
     psync_short.set_defaults(func=cmd_project_sync)
-    for p in (rm, st, ls, psync_short):
+    for p in (rm, st, ck, ls, psync_short):
         p.add_argument("-p", "--path", "--project", dest="path",
                        help="the project folder (default: the current folder or a parent folder)")
 

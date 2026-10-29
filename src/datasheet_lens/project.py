@@ -806,6 +806,111 @@ def update_part(project: Project, store: Store, mpn: str, manufacturer: str = ""
     return part
 
 
+def check_parts(project: Project, store: Store, cad: list[dict]) -> dict:
+    """Compare the parts of the project with the parts of the CAD project. cad:
+    one item for each CAD part with an MPN: {"mpn", "datasheet" (optional),
+    "reference" (optional)}. Give:
+    - ok: the MPNs that the project has.
+    - different: {"cad", "mpn", "manufacturer", "ambiguous"} for a project part
+      that is probably the same part with a different MPN (see _near).
+      ambiguous: the project has more parts with this MPN.
+    - missing: the CAD parts that the project does not have, with the
+      references of the CAD symbols, the Datasheet field and the documents
+      that the store has for the MPN.
+    - extra: the project parts that the CAD project does not have."""
+    merged: dict[str, dict] = {}
+    for item in cad:
+        mpn = str(item.get("mpn", "")).strip()
+        if not mpn:
+            continue
+        entry = merged.setdefault(mpn.lower(), {"mpn": mpn, "references": [], "datasheet": ""})
+        if str(item.get("reference", "")).strip():
+            entry["references"].append(str(item["reference"]).strip())
+        if not entry["datasheet"] and str(item.get("datasheet", "")).strip() not in ("", "~"):
+            entry["datasheet"] = str(item["datasheet"]).strip()
+    out = {"ok": [], "different": [], "missing": [], "extra": []}
+    # First the exact matches, then the near matches of the other parts: a part
+    # that is the same is not also "different".
+    exact = {id(p) for p in project.parts if p["mpn"].lower() in merged}
+    out["ok"] = [e["mpn"] for k, e in merged.items() if any(p["mpn"].lower() == k for p in project.parts)]
+    near_found: set[int] = set()
+    for key, entry in merged.items():
+        if entry["mpn"] in out["ok"]:
+            continue
+        near = [p for p in project.parts if id(p) not in exact and _near(entry["mpn"], p)]
+        if near:
+            near_found.update(id(p) for p in near)
+            count = {p["mpn"].lower(): sum(q["mpn"].lower() == p["mpn"].lower() for q in project.parts) for p in near}
+            out["different"] += [{"cad": entry["mpn"], "mpn": p["mpn"], "manufacturer": p["manufacturer"],
+                                  "ambiguous": count[p["mpn"].lower()] > 1} for p in near]
+            continue
+        docs = store.part_documents(entry["mpn"])
+        # The datasheet first: the next step links it, not an errata or a manual.
+        docs = sorted(docs, key=lambda d: d["role"] != "datasheet")
+        out["missing"].append({**entry, "documents": [d["sha256"][:12] for d in docs],
+                               "bases": store.prefix_parts(entry["mpn"])[:3]})
+    out["extra"] = [p["mpn"] for p in project.parts if id(p) not in exact | near_found]
+    return out
+
+
+def _near(cad: str, part: dict) -> bool:
+    """True if the CAD MPN and the project part are probably one part with two
+    MPNs: the CAD MPN is the base part or a variant of the part, or one MPN
+    starts with the other (TMP112D0 and TMP112D0IDPWR). Placeholders at the end
+    of the CAD MPN (nRF9151-LAXX, STM32F103C8Tx) are any characters. A digit
+    after a shorter MPN that ends with a digit is a different part (LM358 and
+    LM3580)."""
+    key = cad.lower()
+    if part.get("base", "").lower() == key or key in (v.lower() for v in part.get("variants", [])):
+        return True
+    stem = re.sub(r"(x+|X{2,})$", "", cad).lower() or key
+    own = part["mpn"].lower()
+    shorter, longer = (stem, own) if own.startswith(stem) else (own, key) if key.startswith(own) else ("", "")
+    if len(shorter) < 4:
+        return False
+    rest = longer[len(shorter):]
+    return not (shorter[-1].isdigit() and rest[:1].isdigit())
+
+
+def format_check(result: dict, cli: bool = False) -> list[str]:
+    """The result of check_parts as lines, with the next step for each part: the
+    MCP tool calls, or the CLI commands if cli is true."""
+    def add(mpn: str, base: str = "", doc: str = "") -> str:
+        if cli:
+            return (f'datasheet-lens project add-part "{mpn}"' + (f' --base "{base}"' if base else "")
+                    + (f" --document {doc}" if doc else ""))
+        return (f"project_add_part(mpn='{mpn}'" + (f", base='{base}'" if base else "")
+                + (f", document='{doc}'" if doc else "") + ")")
+
+    lines = [f"the same in the CAD project and in the project file: {len(result['ok'])} parts"]
+    for d in result["different"]:
+        cad, own, maker = d["cad"], d["mpn"], d["manufacturer"] if d["ambiguous"] else ""
+        update = (f'datasheet-lens set "{own}"' + (f' --of "{maker}"' if maker else "") + f' -m "{cad}"' if cli
+                  else f"project_update_part(mpn='{own}'" + (f", manufacturer='{maker}'" if maker else "")
+                  + f", new_mpn='{cad}')")
+        lines.append(f"different: CAD {cad}, project {own}. Probably one part with two MPNs. Tell the user: the "
+                     f"CAD project or the project file must change ({update} when the CAD MPN is correct).")
+    for m in result["missing"]:
+        refs = f" ({', '.join(m['references'])})" if m["references"] else ""
+        if m["documents"]:
+            step = f"the store has its documents {', '.join(m['documents'])}: {add(m['mpn'], doc=m['documents'][0])}"
+        elif m["bases"]:
+            step = (f"the store has the part {m['bases'][0]}, probably its base part: {add(m['mpn'], m['bases'][0])}"
+                    " (read the ordering information first)")
+        elif m["datasheet"]:
+            step = (f"the store has no datasheet. Datasheet field: {m['datasheet']}: "
+                    + (f"datasheet-lens add \"{m['datasheet']}\" -m \"{m['mpn']}\"" if cli
+                       else f"add_document(path='{m['datasheet']}'), then {add(m['mpn'], '<base part>', '<doc>')}"))
+        else:
+            step = ("the store has no datasheet, and the CAD part has no Datasheet field: find the datasheet "
+                    "(a distributor), or tell the user")
+        lines.append(f"missing: {m['mpn']}{refs}: {step}")
+    for mpn in result["extra"]:
+        lines.append(f"extra: {mpn}: the CAD project does not have it. Tell the user; remove it only when the "
+                     "user agrees.")
+    return lines
+
+
 def remove_document(project: Project, document: str, mpn: str = "", manufacturer: str = "",
                     delete_pinned: bool = False, apply: bool = True) -> dict:
     """Remove a document (SHA-256 prefix of 8 or more characters, or its file

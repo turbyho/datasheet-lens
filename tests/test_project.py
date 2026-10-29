@@ -470,3 +470,54 @@ def test_pdf_files_outside_the_folder(store_home, text_pdf, tmp_path):
     assert report["imported"] == []
     assert any("PDF files outside the project folder: docs/used/ (2 files, 1 in the store, 1 documents of"
                in line for line in prj.format_report(report, True, ("", "")))
+
+
+def test_check_with_the_cad_project(store_home, text_pdf, tmp_path, capsys):
+    """project_check and the CLI check compare the project with the CAD parts:
+    the same, different (one part with two MPNs), missing and extra."""
+    with Store() as store:
+        opa = store.add_document(text_pdf("opa.pdf", OPA))
+        store.link(store.add_part("OPA2134", "TI"), opa.id)
+        rtc = store.add_document(text_pdf("rtc.pdf", RTC))
+        store.link(store.add_part("RV-3149-C3", "Micro Crystal"), rtc.id)
+        store.link(store.add_part("TMP112D", "TI"), opa.id)
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "OPA2134")
+        prj.add_part(project, store, "NRF9151-LACA-R7")
+        prj.add_part(project, store, "LM358")
+        cad = [{"mpn": "OPA2134", "reference": "U1"}, {"mpn": "OPA2134", "reference": "U2"},
+               {"mpn": "nRF9151-LAXX", "reference": "U3"}, {"mpn": "RV-3149-C3", "reference": "U4"},
+               {"mpn": "TMP112D0IDPWR", "reference": "U5"},
+               {"mpn": "XYZ123", "reference": "U6", "datasheet": "https://example.com/xyz.pdf"}]
+        result = prj.check_parts(project, store, cad)
+    assert result["ok"] == ["OPA2134"] and [(d["cad"], d["mpn"]) for d in result["different"]] == [
+        ("nRF9151-LAXX", "NRF9151-LACA-R7")]
+    assert result["extra"] == ["LM358"]
+    missing = {m["mpn"]: m for m in result["missing"]}
+    assert missing["RV-3149-C3"]["documents"] == [rtc.sha256[:12]] and missing["TMP112D0IDPWR"]["bases"] == ["TMP112D"]
+    text = "\n".join(prj.format_check(result))
+    assert f"missing: RV-3149-C3 (U4): the store has its documents {rtc.sha256[:12]}: project_add_part(" in text
+    assert "project_add_part(mpn='TMP112D0IDPWR', base='TMP112D')" in text
+    assert "add_document(path='https://example.com/xyz.pdf')" in text and "extra: LM358" in text
+
+    bom = tmp_path / "bom.csv"
+    bom.write_text('"Reference","Value","Datasheet","DNP"\n"U1","OPA2134","~",""\n"C1","100nF","~",""\n'
+                   '"C2","4.7uF/10V","~",""\n"J2","Conn_01x05_Socket","~",""\n"U7","LM358","~",""\n'
+                   '"U8","LM3580DR/NOPB","~",""\n"U9","XYZ123","~","DNP"\n', encoding="utf-8")
+    assert main(["check", str(bom), "-p", str(project.root)]) == 0
+    out = capsys.readouterr().out
+    assert "column Value, 3 lines with an MPN" in out and "the same in the CAD project and in the project file: 2" in out
+    assert "extra: NRF9151-LACA-R7" in out and "missing: LM3580DR/NOPB (U8)" in out
+    # One column: the sniffer cannot find a delimiter.
+    bom.write_text("MPN\nOPA2134\n", encoding="utf-8")
+    assert main(["check", str(bom), "-p", str(project.root)]) == 0
+
+
+def test_near_parts():
+    """One part with two MPNs, and parts that only start alike."""
+    def near(cad, mpn, **kw):
+        return prj._near(cad, {"mpn": mpn, **kw})
+
+    assert near("TMP112D0", "TMP112D0IDPWR") and near("STM32F103C8Tx", "STM32F103C8T6")
+    assert near("nRF9151-LAXX", "NRF9151-LACA-R7") and near("TLV75533PDBVR", "TLV755P", variants=["TLV75533PDBVR"])
+    assert not near("LM3580", "LM358") and not near("LM3", "LM358") and not near("OPA134", "OPA2134")
