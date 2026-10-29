@@ -408,3 +408,21 @@ def test_key_order(store_home, text_pdf, tmp_path):
         prj.save(loaded)
     text = project.path.read_text(encoding="utf-8")
     assert ('mpn = "TLV75533PDBVR"  # LDO 3.3 V\nmanufacturer = "TI"\nbase = "TLV755P"\nnote = "keep"' in text), text
+
+
+def test_one_copy_for_a_document_of_two_parts(store_home, text_pdf, tmp_path):
+    """Two concrete parts of one base part share its datasheet: sync copies it
+    one time and counts it one time."""
+    with Store() as store:
+        doc = store.add_document(text_pdf("tps7a02.pdf", OPA))
+        store.link(store.add_part("TPS7A02", "TI"), doc.id)
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "TPS7A0233PYCHR", base="TPS7A02")
+        prj.add_part(project, store, "TPS7A0218PYCHR", base="TPS7A02")
+        lines = prj.format_report(prj.sync(project, store), True, "{mpn} {sha}")
+        assert lines == ["copied: TI/tps7a02.pdf", "1 copies are current"], lines
+        # The next sync and a move to a new layout count the file one time too.
+        assert prj.format_report(prj.sync(project, store), True, "") == ["1 copies are current"]
+        project.layout = "{category}"
+        lines = prj.format_report(prj.sync(project, store), True, "")
+    assert lines == ["moved to its subfolder: TI/tps7a02.pdf -> _unknown/tps7a02.pdf", "1 copies are current"], lines

@@ -15,6 +15,35 @@ def test_mpn_tokens():
         assert not _is_mpn(token), token
 
 
+def test_more_tokens_that_are_not_mpns():
+    """Packages, values, sizes, versions and document numbers of real datasheets."""
+    for token in ("X2SON", "SOT23-5", "LGA-4", "DSBGA", "WLCSP", "MFF2", "TO-92", "98.01mm2", "10X10MM", "1.This",
+                  "1.65V-3.6V", "8M-BIT", "2C-Bus", "AM1.5", "v1.4", "GD25LE64E-Rev1.3", "BST-BMI323-DS000-10",
+                  "DS000-3159232", "3361126", "DS-AT25QL641-130", "SC-70"):
+        assert not _is_mpn(token), token
+    for token in ("DS1307", "2N7002", "1N4148", "BGA525N6", "SC16IS740", "SC4215", "V23079", "LP-1234567",
+                  "AM26LS31", "RR123-1H02-612",
+                  "LSM6DSO16IS", "TPS7A0233PYCHR", "DFE201612E-1R0M#", "ESP32-C3", "MSP430F5529"):
+        assert _is_mpn(token), token
+
+
+def test_manufacturer_from_the_mpn_prefix(store_home):
+    """A name only in the logo: the prefix of the MPN tells the manufacturer. A
+    manufacturer name is not an MPN."""
+    from datasheet_lens.identify import _manufacturer
+    with Store() as store:
+        assert _manufacturer(store, ["Product Specification v1.4"], "nRF52805") == "Nordic Semiconductor"
+        assert _manufacturer(store, ["Product Specification"], "ABC123") == ""
+        assert _manufacturer(store, ["www.cototechnology.com"], "RR123") == "Coto Technology"
+
+
+def test_manufacturer_is_not_an_mpn(store_home, text_pdf):
+    path = text_pdf("sim_s_io3_mff2_2.pdf", [[(50, 60, 14, "1GLOBAL FOR THINGS SIM DATASHEET")]])
+    with Store() as store:
+        p = propose(store, store.add_document(path))
+    assert (p.mpn, p.manufacturer) == ("", "1GLOBAL")
+
+
 def test_proposal(store_home, text_pdf):
     path = text_pdf("SN74LV1T34DBVRG4_Texas_Instruments.pdf", [PAGE])
     with Store() as store:

@@ -207,6 +207,25 @@ def test_base_part_note(store_home, text_pdf, tmp_path, capsys, monkeypatch):
     assert "run 'datasheet-lens sync'" in out  # the copy is not in the folder yet
 
 
+def test_base_hint_skips_what_is_not_a_code(store_home, text_pdf):
+    """Document numbers, footnote marks, placeholders and the variants of the
+    datasheet are not orderable codes. A concrete part of the store is a code."""
+    from datasheet_lens.identify import base_hint
+    from datasheet_lens.indexer import build_index
+
+    lines = ["Document number BST-RR123-DS000-10", "DS-RR123-130H", "RR123-Rev1.3", "RR123X and RR123XX",
+             "Characteristics for RR1231", "RR123-LP  SKU", "RR123-T  LGA-4"]
+    with Store() as store:
+        doc = store.add_document(text_pdf("rr123.pdf", [[(50, 40 + 20 * i, 9, t) for i, t in enumerate(lines)]]))
+        build_index(store, doc.id)
+        base = store.add_part("RR123", "Coto")
+        store.link_parts(doc.id, "RR123", ["RR123-LP"], "Coto")
+        concrete = store.add_part("RR123-T", "Coto")
+        store.link(concrete, doc.id)
+        store.set_base(concrete, base)
+        assert base_hint(store, base, "RR123") == (True, [("RR123-T", "p.1")])
+
+
 def test_no_second_concrete_part_for_an_other_spelling(store_home, text_pdf, tmp_path):
     with Store() as store:
         doc = store.add_document(text_pdf("tlv755p.pdf", LDO))

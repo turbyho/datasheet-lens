@@ -29,14 +29,22 @@ from .store import Document, Store
 
 # No "/" in a token: "AD8605/AD8606/AD8608" is a list of three MPNs.
 TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-+.#]*[A-Za-z0-9+#]")
-# Tokens that look like an MPN but are not one: revisions, TI literature numbers
-# (SLAS123A), values with units (12-Bit), packages and standards. Real MPNs such
-# as ADXL345, ISO7741 and USB2514 must not match.
-NOT_MPN_RE = re.compile(r"(?i)^(rev[a-z0-9.]*|s[lbncwp][a-z]{2}\d{3}[a-z]?|\d+(\.\d+)?-?[a-z]*|aec-q\d+|"
-                        r"sot-?\d+|soic-?\d+|qfn-?\d+|tssop-?\d+|msop-?\d+|dfn-?\d+|bga-?\d+|"
-                        r"ieee\d+|jesd\d+[a-z]?|ds\d{8}[a-z]?)$")
-# Words of a document name, not of an MPN: "MCP1827-Data-Sheet-DS20002001".
-DOC_WORD_RE = re.compile(r"(?i)(^|-)(data|sheet|datasheet|page|manual|errata|rev)(-|$)")
+# A package: SOT23-5, X2SON, LGA-4, DSBGA, WLCSP, MFF2 (the SIM package).
+PACKAGE = (r"[a-z]{0,2}\d?(son|qfn|dfn|bga|lga|csp|sop|ssop|soic|qfp|sot|dip|mff)-?\d*(-\d+)?"
+           r"|(to|sc)-\d+(-\d+)?")  # TO-92 and SC-70, but SC4215 is an MPN
+# Tokens that look like an MPN but are not one: revisions and versions (v1.4),
+# TI literature numbers (SLAS123A), values with units (12-Bit, 1.65V-3.6V,
+# 98.01mm2), sizes (10x10mm), numbered text (1.This), packages, standards and
+# document numbers (DS000-3159232, 3361126). Real MPNs such as ADXL345,
+# ISO7741, USB2514, 2N7002, DS1307 and V23079 must not match.
+NOT_MPN_RE = re.compile(r"(?i)^(rev[a-z0-9.]*|v\d+(\.\d+)+|s[lbncwp][a-z]{2}\d{3}[a-z]?|"
+                        r"\d+(\.\d+)?[a-z]*(-\d*(\.\d+)?[a-z]*)?|\d+(\.\d+)?(mm|cm|um|m|in)[23]|"
+                        r"\d+(\.\d+)?[x*]\d+(\.\d+)?[a-z]*|\d+\.[a-z]{2,}|aec-q\d+|am\d(\.\d+)?g?|"
+                        rf"{PACKAGE}|ieee\d+|jesd\d+[a-z]?|ds\d{{8}}[a-z]?|ds\d+-\d{{4,}})$")
+# Words of a document name, not of an MPN: "MCP1827-Data-Sheet-DS20002001",
+# "GD25LE64E-Rev1.3", "DS-AT25QL641-130", "BST-BMI323-DS000-10" (a DS number
+# after a hyphen: DS1307 is an MPN).
+DOC_WORD_RE = re.compile(r"(?i)(^|-)(data|sheet|datasheet|page|manual|errata|rev[\d.]*|ds)(-|$)|-ds\d+(-|$)")
 
 # Canonical name: names and abbreviations in a PDF or a file name (upper case).
 MANUFACTURERS = {
@@ -67,7 +75,29 @@ MANUFACTURERS = {
     "Sensirion": ("SENSIRION",),
     "u-blox": ("U-BLOX",),
     "Würth Elektronik": ("WÜRTH ELEKTRONIK", "WURTH ELEKTRONIK", "WE-ONLINE"),
+    "GigaDevice": ("GIGADEVICE",),
+    "Macronix": ("MACRONIX",),
+    "Coto Technology": ("COTO TECHNOLOGY", "COTOTECHNOLOGY", "COTORELAY"),
+    "ECS": ("ECS INC", "ECSXTAL"),
+    "1GLOBAL": ("1GLOBAL",),
 }
+# The manufacturer of an MPN prefix, when the text does not name it (the name
+# is only in the logo): nRF52805 is from Nordic Semiconductor.
+MPN_PREFIXES = {
+    "NRF": "Nordic Semiconductor",
+    "GD25": "GigaDevice",
+    "GD32": "GigaDevice",
+    "MX25": "Macronix",
+    "MX66": "Macronix",
+    "RV-": "Micro Crystal",
+    "STM32": "STMicroelectronics",
+    "ESP32": "Espressif",
+}
+OWNER = {alias: name for name, aliases in MANUFACTURERS.items() for alias in aliases}
+# Non-overlapping matches of whole words, the longest alias first: "NXP
+# SEMICONDUCTORS" counts one time, and "NXP" in "NXPXX" does not count.
+ALIAS_RE = re.compile(r"(?<![A-Z0-9])(" + "|".join(re.escape(a) for a in sorted(OWNER, key=len, reverse=True))
+                      + r")(?![A-Z0-9])")
 
 
 @dataclass
@@ -94,24 +124,23 @@ def _is_mpn(token: str) -> bool:
             and not NOT_MPN_RE.match(token) and not DOC_WORD_RE.search(token))
 
 
-def _manufacturer(store: Store, texts: list[str]) -> str:
-    """The manufacturer that the texts name most often. The spelling of a part in
-    the store wins (for example "TI" for Texas Instruments)."""
-    # Non-overlapping matches of whole words, the longest alias first:
-    # "NXP SEMICONDUCTORS" counts one time, and "NXP" in "NXPXX" does not count.
-    owner = {alias: name for name, aliases in MANUFACTURERS.items() for alias in aliases}
-    pattern = re.compile(r"(?<![A-Z0-9])(" + "|".join(re.escape(a) for a in sorted(owner, key=len, reverse=True))
-                         + r")(?![A-Z0-9])")
+def _manufacturer(store: Store, texts: list[str], mpn: str = "") -> str:
+    """The manufacturer that the texts name most often, else the manufacturer of
+    the prefix of mpn. The spelling of a part in the store wins (for example "TI"
+    for Texas Instruments)."""
     counts: dict[str, int] = {}
     for text in texts:
-        for alias in pattern.findall(text.upper().replace("_", " ")):
-            counts[owner[alias]] = counts.get(owner[alias], 0) + 1
-    if not counts:
-        return ""
-    name = max(counts, key=counts.get)
+        for alias in ALIAS_RE.findall(text.upper().replace("_", " ")):
+            counts[OWNER[alias]] = counts.get(OWNER[alias], 0) + 1
+    if counts:
+        name = max(counts, key=counts.get)
+    else:
+        name = next((m for p, m in MPN_PREFIXES.items() if mpn.upper().startswith(p)), "")
+        if not name:
+            return ""
     known = {r[0] for r in store.db.execute("SELECT DISTINCT manufacturer FROM parts")}
     for spelling in known:
-        if spelling and (spelling.upper() in MANUFACTURERS[name] or _norm(spelling) == _norm(name)
+        if spelling and (spelling.upper() in MANUFACTURERS.get(name, ()) or _norm(spelling) == _norm(name)
                          or (name == "Texas Instruments" and spelling.upper() == "TI")):
             return spelling
     return name
@@ -141,7 +170,8 @@ def propose(store: Store, doc: Document) -> Proposal:
     order: list[str] = []
 
     def add(token: str, score: float, source: str) -> None:
-        if not _is_mpn(token):
+        token = re.sub(r"(?i)\.pdf$", "", token)  # a title that is a file name
+        if not _is_mpn(token) or token.upper() in OWNER:  # 1GLOBAL is a manufacturer
             return
         key = _norm(token)
         if key not in scores:
@@ -182,7 +212,7 @@ def propose(store: Store, doc: Document) -> Proposal:
         k for k in order if k == best or (best and _variant(spelling[best], spelling[k], found[k], k == stem_norm)))]
     return Proposal(mpn=spelling.get(best, ""),
                     manufacturer=_manufacturer(store, [title, page1[:3000], stem, meta.get("Author", ""),
-                                                       meta.get("Creator", "")]),
+                                                       meta.get("Creator", "")], spelling.get(best, "")),
                     sources=found.get(best, []), candidates=[spelling[k] for k in ranked[1:5]],
                     variants=variants if len(variants) > 1 else [])
 
@@ -232,12 +262,19 @@ def base_hint(store: Store, part_id: int, mpn: str) -> tuple[bool, list[tuple[st
     Else, with no codes, mpn is probably a base part when it is the MPN that the
     PDF proposes. It is a hint only: a datasheet can give only the scheme of its
     codes, and a code of the scheme is not always sold. A distributor tells which
-    codes exist."""
+    codes exist.
+    Not a code: a document number (BST-BMI323-DS000-10, GD25LE64E-Rev1.3), a
+    footnote mark of one digit directly after mpn, when mpn ends with a digit
+    (RR123-1H02-612 with the mark 1; a mark after a longer code stays in it),
+    a placeholder (TMP112DX) and an other part of the same datasheet (a variant)."""
     docs = [r for r in store.documents_of_part(part_id) if r["role"] == "datasheet"]
     if not docs or not mpn.strip():
         return False, []
     key = mpn.strip()
-    rx = re.compile(rf"(?<![A-Za-z0-9]){re.escape(key)}[A-Za-z0-9\-][A-Za-z0-9/\-]{{0,14}}", re.I)
+    # The variants: the parts of the datasheet that are not concrete parts.
+    siblings = {p["mpn"].upper() for d in docs for p in store.parts_of_document(d["id"]) if p["base_id"] is None}
+    # Not after a hyphen: "DS-AT25QL641-130H" is a document number.
+    rx = re.compile(rf"(?<![A-Za-z0-9\-]){re.escape(key)}[A-Za-z0-9\-][A-Za-z0-9/\-]{{0,14}}", re.I)
     order_line = re.compile(rf"(?im)^\s*{re.escape(key)}(?![A-Za-z0-9/\-]).*{ORDER_WORDS}")
     codes: dict[str, str] = {}
     for row in store.db.execute(
@@ -248,8 +285,12 @@ def base_hint(store: Store, part_id: int, mpn: str) -> tuple[bool, list[tuple[st
         where = f"p.{row['page']}" if len(docs) == 1 else f"{store.document(row['document_id']).sha256[:12]} p.{row['page']}"
         for code in rx.findall(row["text"]):
             code = code.rstrip("-/").upper()
-            if len(code) > len(key) and not NOT_ORDERABLE_RE.search(code[len(key):]) and code not in codes:
-                codes[code] = where
+            suffix = code[len(key):]
+            if (not suffix or NOT_ORDERABLE_RE.search(suffix) or DOC_WORD_RE.search(code)
+                    or re.fullmatch(r"X+", suffix) or (key[-1].isdigit() and re.fullmatch(r"\d", suffix))
+                    or code in siblings or code in codes):
+                continue
+            codes[code] = where
     if codes:
         return True, list(codes.items())[:8]
     proposed = {_norm(propose(store, store.document(d["id"])).mpn) for d in docs}

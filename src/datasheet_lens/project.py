@@ -861,6 +861,7 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
 
     # 2. The copies of the referenced documents.
     referenced = set()
+    done: dict[str, str] = {}  # the copies that this step copied or found changed: file -> SHA-256
     imported: set[str] = set()  # the documents that this sync put into the store
     for part in project.parts:
         part_docs = {r["id"] for r in store.documents_of_part(part_ids[id(part)])} if id(part) in part_ids else None
@@ -902,9 +903,13 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
                 report["missing"].append(rel)
                 if rel in files:
                     continue
+            elif done.get(rel) == d["sha256"]:
+                pass  # a document of two parts has one copy: the first part did it
             elif rel in files and not restore:
                 report["changed"].append(rel)
+                done[rel] = d["sha256"]
             else:
+                done[rel] = d["sha256"]
                 if apply:
                     target = project.file_path(rel)
                     tmp = temp_path(target)
@@ -1001,5 +1006,9 @@ def format_report(report: dict, apply: bool, add_hint: str) -> list[str]:
     for item in report["unassigned"]:
         lines.append(f"no part: {item['file']} ({item['sha256'][:12]}); assign it with "
                      + add_hint.format(mpn="<MPN>", sha=item["sha256"][:12]))
-    lines.append(f"{len(report['ok'])} copies are current")
+    # One copy can belong to two parts: count the files.
+    current = set(report["ok"])
+    if apply:  # after a sync, the copied and the moved copies are current too
+        current |= set(report["copied"]) | set(report["restored"]) | {m.split(" -> ")[-1] for m in report["moved"]}
+    lines.append(f"{len(current)} copies are current")
     return lines
