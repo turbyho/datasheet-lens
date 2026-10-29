@@ -93,3 +93,17 @@ def test_markers_on_own_lines_and_other_files(tmp_path):
     assert dict(agents.update(tmp_path, "datasheets"))["CLAUDE.md"].startswith("not changed: it includes")
     (tmp_path / "CLAUDE.md").write_text("```\n@AGENTS.md\n```\n", encoding="utf-8")
     assert dict(agents.update(tmp_path, "datasheets"))["CLAUDE.md"] == "added"
+
+
+def test_block_names_the_project_tools():
+    """The block for AGENTS.md and CLAUDE.md names each project tool of the MCP
+    server: a new tool must also go into the block."""
+    import asyncio
+
+    from datasheet_lens.agents import TEXT
+    from datasheet_lens.server import mcp
+
+    names = {t.name for t in asyncio.run(mcp.list_tools())}
+    wanted = {n for n in names if n.startswith("project_") and n not in ("project_remove_document",)}
+    wanted |= {"get_ordering_codes", "find_facts", "save_fact"}
+    assert not {n for n in wanted if n not in TEXT}, wanted

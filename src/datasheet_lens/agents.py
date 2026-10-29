@@ -27,27 +27,34 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
 `datasheet-lens`.
 
 - Read each value (limits, pins, register bits, timing) from the original page:
-  get_page_image with an element ID or a region. Do not use a value from the text
-  layer alone or from memory: the text layer can lose signs, units and table
-  structure.
-- Find the content step by step: list_documents, get_index, then search_text or
-  get_page_map, then get_page_image.
+  get_page_image with an element ID, a caption ("Table 57", all pages of the
+  table) or a region. Do not use a value from the text layer alone or from
+  memory: the text layer can lose signs, units and table structure.
+- Find the content step by step: list_documents, get_index, then search_text
+  (it gives the table or the region of each hit) or get_page_map, then
+  get_page_image.
 - Before you read a value, look for it with find_facts. Save a value that the
   work uses with save_fact, with its page and element.
 - `datasheet-lens.toml` must hold the same parts as the CAD project (schematic
-  and BOM). This consistency is critical. For each CAD part with an MPN that
-  the file does not have: find its datasheet in the store (list_documents), or
-  add it from the Datasheet field or a distributor (add_document). Then add the
-  part (project_add_part). If you cannot get the datasheet, tell the user. Tell
-  the user when the MPN of the CAD project and the datasheet do not agree, and
-  about a part of the file that the CAD project does not have. Then
-  project_sync. The MCP server instructions give the full procedure.
+  and BOM). This consistency is critical. Get the parts from the CAD tool (its
+  MCP server or its BOM export) and compare them: project_check (CLI
+  `datasheet-lens check BOM.csv`). It gives the missing, extra and different
+  parts with the next step. project_status (CLI `datasheet-lens ls`) gives the
+  parts and documents of the file. If you cannot get a datasheet, tell the
+  user. Tell the user about each different or extra part, and when the MPN of
+  the CAD project and the datasheet do not agree. Remove a part only when the
+  user agrees: project_remove_part (CLI `datasheet-lens rm MPN`). The MCP server
+  instructions give the full procedure.
 - To add a datasheet: add_document with a file or a URL and the base part of the
   datasheet (for example TLV755P). Then project_add_part with the concrete
-  orderable MPN of the BOM (for example TLV75533PDBVR) and base. CLI:
+  orderable MPN of the BOM (for example TLV75533PDBVR; get_ordering_codes, CLI
+  `datasheet-lens codes DOC`, gives the codes) and base. CLI:
   `datasheet-lens add PATH|URL -m MPN`.
+- To change the MPN, the base part or the category of a part:
+  project_update_part (CLI `datasheet-lens set MPN -m NEW`), not remove and add.
 - project_sync (CLI `datasheet-lens sync`) keeps `datasheet-lens.toml` and
-  `{folder}/` current. Do not change the copies by hand.
+  `{folder}/` current. Do not change the copies by hand. Then project_check
+  again: it must give no missing, extra or different part.
 """
 
 
