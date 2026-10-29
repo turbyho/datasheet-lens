@@ -106,6 +106,14 @@ def test_facts(store_home, text_pdf):
     assert "x0 < x1" in tool_error("save_fact", document=doc, page=1, subject="x", value="1",
                                    bbox=[100, 10, 50, 20])
 
+    # A second fact of the same element or subject gets a note; the page tools show the facts.
+    out = text_of(call("save_fact", document=doc, page=1, subject="VS max", value="36", element="p1.P1"))
+    assert f"#{fact_id} supply voltage max" in out and "set_fact_status" in out
+    assert "note" not in text_of(call("save_fact", document=doc, page=1, subject="new subject", value="1"))
+    assert f"known facts on this page (find_facts gives the values): #{fact_id} supply voltage max" in text_of(
+        call("get_page_map", document=doc, page=1))
+    assert f"#{fact_id} supply voltage max" in text_of(call("get_page_image", document=doc, element="p1.P1"))
+
 
 def test_background_build(store_home, text_pdf, monkeypatch):
     build = server._run_build  # the real build: a separate process

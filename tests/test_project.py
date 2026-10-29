@@ -449,3 +449,24 @@ def test_the_add_hints_of_the_cli_and_the_server():
     text = "\n".join(prj.format_report(report, False, cli.PROJECT_ADD_HINT))
     assert 'project add-part "TLV75533PDBVR" --base "TLV755P" --document aaaaaaaaaaaa' in text
     assert 'project add-part "OPA2134" --document bbbbbbbbbbbb' in text
+
+
+def test_pdf_files_outside_the_folder(store_home, text_pdf, tmp_path):
+    """sync tells about the PDF files in other folders of the repository: how
+    many, and how many the store and the project have. It does not import them."""
+    project = prj.init_project(tmp_path / "board")
+    used = project.root / "docs" / "used"
+    used.mkdir(parents=True)
+    shutil.copy(text_pdf("opa.pdf", OPA), used / "opa.pdf")
+    shutil.copy(text_pdf("rtc.pdf", RTC), used / "rtc.pdf")
+    (project.root / ".git").mkdir()
+    shutil.copy(text_pdf("hidden.pdf", OPA), project.root / ".git" / "hidden.pdf")
+    with Store() as store:
+        doc = store.add_document(used / "opa.pdf")
+        store.link(store.add_part("OPA2134", "TI"), doc.id)
+        prj.add_part(project, store, "OPA2134")
+        report = prj.sync(project, store)
+    assert report["outside"] == [{"folder": "docs/used", "files": 2, "in_store": 1, "in_project": 1}]
+    assert report["imported"] == []
+    assert any("PDF files outside the project folder: docs/used/ (2 files, 1 in the store, 1 documents of"
+               in line for line in prj.format_report(report, True, ("", "")))

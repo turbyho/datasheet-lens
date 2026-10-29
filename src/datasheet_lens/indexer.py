@@ -245,24 +245,112 @@ def outline_under(store: Store, doc_id: int, section: str) -> list:
         " ORDER BY seq", (doc_id, section + ".%", section + " %")).fetchall()
 
 
-def search(store: Store, doc_ids: list[int], query: str, limit: int = 30) -> list[tuple]:
-    """Give (document_id, page, line) for the lines that hold the query text. The
-    match is a case-insensitive substring ("VDD" finds "AVDD"), the same on each
-    platform (no FTS5: its token match differs, and not every SQLite has it)."""
-    needle = query.strip().lower()
-    if not needle:
+SEARCH_MODES = ("text", "word", "regex")
+UNIT_START = "µΩ°%"
+# A line that repeats on this part of the pages (and on 3 pages or more) is a
+# page header or footer.
+REPEATED_PART = 0.5
+# (SHA-256, time of the index build) -> the keys of the repeated lines.
+_repeated: dict[tuple[str, str], set[str]] = {}
+MAX_REPEATED_CACHE = 64
+
+
+PAGE_OFFSET = 10  # a printed page number can differ from the page of the PDF
+
+
+def _line_key(line: str, page: int) -> str:
+    """The key of a line for the header check. The page number does not count:
+    a number word near the page of the PDF ("GD25LE64E-Rev1.3  12  March 2022").
+    Other numbers count: "Address offset: 0x504" and "0x508" differ."""
+    return " ".join("#" if re.fullmatch(r"\d{1,4}", w) and abs(int(w) - page) <= PAGE_OFFSET else w
+                    for w in line.strip().lower().split())
+
+
+def repeated_lines(store: Store, doc_id: int) -> set[str]:
+    """The keys of the lines that repeat on many pages of a document: the page
+    headers and footers."""
+    built = store.build(doc_id, "index")
+    # Not the ID: a different store can use the same ID. A new index has a new time.
+    key = (store.document(doc_id).sha256, built["built"] if built else "")
+    if key not in _repeated:
+        if len(_repeated) >= MAX_REPEATED_CACHE:
+            _repeated.clear()
+        counts: dict[str, int] = {}
+        pages = 0
+        for row in store.db.execute("SELECT page, text FROM pages WHERE document_id = ?", (doc_id,)):
+            pages += 1
+            for line_key in {_line_key(line, row["page"]) for line in row["text"].splitlines() if line.strip()}:
+                counts[line_key] = counts.get(line_key, 0) + 1
+        least = max(3, REPEATED_PART * pages)
+        _repeated[key] = {k for k, n in counts.items() if n >= least}
+    return _repeated[key]
+
+
+def search_pattern(query: str, mode: str = "text") -> re.Pattern:
+    """The pattern of a query. text: a substring, case is ignored; a space
+    between a number and a unit is optional ("100 nF" finds "100nF" too), and a
+    different space matches any space. word: the same, as whole words only.
+    regex: a Python regular expression, case is ignored."""
+    if mode not in SEARCH_MODES:
+        raise LensError(f"mode must be one of {', '.join(SEARCH_MODES)}")
+    q = re.sub(r"\s+", " ", query.strip())
+    if not q:
         raise LensError("the search text is empty")
+    if mode == "regex":  # as the user gives it: a space can be part of it
+        try:
+            return re.compile(query, re.I)
+        except re.error as e:
+            raise LensError(f"not a regular expression: {e}") from e
+    out = []
+    for i, ch in enumerate(q):
+        unit = i > 0 and q[i - 1].isdigit()
+        if ch == " ":
+            nxt = q[i + 1] if i + 1 < len(q) else ""
+            out.append(r"\s*" if unit and (nxt.isalpha() or nxt in UNIT_START) else r"\s+")
+        else:
+            if unit and (ch.isalpha() or ch in UNIT_START):
+                out.append(r"\s*")
+            out.append(re.escape(ch))
+    pattern = "".join(out)
+    if mode == "word":
+        # A unit after a number is a word: "nF" finds "100nF", not "configuration".
+        # A query that starts or ends with a sign ("-40", "I2C:") has no word
+        # boundary on that side.
+        before = r"(?<![^\W\d_])" if q[0].isalpha() else r"(?<!\w)" if q[0].isalnum() or q[0] == "_" else ""
+        after = r"(?!\w)" if q[-1].isalnum() or q[-1] == "_" else ""
+        pattern = f"{before}{pattern}{after}"
+    return re.compile(pattern, re.I)
+
+
+def search(store: Store, doc_ids: list[int], query: str, limit: int = 30, mode: str = "text",
+           repeated: bool = False, hidden: list | None = None) -> list[tuple]:
+    """Give (document_id, page, line) for the lines that match the query (see
+    search_pattern). The same on each platform (no FTS5: its token match
+    differs, and not every SQLite has it). A line that repeats on many pages (a
+    page header or footer) is left out, unless repeated is true; hidden gets
+    one item for each line that is left out."""
+    rx = search_pattern(query, mode)
     if not doc_ids:
         return []
     require_index(store, doc_ids)
+    sql = f"SELECT document_id, page, text FROM pages WHERE document_id IN ({','.join('?' * len(doc_ids))})"
+    args: list = list(doc_ids)
+    # A quick filter by the longest word of the query (not for a regex). A number
+    # and its unit are two words: "100nF" can be "100 nF" in the text.
+    words = re.findall(r"\d+|[^\W\d_]+", query.lower()) if mode != "regex" else []
+    if words:
+        sql += " AND instr(ulower(text), ?) > 0"
+        args.append(max(words, key=len))
     out = []
-    rows = store.db.execute(
-        f"SELECT document_id, page, text FROM pages WHERE document_id IN ({','.join('?' * len(doc_ids))})"
-        " AND instr(ulower(text), ?) > 0 ORDER BY document_id, page", (*doc_ids, needle)).fetchall()
-    for row in rows:
+    for row in store.db.execute(sql + " ORDER BY document_id, page", args).fetchall():
         doc_id, page, text = row["document_id"], row["page"], row["text"]
+        skip = set() if repeated else repeated_lines(store, doc_id)
         for line in text.splitlines():
-            if needle in line.lower():
+            if rx.search(line):
+                if _line_key(line, page) in skip:
+                    if hidden is not None:
+                        hidden.append((doc_id, page))
+                    continue
                 out.append((doc_id, page, re.sub(r"\s{2,}", "  ", line.strip())[:160]))
                 if len(out) >= limit:
                     return out

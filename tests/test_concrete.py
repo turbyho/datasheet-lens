@@ -226,7 +226,7 @@ def test_base_part_note(store_home, text_pdf, tmp_path, capsys, monkeypatch):
     project = prj.init_project(tmp_path / "board")
     assert main(["project", "add-part", "ADC34J24", "-p", str(project.root)]) == 0
     out = capsys.readouterr().out
-    assert "probably the base part" in out and 'project add-part "ADC34J24IRGZR" --base ADC34J24' in out
+    assert "probably the base part" in out and 'set "ADC34J24" -m "ADC34J24IRGZR" -b ADC34J24' in out
     assert "run 'datasheet-lens sync'" in out  # the copy is not in the folder yet
 
 

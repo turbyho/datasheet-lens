@@ -289,10 +289,12 @@ def _set(table, key: str, value: str, default: str = "", norm=str, order: tuple[
 
 def _same_part(table, part: dict) -> bool:
     """True if a table of the project file is this project part: the same MPN, and
-    the same manufacturer or no manufacturer in the table."""
+    the same manufacturer or no manufacturer in the table. A part that
+    update_part changed has its old MPN and manufacturer in "was"."""
     mpn, manufacturer = _strip(table.get("mpn", "")), _strip(table.get("manufacturer", ""))
-    return mpn.lower() == part["mpn"].lower() and (
-        not manufacturer or manufacturer.lower() == part["manufacturer"].strip().lower())
+    old_mpn, old_manufacturer = part.get("was", (part["mpn"], part["manufacturer"]))
+    return mpn.lower() == old_mpn.lower() and (
+        not manufacturer or manufacturer.lower() == old_manufacturer.strip().lower())
 
 
 def _tables(container, key: str) -> list:
@@ -490,6 +492,44 @@ def _folder_files(project: Project) -> dict[str, str]:
         return {}
     return {p.relative_to(folder).as_posix(): _hash(p)
             for p in sorted(folder.rglob("*")) if p.is_file() and p.suffix.lower() == ".pdf"}
+
+
+# Folders of a repository that do not hold the datasheets of the design.
+SKIP_DIRS = {"node_modules", "__pycache__", "venv", "build", "dist", "target"}
+MAX_OUTSIDE = 1000  # the PDF files outside the project folder that sync looks at
+
+
+def outside_pdfs(project: Project, store: Store) -> tuple[list[dict], bool]:
+    """The folders of the repository (the project root) outside the project
+    folder that hold PDF files: {"folder", "files", "in_store", "in_project"},
+    and false when the search stopped after MAX_OUTSIDE files. A hidden folder
+    (.git) and the folders of SKIP_DIRS are not searched. Only a file with the
+    size of a store document is read (SHA-256)."""
+    sizes = {r[0] for r in store.db.execute("SELECT DISTINCT size FROM documents")}
+    known = {d["sha256"] for p in project.parts for d in p["documents"]}
+    folder = project.folder_path.resolve()
+    groups: dict[str, dict] = {}
+    count = 0
+    for dirpath, dirnames, filenames in os.walk(project.root):
+        here = Path(dirpath)
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in SKIP_DIRS
+                             and (here / d).resolve() != folder)
+        for name in sorted(n for n in filenames if n.lower().endswith(".pdf")):
+            count += 1
+            if count > MAX_OUTSIDE:
+                return list(groups.values()), False
+            path = here / name
+            rel = here.relative_to(project.root).as_posix()
+            group = groups.setdefault(rel, {"folder": rel, "files": 0, "in_store": 0, "in_project": 0})
+            group["files"] += 1
+            try:
+                sha = _hash(path) if path.stat().st_size in sizes else ""
+            except OSError:
+                continue
+            if sha and store.document(sha) is not None:
+                group["in_store"] += 1
+                group["in_project"] += sha in known
+    return list(groups.values()), True
 
 
 def _safe(name: str) -> str:
@@ -695,6 +735,75 @@ def remove_part(project: Project, mpn: str, manufacturer: str = "", delete_pinne
         project.parts[:] = rest
         save(project)
     return {"part": part["mpn"], **result}
+
+
+def _store_part(store: Store, mpn: str, manufacturer: str, create: bool) -> int | None:
+    """The store part of an MPN: the one with this manufacturer or with none, or
+    the only part with the MPN (a different spelling of the manufacturer). Else
+    a new part if create is true, or None."""
+    rows = store.match_parts(mpn)
+    same = [r for r in rows if r["manufacturer"].lower() in ("", manufacturer.strip().lower())]
+    if len(same) == 1:
+        return same[0]["id"]
+    if len(rows) == 1 and not same:
+        return rows[0]["id"]
+    return store.find_part(mpn, manufacturer, create=True) if create else None
+
+
+def update_part(project: Project, store: Store, mpn: str, manufacturer: str = "", new_mpn: str = "",
+                base: str = "", category: str | None = None, new_manufacturer: str = "") -> dict:
+    """Change a part of the project in place: its MPN (TMP112D0 to the concrete
+    TMP112D0IDPWR), its base part, its category or its manufacturer. An empty
+    value does not change; category "" removes the category. The part keeps its
+    place in the project file and its copies: sync moves a copy when the layout
+    gives a different subfolder. In the store, the part with the new MPN gets
+    the base part; with no base part, it gets the documents of the old MPN. The
+    manufacturer must have the spelling of the store, so that the store does not
+    get a second part with the same MPN."""
+    part = _one_part(project, mpn, manufacturer)
+    target = new_mpn.strip() or part["mpn"]
+    maker = new_manufacturer.strip() or part["manufacturer"]
+    if any(p is not part and p["mpn"].lower() == target.lower() and p["manufacturer"].lower() == maker.lower()
+           for p in project.parts):
+        raise LensError(f"the project has a part {target} already: remove one of the two parts")
+    old_base = "" if part.get("base", "").lower() == part["mpn"].lower() else part.get("base", "")
+    if base.strip() and base.strip().lower() == target.lower():
+        raise LensError(f"{target} cannot be its own base part")
+    base = base.strip() or ("" if old_base.lower() == target.lower() else old_base)
+    # The checks of save, before the store changes: a store change stays when
+    # the file cannot be written.
+    if project.text is not None and (not project.path.exists()
+                                     or project.path.read_text(encoding="utf-8") != project.text):
+        raise LensError(f"{project.path} changed after datasheet-lens read it: run the command again")
+    old_id = _store_part(store, part["mpn"], part["manufacturer"], create=False)
+    part_id = _store_part(store, target, maker, create=True)
+    known = store.part(part_id)["manufacturer"]
+    if new_manufacturer.strip() and known and known.lower() != maker.lower():
+        raise LensError(f"the store has {target} from {known}: use this spelling of the manufacturer")
+    if maker:
+        store.fill_manufacturer(part_id, maker)
+    if base:
+        base_id = _store_part(store, base, maker, create=True)
+        if (store.part(part_id)["base_id"] or 0) != base_id:
+            store.set_base(part_id, base_id)
+        part["base"] = base
+    elif old_id is not None and old_id != part_id:
+        # A new MPN with no base part: it gets the documents of the old MPN.
+        for row in store.db.execute("SELECT document_id, role FROM part_documents WHERE part_id = ?",
+                                    (old_id,)).fetchall():
+            store.link(part_id, row["document_id"], row["role"])
+    if category is not None:  # also in the store, else sync fills an empty category again
+        store.set_category(part_id, category.strip())
+        part["category"] = category.strip()
+    # save finds the table of the part in the file by the old MPN and manufacturer.
+    part["was"] = (part["mpn"], part["manufacturer"])
+    part["mpn"], part["manufacturer"] = target, maker
+    _refresh(project, store, part, part_id, _folder_files(project))
+    try:
+        save(project)
+    finally:
+        del part["was"]
+    return part
 
 
 def remove_document(project: Project, document: str, mpn: str = "", manufacturer: str = "",
@@ -964,6 +1073,7 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
                 doc = store.document(doc_id)
                 report["problems"].append(f"{doc.filename} ({doc.sha256[:12]}): no index: {e}")
         save(project)
+    report["outside"], report["outside_complete"] = outside_pdfs(project, store)
     return report
 
 
@@ -1016,6 +1126,19 @@ def format_report(report: dict, apply: bool, add_hint: tuple[str, str]) -> list[
     for item in report["unassigned"]:
         lines.append(f"no part: {item['file']} ({item['sha256'][:12]}); assign it with "
                      f"{hint('<MPN>', item['sha256'])}, with the concrete orderable MPN of the BOM")
+    # The folders with store documents in detail, the others in one line.
+    outside = report.get("outside", [])
+    for g in (g for g in outside if g["in_store"]):
+        lines.append(f"PDF files outside the project folder: {g['folder']}/ ({g['files']} files, {g['in_store']} "
+                     f"in the store, {g['in_project']} documents of the project). sync does not import them. If "
+                     "this folder holds the datasheets of the design, the key folder of the project file can "
+                     "name it: tell the user.")
+    other = [g for g in outside if not g["in_store"]]
+    if other:
+        lines.append(f"PDF files outside the project folder that the store does not have: "
+                     f"{sum(g['files'] for g in other)} in {len(other)} folders (for example {other[0]['folder']}/)")
+    if not report.get("outside_complete", True):
+        lines.append(f"(the search for PDF files outside the project folder stopped after {MAX_OUTSIDE} files)")
     # One copy can belong to two parts: count the files.
     current = set(report["ok"])
     if apply:  # after a sync, the copied and the moved copies are current too

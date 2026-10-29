@@ -1,7 +1,10 @@
 import shutil
 
+import pytest
+
 from datasheet_lens import project as prj
 from datasheet_lens.cli import main
+from datasheet_lens.errors import LensError
 from datasheet_lens.store import Store
 
 OPA = [[(50, 60, 12, "OPA2134 Audio Op Amp")]]
@@ -112,3 +115,45 @@ def test_rm_document_with_the_manufacturer(store_home, text_pdf, tmp_path, capsy
     assert main(["rm", "LM358", "-M", "TI", "-d", doc.sha256[:12], "-p", str(project.root)]) == 0
     parts = {p["manufacturer"]: p for p in prj.load(project.root).parts}
     assert parts["TI"]["documents"] == [] and len(parts["ST"]["documents"]) == 1
+
+
+def test_set_changes_a_part_in_place(store_home, text_pdf, tmp_path, capsys):
+    """set (project_update_part) changes the MPN, the base part and the category.
+    The part keeps its place in the file and its copies."""
+    project, d, e = setup_project(store_home, text_pdf, tmp_path)
+    root = str(project.root)
+    copy = project.folder_path / "opa2134.pdf"
+    mtime = copy.stat().st_mtime_ns
+    assert main(["set", "OPA2134", "-m", "OPA2134PA", "-b", "OPA2134", "-c", "op amp", "-p", root]) == 0
+    assert "OPA2134PA (TI), base part OPA2134" in capsys.readouterr().out
+    parts = prj.load(project.root).parts
+    assert [(p["mpn"], p.get("base"), p["category"]) for p in parts] == [
+        ("OPA2134PA", "OPA2134", "op amp"), ("OPA134", None, "")]
+    assert {x["file"] for x in parts[0]["documents"]} == {"opa2134.pdf", "errata.pdf"}
+    assert copy.stat().st_mtime_ns == mtime  # not deleted and copied again
+    with Store() as store:
+        assert store.base_of(store.find_part("OPA2134PA"))["mpn"] == "OPA2134"
+        # A second part with the same MPN is an error.
+        project = prj.load(project.root)
+        with pytest.raises(LensError, match="has a part OPA134 already"):
+            prj.update_part(project, store, "OPA2134PA", new_mpn="OPA134")
+        # An empty category removes it, also from the store.
+        prj.update_part(project, store, "OPA2134PA", category="")
+        prj.sync(project, store)
+    assert prj.load(project.root).parts[0]["category"] == ""
+
+
+def test_set_keeps_the_store_consistent(store_home, text_pdf, tmp_path):
+    """A new MPN with no base part gets the documents of the old MPN. A
+    different spelling of the manufacturer does not make a second store part.
+    A part with base = mpn in the file can change its category."""
+    project, d, e = setup_project(store_home, text_pdf, tmp_path)
+    with Store() as store:
+        prj.update_part(project, store, "OPA134", new_mpn="OPA134PA")
+        assert {r["sha256"] for r in store.part_documents("OPA134PA")} == {d.sha256}
+        with pytest.raises(LensError, match="the store has OPA134PA from TI"):
+            prj.update_part(project, store, "OPA134PA", new_manufacturer="Texas Instruments")
+        assert len(store.match_parts("OPA134PA")) == 1
+        project.parts[1]["base"] = "OPA134PA"
+        prj.update_part(project, store, "OPA134PA", category="op amp")
+    assert prj.load(project.root).parts[1]["category"] == "op amp"

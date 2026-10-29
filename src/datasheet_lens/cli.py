@@ -219,8 +219,14 @@ def cmd_search(args: argparse.Namespace) -> int:
             ids = [r["id"] for r in store.part_documents(args.part)]
         else:
             ids = [_doc(store, args.document).id]
-        for doc_id, page, line in search(store, ids, args.text, args.max):
+        mode = "regex" if args.regex else "word" if args.word else "text"
+        hidden: list = []
+        hits = search(store, ids, args.text, args.max, mode, args.all, hidden)
+        for doc_id, page, line in hits:
             print(f"{store.document(doc_id).sha256[:12]} p.{page}: {line}")
+        if hidden:
+            print(f"({'at least ' if len(hits) >= args.max else ''}{len(hidden)} lines in page headers or "
+                  "footers are not shown: -a shows them)")
     return 0
 
 
@@ -479,7 +485,22 @@ def _base_note(store: Store, part: dict) -> str:
     """The note for a project part that is probably a base part (see identify)."""
     from .identify import project_base_note
 
-    return project_base_note(store, part, 'datasheet-lens project add-part "{code}" --base {base}')
+    return project_base_note(store, part, 'datasheet-lens set "{mpn}" -m "{code}" -b {base}')
+
+
+def cmd_set(args: argparse.Namespace) -> int:
+    """The command set: change a part of the project in place (MPN, base part,
+    category, manufacturer)."""
+    from .project import load, update_part
+
+    project = load(args.path)
+    with Store() as store:
+        part = update_part(project, store, args.part, args.of or "", args.mpn or "", args.base or "",
+                           args.category, args.manufacturer or "")
+    print(f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'})"
+          + (f", base part {part['base']}" if part.get("base") else ""))
+    print("run 'datasheet-lens sync' to move the copies to the subfolders of the layout")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -521,12 +542,22 @@ def build_parser() -> argparse.ArgumentParser:
     rm.add_argument("--pinned", action="store_true", help="also delete a file that you put into the folder")
     rm.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
     rm.set_defaults(func=cmd_rm)
+    st = sub.add_parser("set", help="change a part of the project in place: its MPN, base part, category or "
+                                    "manufacturer")
+    st.add_argument("part", metavar="MPN", help="the part of the project now")
+    st.add_argument("-m", "--mpn", help="the new MPN, for example the concrete orderable MPN")
+    st.add_argument("-b", "--base", metavar="MPN", help="the base part of the datasheet")
+    st.add_argument("-c", "--category", help="the function of the part (\"\" removes it)")
+    st.add_argument("-M", "--manufacturer", help="the new manufacturer")
+    st.add_argument("--of", metavar="MANUFACTURER", help="the manufacturer now, if the project has more parts "
+                                                         "with the MPN")
+    st.set_defaults(func=cmd_set)
     ls = sub.add_parser("ls", help="show the parts and documents of the project (project status)")
     ls.set_defaults(func=cmd_project_status)
     psync_short = sub.add_parser("sync", help="synchronize the project (project sync)")
     psync_short.add_argument("--restore", action="store_true", help="copy a changed copy again from the store")
     psync_short.set_defaults(func=cmd_project_sync)
-    for p in (rm, ls, psync_short):
+    for p in (rm, st, ls, psync_short):
         p.add_argument("-p", "--path", "--project", dest="path",
                        help="the project folder (default: the current folder or a parent folder)")
 
@@ -557,6 +588,10 @@ def build_parser() -> argparse.ArgumentParser:
     target.add_argument("--document", help="document ID or SHA-256 prefix")
     target.add_argument("--part", help="part number: search all documents of the part")
     search.add_argument("--max", type=int, default=30, help="maximum number of lines")
+    kind = search.add_mutually_exclusive_group()
+    kind.add_argument("-w", "--word", action="store_true", help="whole words only")
+    kind.add_argument("-r", "--regex", action="store_true", help="the text is a regular expression")
+    search.add_argument("-a", "--all", action="store_true", help="also the page headers and footers")
     search.set_defaults(func=cmd_search)
 
     serve = sub.add_parser("mcp", help="run the MCP server (stdio)")

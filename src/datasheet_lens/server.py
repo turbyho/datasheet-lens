@@ -100,7 +100,8 @@ each change of the CAD project, do these steps:
    the user the MPN and the reason.
 4. Tell the user when a CAD MPN and its datasheet do not agree (value, package,
    variant), and about each part of the file that the CAD project does not
-   have. Remove a part (project_remove_part) only when the user agrees.
+   have. Remove a part (project_remove_part) only when the user agrees. Change
+   the MPN of a part with project_update_part.
 5. project_sync: it copies the documents into the project folder.
 
 The store identifies a document by its SHA-256: add_document of a file that it
@@ -386,14 +387,22 @@ def get_outline(
 @tool
 def search_text(
         text: Annotated[str, Field(description=(
-            "The text to find. Case is ignored, and it is a substring: \"VDD\" also finds \"AVDD\"."))],
+            "The text to find. Case is ignored. In mode text it is a substring (\"VDD\" also finds \"AVDD\"), "
+            "and the space between a number and its unit is optional (\"100 nF\" also finds \"100nF\")."))],
         document: DocRef = "",
         part: PartRef = "",
-        max_lines: Annotated[int, Field(description="The maximum number of lines (1 to 200).")] = 30) -> str:
+        max_lines: Annotated[int, Field(description="The maximum number of lines (1 to 200).")] = 30,
+        mode: Annotated[str, Field(description=(
+            "text (a substring); word (whole words only: \"nF\" does not find \"configuration\"); or regex "
+            "(a Python regular expression, for example \"Pin Functions?\")."))] = "text",
+        repeated: Annotated[bool, Field(description=(
+            "True: also the lines that repeat on many pages (page headers and footers)."))] = False) -> str:
     """Find a text in the text layer of one document, or of all documents of a
     part. Gives one line for each hit: the document reference, the page and the
-    line. Use it to find the page of a register, a parameter or a pin. Then read
-    the value from the original (get_page_image): the text layer can be wrong."""
+    line. The page headers and footers are not shown: a last line gives their
+    number. Use it to find the page of a register, a parameter or a pin. Then
+    read the value from the original (get_page_image): the text layer can be
+    wrong."""
     from .indexer import search
 
     with Store() as store:
@@ -404,10 +413,14 @@ def search_text(
             shas = {r["id"]: r["sha256"] for r in store.part_documents(part)}
         else:
             raise LensError("give a document or a part")
-        hits = search(store, _indexed(store, list(shas)), text, max(1, min(max_lines, 200)))
-        if not hits:
-            return f"No line holds {text!r}."
-        return "\n".join(f"{shas[d][:12]} p.{p}: {line}" for d, p, line in hits)
+        hidden: list = []
+        limit = max(1, min(max_lines, 200))
+        hits = search(store, _indexed(store, list(shas)), text, limit, mode, repeated, hidden)
+        lines = [f"{shas[d][:12]} p.{p}: {line}" for d, p, line in hits] or [f"No line holds {text!r}."]
+        if hidden:  # the search stops at the limit: then the count is a minimum
+            lines.append(f"({'at least ' if len(hits) >= limit else ''}{len(hidden)} lines in page headers "
+                         "or footers are not shown: repeated=true shows them)")
+        return "\n".join(lines)
 
 
 @tool
@@ -425,12 +438,14 @@ def get_page_map(
     build. Until it is complete, the result tells so: then use get_index,
     search_text and get_page_image with a page or a region."""
     from .elements import page_map
+    from .knowledge import facts_line
 
     with Store() as store:
         doc = _doc(store, document)
         note = _elements_ready(store, doc.id)
         lines = page_map(store, doc.id, page, all_elements) or ["(no elements)"]
-        return "\n".join(lines + ([note] if note else []))
+        facts = facts_line(store, doc.id, page)
+        return "\n".join(lines + [x for x in (note, facts) if x])
 
 
 @tool
@@ -493,6 +508,7 @@ def get_page_image(
     max_px. Gives a line with the page, the region, the dpi and the size, and the
     image."""
     from .elements import element as get_element
+    from .knowledge import facts_line
     from .pages import page_image
 
     if element and bbox:
@@ -513,7 +529,8 @@ def get_page_image(
         region = "full page" if img.bbox is None else "region [" + ", ".join(f"{v:.0f}" for v in img.bbox) + "]"
         meta = (f"{doc.sha256[:12]} page {img.page}, {region}, {img.dpi:.0f} dpi, "
                 f"{img.width_px} x {img.height_px} px")
-        return [meta, Image(path=img.path)]
+        facts = facts_line(store, doc.id, img.page)
+        return [meta + (f"\n{facts}" if facts else ""), Image(path=img.path)]
 
 
 @tool
@@ -562,14 +579,21 @@ def save_fact(
     value, look for it with find_facts: do not save a value two times. A new fact
     has the state unchecked. Gives the fact number."""
     from .knowledge import save_fact as save
+    from .knowledge import similar_facts
 
     with Store() as store:
         doc = _doc(store, document)
         if element:
             _elements_ready(store, doc.id)
+        similar = similar_facts(store, doc.id, page, subject, element)
         fact_id = save(store, doc.id, page, subject, value, unit=unit, conditions=conditions, column=column,
                        element_id=element, bbox=bbox, note=note, source_kind="model", model=model, part=part)
-        return f"fact #{fact_id} saved (unchecked)"
+        out = f"fact #{fact_id} saved (unchecked)"
+        if similar:
+            out += ("\nnote: the same page has facts with this element or subject: "
+                    + ", ".join(f"#{r['id']} {r['subject']}" for r in similar)
+                    + ". If the new fact is a copy, set its state to disputed with set_fact_status.")
+        return out
 
 
 @tool
@@ -702,11 +726,42 @@ def project_add_part(
         part = add_part(project, store, mpn, manufacturer, document, role, category, base)
         from .identify import project_base_note
 
-        note = project_base_note(store, part, "project_add_part(mpn='{code}', base='{base}')")
+        note = project_base_note(store, part, "project_update_part(mpn='{mpn}', new_mpn='{code}', base='{base}')")
     return "\n".join([f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'}): "
                       f"{len(part['documents'])} documents"]
                      + [f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}"
                         for d in part["documents"]] + ([note] if note else []))
+
+
+@tool
+def project_update_part(
+        mpn: Annotated[str, Field(description="The MPN of the project part now.")],
+        manufacturer: Manufacturer = "",
+        new_mpn: Annotated[str, Field(description=(
+            "The new MPN, for example the concrete orderable MPN TMP112D0IDPWR in place of TMP112D0. "
+            "Empty: no change."))] = "",
+        base: Annotated[str, Field(description=(
+            "The base part of the datasheet, for example TMP112D. Empty: no change."))] = "",
+        category: Annotated[str | None, Field(description=(
+            "The function of the part. None: no change; an empty text removes it."))] = None,
+        new_manufacturer: Annotated[str, Field(description=(
+            "The manufacturer, with the spelling of list_parts. Empty: no change."))] = "",
+        path: ProjectPath = "") -> str:
+    """Change a part of the user project in place: its MPN, base part, category
+    or manufacturer. The part keeps its place in datasheet-lens.toml and its
+    copies (project_remove_part and project_add_part would delete and copy them
+    again). Then project_sync moves a copy when the layout gives it a different
+    subfolder. Gives the part and its documents."""
+    from .project import load, update_part
+
+    with _add_lock, Store() as store:
+        project = load(path or None)
+        part = update_part(project, store, mpn, manufacturer, new_mpn, base, category, new_manufacturer)
+    return "\n".join([f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'})"
+                      + (f", base part {part['base']}" if part.get("base") else "")
+                      + f": {len(part['documents'])} documents"]
+                     + [f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}"
+                        for d in part["documents"]])
 
 
 def _removal(result: dict, folder: str, dry_run: bool, what: str) -> str:
@@ -727,7 +782,8 @@ def project_remove_part(
     """Remove a part from the user project, and delete its copies that no other
     part uses. A file that the user put into the folder (pinned) stays, unless
     delete_pinned is true. The central store does not change, because other
-    projects can use the part. Gives the removed part and the deleted and kept
+    projects can use the part. To change the MPN of a part, use
+    project_update_part. Gives the removed part and the deleted and kept
     files."""
     from .project import load, remove_part
 

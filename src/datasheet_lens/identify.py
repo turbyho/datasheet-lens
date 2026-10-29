@@ -222,8 +222,8 @@ def project_base_note(store: Store, part: dict, how: str) -> str:
     or "": a part with no base part that is probably the base part of its
     datasheet, or a part with a base part that is probably not complete
     (TMP112D0 of TMP112D0IDPWR). how tells how to give the concrete MPN, with
-    {code} and {base} in it. An error of the hint gives no note: the hint is
-    optional."""
+    {mpn}, {code} and {base} in it. An error of the hint gives no note: the hint
+    is optional."""
     rows = store.match_parts(part["mpn"], part["manufacturer"])
     if len(rows) != 1:
         return ""
@@ -243,7 +243,7 @@ def base_note(store: Store, part_id: int, mpn: str, how: str, base: str = "") ->
     if not probable:
         return ""
     check = ("Read the ordering information of the original, and check with a distributor that the code is "
-             "sold. Then: " + how.format(code=codes[0][0] if codes else "<CODE>", base=base or mpn))
+             "sold. Then: " + how.format(code=codes[0][0] if codes else "<CODE>", base=base or mpn, mpn=mpn))
     listed = ", ".join(f"{c} ({p})" for c, p in codes)
     if base:
         return (f"note: {mpn} is probably not a complete orderable MPN (package, packing): the datasheet text "

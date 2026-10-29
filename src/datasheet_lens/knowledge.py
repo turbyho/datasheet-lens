@@ -74,6 +74,30 @@ def find_facts(store: Store, query: str = "", doc_ids: list[int] | None = None, 
     return store.db.execute(sql, (*args, limit)).fetchall()
 
 
+def page_facts(store: Store, doc_id: int, page: int) -> list:
+    """The facts of one page of a document: id, subject, element_id."""
+    return store.db.execute("SELECT id, subject, element_id FROM knowledge WHERE document_id = ? AND page = ?"
+                            " ORDER BY id", (doc_id, page)).fetchall()
+
+
+def facts_line(store: Store, doc_id: int, page: int, limit: int = 10) -> str:
+    """One line with the facts of a page, so that a session sees them before it
+    reads the page again, or "" when the page has none."""
+    rows = page_facts(store, doc_id, page)
+    if not rows:
+        return ""
+    shown = ", ".join(f"#{r['id']} {r['subject'][:40]}" for r in rows[:limit])
+    more = f" and {len(rows) - limit} more" if len(rows) > limit else ""
+    return f"known facts on this page (find_facts gives the values): {shown}{more}"
+
+
+def similar_facts(store: Store, doc_id: int, page: int, subject: str, element_id: str = "") -> list:
+    """The facts of the same page with the same element or the same subject: a
+    new fact can be a copy of one of them."""
+    return [r for r in page_facts(store, doc_id, page)
+            if (element_id and r["element_id"] == element_id) or r["subject"].lower() == subject.strip().lower()]
+
+
 def set_status(store: Store, fact_id: int, status: str, note: str = "") -> None:
     """Set the state. A note is added to the existing note, with the state."""
     if status not in STATUSES:

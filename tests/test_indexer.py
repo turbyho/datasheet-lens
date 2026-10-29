@@ -60,6 +60,26 @@ def test_search_is_substring_and_rejects_empty(store_home, text_pdf):
         search(store, [doc.id], "  ")
 
 
+def test_search_modes_and_page_headers(store_home, text_pdf):
+    """A number and its unit with or without a space, whole words, a regex, and
+    no lines that repeat on many pages (a page header with its page number)."""
+    pages = [[(50, 20, 8, f"GD25LE64E Datasheet  page {n}"), (50, 100, 10, line)]
+             for n, line in enumerate(["C1 100nF to GND", "Configuration of the chip", "Table 3. Pin Function",
+                                       "VDD 1.8 V supply"], start=1)]
+    store = Store()
+    doc = store.add_document(text_pdf("gd.pdf", pages))
+    build_index(store, doc.id)
+    pages_of = lambda *a, **k: [p for _, p, _ in search(store, [doc.id], *a, **k)]  # noqa: E731
+    assert pages_of("100 nF") == [1] and pages_of("100nf") == [1] and pages_of("1.8V") == [4]
+    assert pages_of("nf") == [1, 2] and pages_of("nF", mode="word") == [1]
+    assert pages_of("Pin Functions?", mode="regex") == [3]
+    hidden: list = []
+    assert pages_of("GD25LE64E", hidden=hidden) == [] and len(hidden) == 4
+    assert pages_of("GD25LE64E", repeated=True) == [1, 2, 3, 4]
+    with pytest.raises(ValueError, match="not a regular expression"):
+        search(store, [doc.id], "(", mode="regex")
+
+
 def test_heading_with_a_number_at_its_end(store_home, text_pdf):
     store = Store()
     doc = store.add_document(text_pdf("t.pdf", [[(50, 60, 12, "4. TIMERS"), (50, 90, 12, "4.2 Timer 2")]]))
@@ -112,3 +132,19 @@ def test_raster_min_dpi_ignores_strips():
         assert raster_min_dpi(page) == expected
     page.close()
     pdf.close()
+
+
+def test_search_keeps_register_lines_and_signs(store_home, text_pdf):
+    """Register lines that differ only in a number are not page headers. A
+    query that starts with a sign has no word boundary there. A regex keeps its
+    spaces."""
+    pages = [[(50, 20, 8, f"nRF9151  {n}"), (50, 100, 10, f"Address offset: 0x5{n}4"),
+              (50, 120, 10, f"TA=-40 °C, VDD = {n}.8 V")] for n in range(1, 5)]
+    store = Store()
+    doc = store.add_document(text_pdf("nrf.pdf", pages))
+    build_index(store, doc.id)
+    pages_of = lambda *a, **k: [p for _, p, _ in search(store, [doc.id], *a, **k)]  # noqa: E731
+    assert pages_of("Address offset") == [1, 2, 3, 4]
+    assert pages_of("nRF9151") == []  # the header with its page number
+    assert pages_of("-40", mode="word") == [1, 2, 3, 4]
+    assert pages_of("offset:  0x524", mode="regex") == [] and pages_of("offset: 0x524", mode="regex") == [2]
