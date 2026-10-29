@@ -252,3 +252,78 @@ def list_items(store: Store, doc_id: int, kind: str | None = None) -> list:
     return store.db.execute(
         f"SELECT * FROM elements WHERE document_id = ? AND code IN ({','.join('?' * len(codes))})"
         " ORDER BY page, page_order", (doc_id, *codes)).fetchall()
+
+
+CONTINUED_PAGES = 5  # a table that continues: the pages before and after that find_caption looks at
+EDGE = 0.3  # a part of a table that continues starts in the top or ends in the bottom part of its page
+
+
+def _part(row) -> dict:
+    return {"page": row["page"], "element_id": row["element_id"], "bbox": [row["x0"], row["y0"], row["x1"], row["y1"]]}
+
+
+def find_caption(store: Store, doc_id: int, caption: str) -> list[dict]:
+    """The table or figure with this caption label (for example "Table 57" or
+    "Figure 3-1"; "Table 5" is not "Table 57"), as parts {"page", "element_id",
+    "bbox"}. A table continues on the next page when the first table there
+    starts at the top of the page and has no caption of its own, the same
+    label, "continued" or the title. A caption can also be at the end of a
+    table (Nordic): then the parts on the pages before, which end at the bottom
+    of their pages, come first. With no table in the element map (the text
+    backend), the part is the full page of the caption (bbox None). A
+    LensError if no caption has the label."""
+    label = re.sub(r"\s+", " ", caption).strip()
+    if not label:
+        raise LensError("the caption is empty")
+    rx = re.compile(rf"^{re.escape(label)}(?![0-9]|[.\-][0-9])", re.I)
+    rows = store.db.execute("SELECT * FROM elements WHERE document_id = ? AND code IN ('T', 'F', 'C')"
+                            " ORDER BY page, page_order", (doc_id,)).fetchall()
+    found = next((r for r in rows if r["code"] in ("T", "F") and rx.match(r["text"])), None)
+    if found is None:
+        # A caption with no table or figure: the nearest table or figure of its page.
+        cap = next((r for r in rows if r["code"] == "C" and rx.match(r["text"])), None)
+        page = cap["page"] if cap is not None else next(
+            (c["page"] for c in store.db.execute("SELECT label, page FROM captions WHERE document_id = ?"
+                                                 " ORDER BY seq", (doc_id,)) if rx.match(c["label"])), None)
+        if page is None:
+            raise LensError(f"no table or figure with the caption {label!r} (list_items gives the captions)")
+        near = [r for r in rows if r["page"] == page and r["code"] in ("T", "F")]
+        if not near or cap is None:
+            return [{"page": page, "element_id": "", "bbox": None}]
+        found = min(near, key=lambda r: abs((r["y0"] + r["y1"]) / 2 - (cap["y0"] + cap["y1"]) / 2))
+    if found["code"] != "T":
+        return [_part(found)]
+    heights = dict(store.db.execute("SELECT page, height_pt FROM pages WHERE document_id = ?", (doc_id,)).fetchall())
+    # The title of the table: "LGA pin assignments" of "Table 57: LGA pin assignments".
+    title = re.sub(r"^[\s.:\-–]+", "", found["text"][len(label):]).strip().lower() if rx.match(found["text"]) else ""
+
+    def same_table(row, neighbor) -> bool:
+        text = row["text"].lower()
+        no_caption = not text or text.startswith("(under heading:")  # see _number
+        return (no_caption or bool(rx.match(row["text"])) or "continued" in text
+                or text == neighbor["text"].lower() or bool(title) and title in text)
+
+    def top(row) -> bool:
+        return row["y0"] < EDGE * heights.get(row["page"], 792)
+
+    def bottom(row) -> bool:
+        h = heights.get(row["page"], 792)
+        return row["y1"] > (1 - EDGE) * h
+
+    tables = [r for r in rows if r["code"] == "T"]
+    before, after = [], []
+    last = found
+    for page in range(found["page"] - 1, found["page"] - 1 - CONTINUED_PAGES, -1):
+        row = next((r for r in reversed(tables) if r["page"] == page), None)
+        if row is None or not (top(last) and bottom(row) and same_table(row, last)):
+            break
+        before.insert(0, row)
+        last = row
+    last = found
+    for page in range(found["page"] + 1, found["page"] + 1 + CONTINUED_PAGES):
+        row = next((r for r in tables if r["page"] == page), None)
+        if row is None or not (bottom(last) and top(row) and same_table(row, last)):
+            break
+        after.append(row)
+        last = row
+    return [_part(r) for r in before + [found] + after]

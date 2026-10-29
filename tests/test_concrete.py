@@ -261,3 +261,21 @@ def test_no_second_concrete_part_for_an_other_spelling(store_home, text_pdf, tmp
         concrete = store.add_part("TLV75518PDQNR", "")
         store.set_base(concrete, store.find_part("TLV755P"))
         assert store.part(concrete)["manufacturer"] == "TI"
+
+
+def test_ordering_codes(store_home, text_pdf):
+    """The codes of an ordering table first, then the codes in the text. Not a
+    code: an evaluation board, a list (TMP112A/B/D/N), the part in a sentence."""
+    from datasheet_lens.identify import ordering_codes
+    from datasheet_lens.indexer import build_index
+
+    lines = ["The ADC34J24 is an active quad ADC.", "ADC34J24IRGZR  ACTIVE  VQFN (RGZ) 48  2500  LARGE T&R",
+             "Order the ADC34J24EVM board.", "See also ADC34J24IRGZT in the text.", "ADC34J24A/B/C/D",
+             "The ADC34J24A/B devices", "ADC34J24Q  a variant"]
+    with Store() as store:
+        doc = store.add_document(text_pdf("adc.pdf", [[(50, 40 + 20 * i, 9, t) for i, t in enumerate(lines)]]))
+        build_index(store, doc.id)
+        store.link_parts(doc.id, "ADC34J24", ["ADC34J24Q"], "TI")
+        rows = ordering_codes(store, doc.id)
+    assert [(c, t) for c, _, _, t in rows] == [("ADC34J24IRGZR", True), ("ADC34J24IRGZT", False)]
+    assert "VQFN (RGZ) 48" in rows[0][2]

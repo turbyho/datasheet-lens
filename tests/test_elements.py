@@ -131,3 +131,36 @@ def test_docling_backend(store_home, text_pdf):
     assert result["backend"] == "docling" and result["elements"] >= 2
     types = {r["code"] for r in store.db.execute("SELECT code FROM elements WHERE document_id = ?", (doc.id,))}
     assert "H" in types or "P" in types
+
+
+def test_find_caption_and_hit_regions(store_home, text_pdf):
+    """A caption gives its table, with the parts on the pages before (a caption
+    at the end of the table) and after it. "Table 5" is not "Table 57". A search
+    hit in a table gives the table element."""
+    from datasheet_lens.elements import find_caption
+    from datasheet_lens.indexer import hit_regions
+
+    pages = [[(50, 100, 10, f"P0.0{n}  GPIO  pin {n}")] for n in range(1, 6)]
+    with Store() as store:
+        doc = store.add_document(text_pdf("pins.pdf", pages))
+        rows = [(1, "T", "(under heading: 11.1.1 LGA pin assignments)"),
+                (2, "T", "(under heading: 11.1.1 LGA pin assignments)"),
+                (3, "T", "Table 57: LGA pin assignments"), (4, "T", "Table 5: Other"), (5, "T", "")]
+        for page, code, text in rows:
+            # Tables that fill the page: from the top to the bottom.
+            store.db.execute("INSERT INTO elements VALUES (?, ?, ?, 'table', ?, 1, 40, 60, 500, 760, ?)",
+                             (doc.id, f"p{page}.T1", page, code, text))
+        store.db.commit()
+        assert [r["element_id"] for r in find_caption(store, doc.id, "Table 57")] == ["p1.T1", "p2.T1", "p3.T1"]
+        assert [r["element_id"] for r in find_caption(store, doc.id, "table 5")] == ["p4.T1", "p5.T1"]
+        with pytest.raises(LensError, match="no table or figure with the caption"):
+            find_caption(store, doc.id, "Table 99")
+        assert hit_regions(store, doc.id, {2: ["P0.02  GPIO  pin 2"]}) == {(2, "P0.02  GPIO  pin 2"): "p2.T1"}
+        # A small table at the top of a page does not continue on the next page.
+        store.db.execute("UPDATE elements SET y1 = 300 WHERE document_id = ? AND page = 4", (doc.id,))
+        assert [r["element_id"] for r in find_caption(store, doc.id, "table 5")] == ["p4.T1"]
+        # No table in the map (the text backend): the full page of the caption.
+        store.db.execute("DELETE FROM elements WHERE document_id = ?", (doc.id,))
+        store.db.execute("INSERT INTO captions VALUES (?, 1, 'table', 'Table 7', 'Pins', 4, 50, 60, 1, 1)",
+                         (doc.id,))
+        assert find_caption(store, doc.id, "Table 7") == [{"page": 4, "element_id": "", "bbox": None}]

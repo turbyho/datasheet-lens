@@ -488,6 +488,22 @@ def _base_note(store: Store, part: dict) -> str:
     return project_base_note(store, part, 'datasheet-lens set "{mpn}" -m "{code}" -b {base}')
 
 
+def cmd_codes(args: argparse.Namespace) -> int:
+    """The command codes: the orderable codes of a datasheet."""
+    from .identify import ordering_codes
+    from .indexer import require_index
+
+    with Store() as store:
+        doc = _doc(store, args.document)
+        require_index(store, [doc.id])
+        rows = ordering_codes(store, doc.id)
+    for code, page, line, table in rows:
+        print(f"{code}  p.{page}  {'' if table else '(in the text) '}{line}")
+    if not rows:
+        print("no orderable codes in the text (the datasheet can give a scheme of its codes only)")
+    return 0
+
+
 MPN_COLUMNS = ("MPN", "Manufacturer_Part_Number", "Manufacturer Part Number", "Mfr. Part Number", "Part Number",
                "Value")
 REFERENCE_COLUMNS = ("Reference", "References", "Refs", "Designator")
@@ -607,6 +623,9 @@ def build_parser() -> argparse.ArgumentParser:
     ck.add_argument("--column", help="the column of the MPN (default: MPN, Manufacturer_Part_Number ... "
                                      "or Value)")
     ck.set_defaults(func=cmd_check)
+    cd = sub.add_parser("codes", help="show the orderable codes of a datasheet")
+    cd.add_argument("document", metavar="DOC", help="document ID or SHA-256 prefix")
+    cd.set_defaults(func=cmd_codes)
     ls = sub.add_parser("ls", help="show the parts and documents of the project (project status)")
     ls.set_defaults(func=cmd_project_status)
     psync_short = sub.add_parser("sync", help="synchronize the project (project sync)")

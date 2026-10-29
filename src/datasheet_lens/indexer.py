@@ -245,6 +245,53 @@ def outline_under(store: Store, doc_id: int, section: str) -> list:
         " ORDER BY seq", (doc_id, section + ".%", section + " %")).fetchall()
 
 
+@pdfium_locked
+def _pages_text(path: str, pages: list[int]) -> dict[int, PageText]:
+    """The lines of some pages with their regions: the PDF is opened one time."""
+    pdf = pdfium.PdfDocument(path)
+    try:
+        out = {}
+        for number in pages:
+            p = pdf[number - 1]
+            try:
+                out[number] = page_lines(p, number)
+            finally:
+                p.close()
+        return out
+    finally:
+        pdf.close()
+
+
+def hit_regions(store: Store, doc_id: int, hits: dict[int, list[str]]) -> dict[tuple[int, str], str]:
+    """For the lines of search hits ({page: [line, ...]}): the table or figure
+    that holds the line (for example p5.T1), or the region of the line [x0, y0,
+    x1, y1] in pt, with (page, line) as the key. The model can then ask for this
+    part of the page, not the full page. A line of the index is a line of the
+    page (see _read_pages): the same text gives the line, and a cut hit line
+    (search gives 160 characters) the start of the line."""
+    def norm(text: str) -> str:
+        return re.sub(r"\s+", " ", text).strip().lower()
+
+    out: dict[tuple[int, str], str] = {}
+    for number, page in _pages_text(str(store.document(doc_id).path), sorted(hits)).items():
+        texts = [(norm(line.text), line) for line in page.lines]
+        elements = store.db.execute(
+            "SELECT element_id, x0, y0, x1, y1 FROM elements WHERE document_id = ? AND page = ?"
+            " AND code IN ('T', 'F') ORDER BY page_order", (doc_id, number)).fetchall()
+        for hit in hits[number]:
+            want = norm(hit)
+            line = next((ln for t, ln in texts if t == want), None)
+            if line is None and len(hit) >= 155:  # a cut line
+                line = next((ln for t, ln in texts if t.startswith(want)), None)
+            if line is None:
+                continue
+            cx, cy = (line.x0 + line.x1) / 2, (line.y0 + line.y1) / 2
+            inside = next((e["element_id"] for e in elements
+                           if e["x0"] <= cx <= e["x1"] and e["y0"] <= cy <= e["y1"]), "")
+            out[(number, hit)] = inside or f"[{line.x0:.0f}, {line.y0:.0f}, {line.x1:.0f}, {line.y1:.0f}]"
+    return out
+
+
 SEARCH_MODES = ("text", "word", "regex")
 UNIT_START = "µΩ°%"
 # A line that repeats on this part of the pages (and on 3 pages or more) is a

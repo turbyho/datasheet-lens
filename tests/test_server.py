@@ -64,7 +64,7 @@ def test_drill_down(store_home, text_pdf):
     pmap = text_of(call("get_page_map", document=doc, page=1))
     assert "p1.H1" in pmap and "p1.C1" in pmap
     assert "Supply voltage 36 V" in text_of(call("get_element_text", document=doc, element_ids=["p1.P1"]))
-    assert "p.1: Supply voltage 36 V" in text_of(call("search_text", text="36 V", part="OPA2134"))
+    assert "p.1 [50, 81, 139, 92]: Supply voltage 36 V" in text_of(call("search_text", text="36 V", part="OPA2134"))
 
     image = blocks_of(call("get_page_image", document=doc, element="p1.H1"))
     assert any(getattr(b, "type", "") == "image" for b in image)
@@ -188,7 +188,7 @@ def test_missing_index(store_home, text_pdf, monkeypatch):
         for check in (lambda: search(store, [doc.id], "36 V"), lambda: outline_under(store, doc.id, "5")):
             with pytest.raises(LensError, match="has no index"):
                 check()
-    assert "p.1: Supply voltage 36 V" in text_of(call("search_text", text="36 V", document=doc.sha256[:12]))
+    assert "p.1 [50, 81, 139, 92]: Supply voltage 36 V" in text_of(call("search_text", text="36 V", document=doc.sha256[:12]))
 
     # The CLI command add keeps the link to the part when the index fails.
     from datasheet_lens import indexer

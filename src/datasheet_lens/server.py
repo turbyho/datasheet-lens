@@ -49,6 +49,8 @@ DeletePinned = Annotated[bool, Field(description=(
 # The PDF of get_pdf_pages goes into one tool result: a larger request must
 # use more calls.
 MAX_PDF_PAGES = 50
+REGION_PAGES = 10  # search_text gives the regions of the hits on this number of pages
+MAX_IMAGES = 6  # get_page_image with a caption: the images of one result
 
 # The SDK runs the tools in worker threads. Only one add_document (or change of
 # the project file) at a time:
@@ -96,9 +98,9 @@ each change of the CAD project, do these steps:
 3. For each missing part: find its datasheet (list_documents), or add it with
    add_document (the URL of the Datasheet field or of a distributor, or a local
    PDF). Then project_add_part(mpn, base, document). mpn is the concrete
-   orderable MPN of the BOM (TLV75533PDBVR), base is the part of the datasheet
-   (TLV755P). If you cannot get the datasheet, tell the user the MPN and the
-   reason.
+   orderable MPN of the BOM (TLV75533PDBVR, get_ordering_codes gives them), base
+   is the part of the datasheet (TLV755P). If you cannot get the datasheet, tell
+   the user the MPN and the reason.
 4. Tell the user about each different or extra part, and when a CAD MPN and its
    datasheet do not agree (value, package, variant). Change a part with
    project_update_part, and remove one only when the user agrees.
@@ -122,8 +124,8 @@ Find the content step by step:
    tables and figures.
 4. search_text: a word, a register name or a value, with page and line.
 5. get_page_map: the elements of one page, with IDs and regions.
-6. get_page_image with an element ID or a region (300 to 600 dpi): read the
-   values here. For a table that fills the page, a full page at max_px 1600 is
+6. get_page_image with an element ID, a caption (all pages of a table) or a
+   region (300 to 600 dpi): read the values here. For a table that fills the page, a full page at max_px 1600 is
    enough.
 7. save_fact: save each value that the work uses, with its page and element.
 """
@@ -399,12 +401,15 @@ def search_text(
         repeated: Annotated[bool, Field(description=(
             "True: also the lines that repeat on many pages (page headers and footers)."))] = False) -> str:
     """Find a text in the text layer of one document, or of all documents of a
-    part. Gives one line for each hit: the document reference, the page and the
-    line. The page headers and footers are not shown: a last line gives their
+    part. Gives one line for each hit: the document reference, the page, the
+    table or figure that holds the line (an element ID) or the region of the
+    line, and the line. Give the element or the region to get_page_image: it
+    costs less than a full page. The page headers and footers are not shown: a
+    last line gives their
     number. Use it to find the page of a register, a parameter or a pin. Then
     read the value from the original (get_page_image): the text layer can be
     wrong."""
-    from .indexer import search
+    from .indexer import hit_regions, search
 
     with Store() as store:
         if document:
@@ -417,7 +422,16 @@ def search_text(
         hidden: list = []
         limit = max(1, min(max_lines, 200))
         hits = search(store, _indexed(store, list(shas)), text, limit, mode, repeated, hidden)
-        lines = [f"{shas[d][:12]} p.{p}: {line}" for d, p, line in hits] or [f"No line holds {text!r}."]
+        # The element or the region of each hit, for get_page_image (on the first pages only).
+        wanted: dict[int, dict[int, list[str]]] = {}
+        for d, p in list(dict.fromkeys((d, p) for d, p, _ in hits))[:REGION_PAGES]:
+            wanted.setdefault(d, {})[p] = [line for dd, pp, line in hits if (dd, pp) == (d, p)]
+        regions: dict[tuple[int, int, str], str] = {}
+        for d, pages in wanted.items():
+            with contextlib.suppress(OSError, pdfium.PdfiumError):
+                regions.update({(d, p, line): r for (p, line), r in hit_regions(store, d, pages).items()})
+        lines = [f"{shas[d][:12]} p.{p}" + (f" {regions[(d, p, line)]}" if (d, p, line) in regions else "")
+                 + f": {line}" for d, p, line in hits] or [f"No line holds {text!r}."]
         if hidden:  # the search stops at the limit: then the count is a minimum
             lines.append(f"({'at least ' if len(hits) >= limit else ''}{len(hidden)} lines in page headers "
                          "or footers are not shown: repeated=true shows them)")
@@ -501,37 +515,57 @@ def get_page_image(
             "get_page_map). Needs page."))] = None,
         max_px: Annotated[int, Field(description=(
             "The maximum long edge of a full-page image in pixels (256 to 8000). 1600 is enough for a "
-            "table that fills the page. Use more for small print or a fine drawing."))] = 2576) -> list:
-    """The original as a PNG image: an element, a region or a full page. Read the
-    values from this image. An element or a region is rendered at 300 to 600 dpi:
-    prefer them, because a full page costs more input. A full page is correct for
-    a table that fills the page. It is rendered at the resolution that fits
-    max_px. Gives a line with the page, the region, the dpi and the size, and the
-    image."""
+            "table that fills the page. Use more for small print or a fine drawing."))] = 2576,
+        caption: Annotated[str, Field(description=(
+            "Or a caption label, for example \"Table 57\" or \"Figure 3-1\": the image shows this table or "
+            "figure. A table that continues on the next pages gives one image for each page."))] = "") -> list:
+    """The original as a PNG image: an element, a caption, a region or a full
+    page. Read the values from this image. An element, a caption or a region is
+    rendered at 300 to 600 dpi: prefer them, because a full page costs more
+    input. A full page is correct for a table that fills the page. It is rendered
+    at the resolution that fits max_px. Gives a line with the page, the region,
+    the dpi and the size, and the image."""
     from .elements import element as get_element
+    from .elements import find_caption
     from .knowledge import facts_line
     from .pages import page_image
 
-    if element and bbox:
-        raise LensError("give an element or a bbox, not the two")
+    if sum(bool(x) for x in (element, bbox, caption)) > 1:
+        raise LensError("give one of element, caption and bbox")
+    pad = 6.0
     with Store() as store:
         doc = _doc(store, document)
-        if element:
+        parts: list[tuple[int, list[float] | None]]
+        note = ""
+        if element or caption:
             _elements_ready(store, doc.id)
-            e = get_element(store, doc.id, element)
-            if page and page != e["page"]:
-                raise LensError(f"element {element} is on page {e['page']}, not on page {page}")
-            page = e["page"]
-            pad = 6.0
-            bbox = [e["x0"] - pad, e["y0"] - pad, e["x1"] + pad, e["y1"] + pad]
-        if not page:
-            raise LensError("give a page, an element or a page with a bbox")
-        img = page_image(store, doc.id, page, tuple(bbox) if bbox else None, max_px)
-        region = "full page" if img.bbox is None else "region [" + ", ".join(f"{v:.0f}" for v in img.bbox) + "]"
-        meta = (f"{doc.sha256[:12]} page {img.page}, {region}, {img.dpi:.0f} dpi, "
-                f"{img.width_px} x {img.height_px} px")
-        facts = facts_line(store, doc.id, img.page)
-        return [meta + (f"\n{facts}" if facts else ""), Image(path=img.path)]
+            if element:
+                e = get_element(store, doc.id, element)
+                found = [{"page": e["page"], "bbox": [e["x0"], e["y0"], e["x1"], e["y1"]]}]
+            else:
+                found = find_caption(store, doc.id, caption)
+            what = f"element {element}" if element else f"caption {caption!r}"
+            if page and page not in {f["page"] for f in found}:
+                raise LensError(f"{what} is on page {', '.join(str(f['page']) for f in found)}, not on page {page}")
+            parts = [(f["page"], [f["bbox"][0] - pad, f["bbox"][1] - pad, f["bbox"][2] + pad, f["bbox"][3] + pad]
+                      if f["bbox"] else None) for f in found]
+            if len(parts) > MAX_IMAGES:
+                note = (f"the table continues on pages {', '.join(str(p) for p, _ in parts[MAX_IMAGES:])}: ask "
+                        "for them with element IDs from get_page_map")
+                parts = parts[:MAX_IMAGES]
+        elif not page:
+            raise LensError("give a page, an element, a caption or a page with a bbox")
+        else:
+            parts = [(page, bbox)]
+        out: list = [note] if note else []
+        for number, box in parts:
+            img = page_image(store, doc.id, number, tuple(box) if box else None, max_px)
+            region = "full page" if img.bbox is None else "region [" + ", ".join(f"{v:.0f}" for v in img.bbox) + "]"
+            meta = (f"{doc.sha256[:12]} page {img.page}, {region}, {img.dpi:.0f} dpi, "
+                    f"{img.width_px} x {img.height_px} px")
+            facts = facts_line(store, doc.id, img.page)
+            out += [meta + (f"\n{facts}" if facts else ""), Image(path=img.path)]
+        return out
 
 
 @tool
@@ -732,6 +766,30 @@ def project_add_part(
                       f"{len(part['documents'])} documents"]
                      + [f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}"
                         for d in part["documents"]] + ([note] if note else []))
+
+
+@tool
+def get_ordering_codes(document: DocRef) -> str:
+    """The orderable codes of a datasheet, from its text layer. Gives one line for
+    each code: the code, its page and its line, which in an ordering table gives
+    the package, the packing, the temperature and the state (ACTIVE, NRND ...).
+    Use it to find the concrete orderable MPN for the BOM. A datasheet that gives
+    only a scheme of its codes has no list: read its ordering information
+    (get_page_image). A code of the datasheet is not always sold: check it with
+    a distributor."""
+    from .identify import ordering_codes
+
+    with Store() as store:
+        doc = _doc(store, document)
+        rows = ordering_codes(store, _indexed(store, [doc.id])[0])
+    if not rows:
+        return ("No orderable codes in the text. The datasheet can give a scheme of its codes only: "
+                "search_text \"ordering\" and read the page with get_page_image.")
+    table = [f"{code}  p.{page}  {line}" for code, page, line, t in rows if t]
+    other = [f"{code}  p.{page}  {line}" for code, page, line, t in rows if not t]
+    return "\n".join((["Codes at the start of a line (an ordering table):"] + table if table else [])
+                     + (["Other codes in the text (a variant, an example or a register name):"] + other
+                        if other else []))
 
 
 class CadPart(BaseModel):

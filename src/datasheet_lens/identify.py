@@ -328,10 +328,10 @@ def base_hint(store: Store, part_id: int, mpn: str, concrete: bool = False) -> t
                for r in rows for line in r["text"].splitlines() for m in [SCHEME_RE.search(line)]), []
 
 
-def _family_codes(store: Store, docs: list, key: str) -> tuple[bool, list[tuple[str, str]]]:
+def _family_codes(store: Store, docs: list, key: str, limit: int = 8) -> tuple[bool, list[tuple[str, str]]]:
     """The codes of a family name with placeholders (a lower-case x): TI names
     TLV755P "TLV755xxP", and its codes are TLV75533PDBVR and others. Give (the
-    text has the family name, the codes with their page)."""
+    text has the family name, the first limit codes with their page)."""
     if len(key) < 4:
         return False, []
     ids = [d["id"] for d in docs]
@@ -357,7 +357,56 @@ def _family_codes(store: Store, docs: list, key: str) -> tuple[bool, list[tuple[
             code = code.rstrip("-/")
             if not NOT_ORDERABLE_RE.search(code) and code not in codes:
                 codes[code] = where
-    return True, list(codes.items())[:8]
+    return True, list(codes.items())[:limit]
+
+
+MAX_CODES = 100
+
+
+def ordering_codes(store: Store, doc_id: int) -> list[tuple[str, int, str, bool]]:
+    """The orderable codes in the text layer of a document: (code, page, line,
+    table). A code starts with a part of the document (ADC34J24 ->
+    ADC34J24IRGZR), or it fits a family name with placeholders (TLV755xxP ->
+    TLV75533PDBVR). table: the line starts with the code, as a line of an
+    ordering table does; it can give the package, the packing, the temperature
+    and the state. These codes come first. A list such as TMP112A/B/D/N is not
+    a code, and see base_hint. The parts of the document are the parts that the
+    store links to it, or else the proposal from the PDF."""
+    keys = sorted({p["mpn"] for p in store.parts_of_document(doc_id) if p["base_id"] is None}, key=len)
+    if not keys:
+        proposal = propose(store, store.document(doc_id)).mpn
+        keys = [proposal] if proposal else []
+    order_rx = re.compile(ORDER_WORDS, re.I)
+    variants = {k.upper() for k in keys}  # TL071A of a datasheet of TL071 is a variant, not a code
+    found: dict[str, tuple[int, str, bool]] = {}
+    pages = store.db.execute("SELECT page, text FROM pages WHERE document_id = ? ORDER BY page",
+                             (doc_id,)).fetchall()
+    for key in keys:
+        rx = re.compile(rf"(?<![A-Za-z0-9\-]){re.escape(key)}[A-Za-z0-9\-/+#.]{{0,16}}", re.I)
+        family = []
+        if not any(key.lower() in r["text"].lower() and rx.search(r["text"]) for r in pages):
+            family = _family_codes(store, [{"id": doc_id}], key, MAX_CODES)[1]
+        for row in pages:
+            for line in row["text"].splitlines():
+                for code in rx.findall(line) + [c for c, _ in family if c in line]:
+                    code = code.rstrip("-/.").upper()
+                    suffix = code[len(key):]
+                    # A list (TMP112A/B, TPS22916BL/CL/CNL) has short parts after a slash;
+                    # a code can have one long part (MCP1827S-3302E/EB, LM358DR/NOPB).
+                    if (NOT_ORDERABLE_RE.search(suffix) or DOC_WORD_RE.search(code) or re.fullmatch(r"X+", suffix)
+                            or (suffix and key[-1].isdigit() and re.fullmatch(r"\d", suffix))
+                            or code.count("/") >= 2 or any(len(s) == 1 for s in code.split("/")[1:])
+                            or (code != key.upper() and code in variants)):
+                        continue
+                    table = line.strip().upper().startswith(code)
+                    # A code alone (no suffix) counts only on a line of an ordering table.
+                    if not suffix and not (table and order_rx.search(line)):
+                        continue
+                    old = found.get(code)
+                    if old is None or (table and not old[2]):
+                        found[code] = (row["page"], re.sub(r"\s{2,}", "  ", line.strip())[:140], table)
+    rows = sorted(((c, p, line, t) for c, (p, line, t) in found.items()), key=lambda x: (not x[3], x[1], x[0]))
+    return rows[:MAX_CODES]
 
 
 def _variant(best: str, other: str, sources: list[str], file_name: bool = False) -> bool:
