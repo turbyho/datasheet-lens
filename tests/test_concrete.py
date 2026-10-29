@@ -190,15 +190,38 @@ def test_base_part_note(store_home, text_pdf, tmp_path, capsys, monkeypatch):
         store.link(base, doc.id)
         note = base_note(store, base, "ADC34J24", "add {code} --base {base}")
         assert "ADC34J24IRGZR (p.2), ADC34J24IRGZT (p.2)" in note and "EVM" not in note and "add ADC34J24IRGZR --base ADC34J24" in note
-        # A scheme only (no list of codes): the hint to read the original.
-        ldo = store.add_document(text_pdf("mcp1827.pdf", [[(50, 60, 14, "MCP1827 1.5A LDO")]]))
+        # A scheme only, with an example (no list of codes): the hint to read the original.
+        ldo = store.add_document(text_pdf("mcp1827.pdf", [[(50, 60, 14, "MCP1827 1.5A LDO"),
+                                                          (50, 80, 9, "PART NUMBERING Example: AB-1827-T")]]))
+        build_index(store, ldo.id)
         mcp = store.add_part("MCP1827", "Microchip")
         store.link(mcp, ldo.id)
-        assert "no list of codes" in base_note(store, mcp, "MCP1827", "{code}")
+        assert "only a scheme of its codes" in base_note(store, mcp, "MCP1827", "{code}")
+        # No codes and no scheme: the MPN is orderable as it is (BMI323).
+        imu = store.add_document(text_pdf("bmi323.pdf", [[(50, 60, 14, "BMI323 IMU"),
+                                                         (50, 80, 9, "Example: gyroscope and time"),
+                                                         (50, 100, 9, "Example: SPI-NOR 4 wire")]]))
+        build_index(store, imu.id)
+        bmi = store.add_part("BMI323", "Bosch Sensortec")
+        store.link(bmi, imu.id)
+        assert base_note(store, bmi, "BMI323", "{code}") == ""
+        # A family name with placeholders (TI): TLV755xxP is the scheme of TLV755P.
+        tlv = store.add_document(text_pdf("tlv755p.pdf", [[(50, 60, 14, "TLV755xxP 500-mA LDO")],
+                                                         [(50, 60, 9, "TLV75533PDBVR  ACTIVE  SOT-23")]]))
+        build_index(store, tlv.id)
+        family = store.add_part("TLV755P", "TI")
+        store.link(family, tlv.id)
+        assert "TLV75533PDBVR (p.2)" in base_note(store, family, "TLV755P", "{code}")
         # A concrete part: no note.
         concrete = store.add_part("ADC34J24IRGZR", "TI")
         store.set_base(concrete, base)
-        assert base_note(store, concrete, "ADC34J24IRGZR", "{code}") == ""
+        assert base_note(store, concrete, "ADC34J24IRGZR", "{code}", "ADC34J24") == ""
+        # A concrete part that is not complete: the longer codes; a packing suffix is not one.
+        short = store.add_part("ADC34J24I", "TI")
+        store.set_base(short, base)
+        note = base_note(store, short, "ADC34J24I", "{code} {base}", "ADC34J24")
+        assert "not a complete orderable MPN" in note and "ADC34J24IRGZR (p.2)" in note, note
+        assert base_note(store, short, "ADC34J24IRGZ", "{code}", "ADC34J24") == ""
 
     project = prj.init_project(tmp_path / "board")
     assert main(["project", "add-part", "ADC34J24", "-p", str(project.root)]) == 0

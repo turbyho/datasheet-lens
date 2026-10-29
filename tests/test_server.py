@@ -202,3 +202,11 @@ def test_each_tool_parameter_has_a_description():
         assert len(t.description) > 40, t.name
         for name, prop in schema.get("properties", {}).items():
             assert prop.get("description"), f"{t.name}.{name}"
+
+
+def test_instructions_fit_the_client_limit():
+    """Claude Code cut a text of 4162 characters after character 4091 (a review
+    on 2026-10-29). The limit keeps a margin."""
+    from datasheet_lens.server import INSTRUCTIONS
+
+    assert len(INSTRUCTIONS) < 3800

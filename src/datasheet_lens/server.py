@@ -78,75 +78,52 @@ _builds: dict[int, dict] = {}  # document ID -> {"thread", "started", "result", 
 _builds_lock = threading.RLock()
 
 INSTRUCTIONS = """\
-datasheet-lens gives you the content of electronic component datasheets (PDF). It
-does not convert a datasheet to text. It helps you find the content, and it gives
-you the original pages. Read each value from the original (an image or PDF pages),
-never from the text layer alone: the text layer can lose superscripts, signs,
-units and the structure of tables.
+datasheet-lens gives the content of component datasheets (PDF): an index, a text
+search and the original pages. Read each value from the original (get_page_image
+or get_pdf_pages), never from the text layer alone: the text layer can lose
+signs, units, subscripts and the structure of tables.
 
-A user project has the project file datasheet-lens.toml. It must hold the same
-parts as the CAD project (the schematic and the BOM). This consistency is
-critical: the team uses the file as the list of the datasheets of the design.
-When the work in a user project starts, and when the CAD project changes, do
-these steps:
-1. Get the parts of the CAD project: the MPN and the Datasheet field of each
-   symbol, or the BOM. A part with no MPN (a generic resistor, a test point)
-   needs no datasheet.
-2. Get the parts of the project file: project_status. Give path (the project
-   folder) when the working folder of the server is not in the project.
-3. For each CAD part that the project file does not have:
-   a. Find its datasheet in the store: list_documents(part) with the MPN or the
-      base part.
-   b. If the store has no datasheet, add it: add_document with the URL of the
-      Datasheet field, a URL from a distributor tool, or a local PDF file.
-   c. Add the part: project_add_part(mpn, base, document).
-   d. If you cannot get the datasheet, tell the user the MPN and the reason.
-4. Tell the user when the MPN of the CAD project and the datasheet do not
-   agree, for example a different value, package or variant.
-5. Tell the user about each part of the project file that the CAD project does
-   not have. Remove it only when the user agrees: project_remove_part.
-6. project_sync: it copies the documents into the project folder.
+User project: the project file datasheet-lens.toml must hold the same parts as
+the CAD project (schematic, BOM). This is critical: the team uses the file as
+the list of the datasheets of the design. At the start of the work, and after
+each change of the CAD project, do these steps:
+1. Get the parts of the CAD project (MPN, Datasheet field) from the CAD tool,
+   for example its MCP server or its BOM export. A part with no MPN (a generic
+   resistor, a test point) needs no datasheet.
+2. project_status: the parts of the project file. Give path when the working
+   folder of the server is not in the project.
+3. For each CAD part that the file does not have: find its datasheet with
+   list_documents(part), or add it with add_document (the URL of the Datasheet
+   field or of a distributor, or a local PDF). Then project_add_part(mpn, base,
+   document). mpn is the concrete orderable MPN of the BOM (TLV75533PDBVR), base
+   is the part of the datasheet (TLV755P). If you cannot get the datasheet, tell
+   the user the MPN and the reason.
+4. Tell the user when a CAD MPN and its datasheet do not agree (value, package,
+   variant), and about each part of the file that the CAD project does not
+   have. Remove a part (project_remove_part) only when the user agrees.
+5. project_sync: it copies the documents into the project folder.
 
-The parameters of project_add_part:
-- mpn: the concrete orderable MPN of the BOM, for example TLV75533PDBVR.
-- base: the part of the datasheet, for example TLV755P.
-- document: the reference of the datasheet, from project_status, list_documents
-  or add_document.
+The store identifies a document by its SHA-256: add_document of a file that it
+has copies nothing and gives the reference. Do not match a file to a document
+by its name only. add_document puts each new file into the central store: use
+it only for the documents of the parts. project_sync imports only the PDF files
+of the folder that the project file names. If the repository keeps its
+datasheets in a different folder, tell the user.
 
-The store identifies a document by its SHA-256. add_document with the path of a
-datasheet that the store has copies nothing: it gives the reference of the same
-content. Do not match a file to a document by its file name only. Use
-add_document only for a datasheet of a project part: it adds each new file to
-the store. project_sync imports only the PDF files of the project folder (the
-key folder of datasheet-lens.toml), and it copies each document into that
-folder. If the repository keeps its datasheets in a different folder, tell the
-user: the key folder can name that folder.
-
-Find the content step by step, and ask only for what the work needs:
-1. Find the document. In a user project, project_status gives the documents of
-   the project. list_parts and list_documents(part) give the central store,
-   with the documents of other projects. A part can have a datasheet, a manual
-   and errata.
-2. find_facts: values that a session read before, with their source.
-3. get_index: the outline and the table and figure captions, with pages. For a
-   large document, get_outline gives the entries under one section.
-4. search_text: find a word, a register name or a value (page and line).
-5. get_page_map: the headings, tables, figures and formulas of one page, with
-   element IDs and regions. get_element_text gives the text of elements, and
-   list_items gives all tables and figures of a document.
-6. get_page_image with an element ID or a region: the original at 300 to 600 dpi.
-   Read the values here. A full page costs more input. get_pdf_pages gives pages
-   as a PDF.
-7. save_fact: save a value that the work uses, with its page and element.
-
-add_document: give part when you know it. Without part, the result gives a
-rough proposal from the text of the PDF, which can be wrong: read the MPN in the
-title of page 1 and in the ordering information of the original, then call
-add_document with part.
-
-The element map of a large new document can take minutes to build. Until it is
-complete, get_page_map tells so: use get_index, search_text and get_page_image
-with a page or a region.
+Find the content step by step:
+1. The document: project_status, list_documents(part), list_parts (the central
+   store). A part can have a datasheet, a manual and errata.
+2. find_facts(part or document): the values that a session read before. Do this
+   before you read a value.
+3. get_index: the outline and the table and figure captions, with pages.
+   get_outline gives one section of a large document. list_items gives all
+   tables and figures.
+4. search_text: a word, a register name or a value, with page and line.
+5. get_page_map: the elements of one page, with IDs and regions.
+6. get_page_image with an element ID or a region (300 to 600 dpi): read the
+   values here. For a table that fills the page, a full page at max_px 1600 is
+   enough.
+7. save_fact: save each value that the work uses, with its page and element.
 """
 
 mcp = MCPServer("datasheet-lens", instructions=INSTRUCTIONS)
@@ -444,7 +421,9 @@ def get_page_map(
     captions. Gives one line for each element: its ID (for example p7.T1), its
     type, its region [x0, y0, x1, y1] in pt (origin at the top left of the page)
     and its text or caption. Use the IDs with get_element_text and
-    get_page_image."""
+    get_page_image. The element map of a large new document can take minutes to
+    build. Until it is complete, the result tells so: then use get_index,
+    search_text and get_page_image with a page or a region."""
     from .elements import page_map
 
     with Store() as store:
@@ -505,12 +484,14 @@ def get_page_image(
             "Or a region [x0, y0, x1, y1] in pt, origin at the top left of the page (the units of "
             "get_page_map). Needs page."))] = None,
         max_px: Annotated[int, Field(description=(
-            "The maximum long edge of a full-page image in pixels (256 to 8000)."))] = 2576) -> list:
+            "The maximum long edge of a full-page image in pixels (256 to 8000). 1600 is enough for a "
+            "table that fills the page. Use more for small print or a fine drawing."))] = 2576) -> list:
     """The original as a PNG image: an element, a region or a full page. Read the
     values from this image. An element or a region is rendered at 300 to 600 dpi:
-    prefer them, because a full page costs more input. A full page is rendered at
-    the resolution that fits max_px. Gives a line with the page, the region, the
-    dpi and the size, and the image."""
+    prefer them, because a full page costs more input. A full page is correct for
+    a table that fills the page. It is rendered at the resolution that fits
+    max_px. Gives a line with the page, the region, the dpi and the size, and the
+    image."""
     from .elements import element as get_element
     from .pages import page_image
 
@@ -562,21 +543,24 @@ def save_fact(
         page: Page,
         subject: Annotated[str, Field(description=(
             "What the value is, for example \"VDD maximum\" or \"CTRL register reset value\"."))],
-        value: Annotated[str, Field(description="The value as the original shows it, for example \"3.6\".")],
+        value: Annotated[str, Field(description=(
+            "The value as the original shows it, for example \"3.6\". One value: for MIN, TYP and MAX, "
+            "save one fact for each column. A range with no columns: \"1 to 22\"."))],
         unit: Annotated[str, Field(description="The unit, for example V, mA, °C.")] = "",
         conditions: Annotated[str, Field(description=(
             "The conditions of the value, for example \"TA = 25 °C, VDD = 3.3 V\"."))] = "",
-        column: Annotated[str, Field(description="The table column of the value: MIN, TYP, MAX.")] = "",
+        column: Annotated[str, Field(description="The table column of the value: MIN, TYP or MAX.")] = "",
         element: Annotated[str, Field(description="The element ID that holds the value, for example p7.T1.")] = "",
         bbox: Annotated[list[float] | None, Field(description=(
             "Or the region that holds the value: [x0, y0, x1, y1] in pt."))] = None,
         note: Annotated[str, Field(description="A note, for example a footnote of the table.")] = "",
-        model: Annotated[str, Field(description="Your model name.")] = "",
+        model: Annotated[str, Field(description="Your model ID, for example claude-opus-5-5.")] = "",
         part: Annotated[str, Field(description=(
             "The part that the value is for, when the document covers more parts."))] = "") -> str:
     """Save a value that you read from the original, with its source and your
-    model name, so that a later session finds it with find_facts. A new fact has
-    the state unchecked. Gives the fact number."""
+    model ID, so that a later session finds it with find_facts. Before you read a
+    value, look for it with find_facts: do not save a value two times. A new fact
+    has the state unchecked. Gives the fact number."""
     from .knowledge import save_fact as save
 
     with Store() as store:
@@ -594,7 +578,9 @@ def find_facts(
         document: DocRef = "",
         part: PartRef = "",
         limit: Annotated[int, Field(description="The maximum number of facts (1 to 500).")] = 50) -> str:
-    """Find values that were read before (save_fact). Gives one line for each
+    """Find values that were read before (save_fact). With part, it searches the
+    documents of the part and of its base part: a concrete MPN also finds the
+    facts of its datasheet. Gives one line for each
     fact: number, subject, value, column, conditions, source (document, page,
     element or region), state and author. A fact is not the source of truth:
     check an important value against the original, then set its state with
@@ -688,15 +674,20 @@ def _build_in_sequence(store: Store, doc_ids: list[int]) -> int:
 def project_add_part(
         mpn: Annotated[str, Field(description=(
             "The concrete orderable MPN that the design (the BOM) uses, with its package, voltage or "
-            "grade, for example TLV75533PDBVR. Or the base part MPN when the concrete one is not known."))],
-        manufacturer: Manufacturer = "",
+            "grade, for example TLV75533PDBVR. A base part MPN only for a short time, when the BOM has no "
+            "concrete one yet: the result then gives a note."))],
+        manufacturer: Annotated[str, Field(description=(
+            "The manufacturer. Use the spelling of list_parts (for example Texas Instruments, not TI "
+            "when the store has it so): the layout of the project folder can use it as a folder name."))] = "",
         document: Annotated[str, Field(description=(
-            "A document to link first (to the base part, if base is given), for example a new file of "
-            "the project folder: its reference from project_status or list_documents."))] = "",
+            "A document to link first: its reference from project_status, list_documents or "
+            "add_document. The link is in the central store (to the base part, if base is given), and "
+            "other projects with this part get the document too."))] = "",
         role: Role = "datasheet",
         category: Annotated[str, Field(description=(
-            "The function of the part, for example ADC, LDO or MCU. The layout of the project folder "
-            "can use it."))] = "",
+            "The function of the part, for example ADC, LDO, MCU, flash, sensor. The layout of the "
+            "project folder can use it as a folder name: use the values that the project has "
+            "already (project_status)."))] = "",
         base: Annotated[str, Field(description=(
             "The base part of the datasheet, for example TLV755P. The concrete part gets the documents "
             "of the base part."))] = "",

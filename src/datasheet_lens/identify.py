@@ -218,32 +218,40 @@ def propose(store: Store, doc: Document) -> Proposal:
 
 
 def project_base_note(store: Store, part: dict, how: str) -> str:
-    """The note for a project part with no base part that is probably the base
-    part of its datasheet, or "". how tells how to give the concrete MPN, with
+    """The note for a project part that is probably not a concrete orderable MPN,
+    or "": a part with no base part that is probably the base part of its
+    datasheet, or a part with a base part that is probably not complete
+    (TMP112D0 of TMP112D0IDPWR). how tells how to give the concrete MPN, with
     {code} and {base} in it. An error of the hint gives no note: the hint is
     optional."""
-    if part.get("base"):
-        return ""
     rows = store.match_parts(part["mpn"], part["manufacturer"])
     if len(rows) != 1:
         return ""
+    base = part.get("base", "")
+    if base.lower() == part["mpn"].lower():  # not a concrete part
+        base = ""
     try:
-        return base_note(store, rows[0]["id"], part["mpn"], how)
+        return base_note(store, rows[0]["id"], part["mpn"], how, base)
     except (LensError, OSError, pdfium.PdfiumError):
         return ""
 
 
-def base_note(store: Store, part_id: int, mpn: str, how: str) -> str:
-    """A note for a part that is probably a base part, or "" (see base_hint)."""
-    probable, codes = base_hint(store, part_id, mpn)
+def base_note(store: Store, part_id: int, mpn: str, how: str, base: str = "") -> str:
+    """A note for a part that is probably a base part, or "" (see base_hint).
+    With base, mpn is a concrete part: a note when the text has longer codes."""
+    probable, codes = base_hint(store, part_id, mpn, concrete=bool(base))
     if not probable:
         return ""
-    found = ("; orderable codes in the datasheet text: " + ", ".join(f"{c} ({p})" for c, p in codes)
-             if codes else "; the datasheet text has no list of codes (it can give a scheme only)")
+    check = ("Read the ordering information of the original, and check with a distributor that the code is "
+             "sold. Then: " + how.format(code=codes[0][0] if codes else "<CODE>", base=base or mpn))
+    listed = ", ".join(f"{c} ({p})" for c, p in codes)
+    if base:
+        return (f"note: {mpn} is probably not a complete orderable MPN (package, packing): the datasheet text "
+                f"has longer codes: {listed}. {check}")
+    found = (f"; orderable codes in the datasheet text: {listed}" if codes
+             else "; the datasheet gives only a scheme of its codes, with an example")
     return (f"note: {mpn} is probably the base part of its datasheet. The BOM needs the concrete orderable "
-            f"MPN (package, voltage, grade, packing){found}. Read the ordering information of the original, "
-            "and check with a distributor that the code is sold. Then: "
-            + how.format(code=codes[0][0] if codes else "<CODE>", base=mpn))
+            f"MPN (package, voltage, grade, packing){found}. {check}")
 
 
 # A token after the MPN that is not an orderable code of the part: an
@@ -251,18 +259,29 @@ def base_note(store: Store, part_id: int, mpn: str, how: str) -> str:
 NOT_ORDERABLE_RE = re.compile(r"(?i)(EVM|EVK|EVB|EVAL|DEMO|KIT|BOARD)")
 # The words of a line of an ordering table (not "active-low").
 ORDER_WORDS = r"\b(active|obsolete|nrnd|preview|tape|reel|t&r|tube|rail|tray)\b(?!-)"
+# The example of a scheme of codes: "Example: RV-8263-C8 TA QC", "PART NUMBERING
+# GUIDE: Example ECS-320-10-48-CKY-TR" (not "Example: gyroscope"). The code
+# starts as the MPN, or the line names the numbering or the ordering.
+SCHEME_RE = re.compile(r"(?i:\bexample\b)[\s:]+([A-Z][A-Z0-9]*-[A-Z0-9][A-Z0-9\-]*)")
+SCHEME_WORDS_RE = re.compile(r"(?i)numbering|ordering|part number")
+# A concrete part with a longer code: TMP112D0 of TMP112D0IDPWR. A shorter
+# difference is a packing (nRF9151-LACA-R and -R7, SN74LV1T34DBVR and -G4,
+# MX25R8035FM1IL0 and -TR).
+CONCRETE_EXTRA = 3
 
 
-def base_hint(store: Store, part_id: int, mpn: str) -> tuple[bool, list[tuple[str, str]]]:
+def base_hint(store: Store, part_id: int, mpn: str, concrete: bool = False) -> tuple[bool, list[tuple[str, str]]]:
     """Is mpn probably the base part of its datasheet, and not a concrete
     orderable MPN? Give (probably a base part, orderable codes in the text with
     their page). The codes are the tokens of the text layer that start with mpn
     and go on (ADC34J24 -> ADC34J24IRGZR on page 81, MCP1827 -> MCP1827-ADJE/ET).
     mpn is a concrete code when a line of an ordering table starts with it.
     Else, with no codes, mpn is probably a base part when it is the MPN that the
-    PDF proposes. It is a hint only: a datasheet can give only the scheme of its
-    codes, and a code of the scheme is not always sold. A distributor tells which
+    PDF proposes and the text gives an example of a scheme of codes. It is a hint
+    only: a code of the scheme is not always sold. A distributor tells which
     codes exist.
+    concrete: mpn has a base part. Only codes that are CONCRETE_EXTRA characters
+    longer count, and the scheme rule does not apply.
     Not a code: a document number (BST-BMI323-DS000-10, GD25LE64E-Rev1.3), a
     footnote mark of one digit directly after mpn, when mpn ends with a digit
     (RR123-1H02-612 with the mark 1; a mark after a longer code stays in it),
@@ -288,13 +307,57 @@ def base_hint(store: Store, part_id: int, mpn: str) -> tuple[bool, list[tuple[st
             suffix = code[len(key):]
             if (not suffix or NOT_ORDERABLE_RE.search(suffix) or DOC_WORD_RE.search(code)
                     or re.fullmatch(r"X+", suffix) or (key[-1].isdigit() and re.fullmatch(r"\d", suffix))
-                    or code in siblings or code in codes):
+                    or (concrete and len(suffix.lstrip("-/")) < CONCRETE_EXTRA) or code in siblings
+                    or code in codes):
                 continue
             codes[code] = where
     if codes:
         return True, list(codes.items())[:8]
+    if concrete:
+        return False, []
+    family, codes = _family_codes(store, docs, key)
+    if family:
+        return True, codes
     proposed = {_norm(propose(store, store.document(d["id"])).mpn) for d in docs}
-    return _norm(key) in proposed, []
+    if _norm(key) not in proposed:
+        return False, []
+    rows = store.db.execute(
+        f"SELECT text FROM pages WHERE document_id IN ({','.join('?' * len(docs))})"
+        " AND instr(ulower(text), 'example') > 0", [d["id"] for d in docs])
+    return any(m and (m.group(1)[:2].upper() == key[:2].upper() or SCHEME_WORDS_RE.search(line))
+               for r in rows for line in r["text"].splitlines() for m in [SCHEME_RE.search(line)]), []
+
+
+def _family_codes(store: Store, docs: list, key: str) -> tuple[bool, list[tuple[str, str]]]:
+    """The codes of a family name with placeholders (a lower-case x): TI names
+    TLV755P "TLV755xxP", and its codes are TLV75533PDBVR and others. Give (the
+    text has the family name, the codes with their page)."""
+    if len(key) < 4:
+        return False, []
+    ids = [d["id"] for d in docs]
+    rows = store.db.execute(
+        f"SELECT document_id, page, text FROM pages WHERE document_id IN ({','.join('?' * len(ids))})"
+        " AND instr(ulower(text), ?) > 0 ORDER BY document_id, page", (*ids, key[:4].lower())).fetchall()
+    token_rx = re.compile(rf"(?<![A-Za-z0-9\-]){re.escape(key[:3])}[A-Za-z0-9\-]*x[A-Za-z0-9\-]*", re.I)
+    family = ""
+    for row in rows:
+        family = next((t for t in token_rx.findall(row["text"])
+                       if "x" in t and re.sub(r"x+", "", t).upper() == key.upper()), "")
+        if family:
+            break
+    if not family:
+        return False, []
+    pattern = "".join(f"[0-9A-Z]{{{len(p)}}}" if p.startswith("x") else re.escape(p.upper())
+                      for p in re.split(r"(x+)", family) if p)
+    code_rx = re.compile(rf"(?<![A-Za-z0-9\-]){pattern}[A-Z0-9][A-Z0-9/\-]{{0,14}}")
+    codes: dict[str, str] = {}
+    for row in rows:
+        where = f"p.{row['page']}" if len(ids) == 1 else f"{store.document(row['document_id']).sha256[:12]} p.{row['page']}"
+        for code in code_rx.findall(row["text"]):
+            code = code.rstrip("-/")
+            if not NOT_ORDERABLE_RE.search(code) and code not in codes:
+                codes[code] = where
+    return True, list(codes.items())[:8]
 
 
 def _variant(best: str, other: str, sources: list[str], file_name: bool = False) -> bool:

@@ -149,10 +149,9 @@ def _add_to_project(store: Store, doc, mpn: str, manufacturer: str, category: st
         part = add_part(project, store, concrete or mpn, manufacturer, doc.sha256, args.role, category, base=mpn)
         if part.get("base"):
             print(f"project part: {part['mpn']} (base part {part['base']})")
-        else:
-            note = _base_note(store, part)
-            if note:
-                print(note)
+        note = _base_note(store, part)
+        if note:
+            print(note)
     report = sync(project, store)
     for text in report["problems"]:
         print(f"problem: {text}")
