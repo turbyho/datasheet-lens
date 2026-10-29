@@ -106,6 +106,8 @@ each change of the CAD project, do these steps:
    project_update_part, and remove one only when the user agrees.
 5. project_sync: it copies the documents into the project folder. Then
    project_check again: it must give no missing, extra or different part.
+6. project_availability: tell the user about each part that is not orderable
+   or has no stock. search_distributors gives the concrete MPNs of a part.
 
 The store identifies a document by its SHA-256: add_document of a file that it
 has copies nothing and gives the reference. Do not match a file to a document
@@ -784,6 +786,39 @@ def part_links(
     if not mpn.strip():
         raise LensError("the MPN is empty")
     return "\n".join(format_links(mpn))
+
+
+@tool
+def search_distributors(
+        mpn: Annotated[str, Field(description=(
+            "The MPN: a concrete orderable MPN, or the start of the MPNs (a base part, for example MCP1827S).")
+        )],
+        exact: Annotated[bool, Field(description=(
+            "True: only this MPN. False: each MPN that starts with it (the concrete MPNs of a base part, "
+            "up to 50)."))] = False) -> str:
+    """The orderable parts at the distributors, from their official APIs:
+    lifecycle state, stock, prices, package and datasheet URL. A part that is
+    obsolete or discontinued is marked NOT ORDERABLE. Use it to select the
+    concrete MPN of the BOM, and to check that it can be ordered. Each result
+    names its source (the terms of the distributors ask for it). Needs a
+    personal API key in an environment variable; without one, the result tells
+    which, and part_links gives search links."""
+    from .distributors import search_lines
+
+    return "\n".join(search_lines(mpn, exact))
+
+
+@tool
+def project_availability(path: ProjectPath = "") -> str:
+    """The lifecycle state and the stock of each part of the user project at
+    the distributors (official APIs). Gives one line for each part, and a
+    warning for a part that is not orderable (obsolete, discontinued, with the
+    replacement), that no distributor has, or that has no stock. Tell the user
+    about each warning. Needs a personal API key (see search_distributors)."""
+    from .distributors import availability
+    from .project import load
+
+    return "\n".join(availability(load(path or None)))
 
 
 @tool

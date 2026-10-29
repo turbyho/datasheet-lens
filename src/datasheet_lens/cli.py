@@ -488,6 +488,23 @@ def _base_note(store: Store, part: dict) -> str:
     return project_base_note(store, part, 'datasheet-lens set "{mpn}" -m "{code}" -b {base}')
 
 
+def cmd_find(args: argparse.Namespace) -> int:
+    """The command find: the parts at the distributors (official APIs)."""
+    from .distributors import search_lines
+
+    print("\n".join(search_lines(args.mpn, args.exact)))
+    return 0
+
+
+def cmd_stock(args: argparse.Namespace) -> int:
+    """The command stock: the lifecycle state and the stock of each project part."""
+    from .distributors import availability
+    from .project import load
+
+    print("\n".join(availability(load(args.path))))
+    return 0
+
+
 def cmd_links(args: argparse.Namespace) -> int:
     """The command links: search links for a part (datasheet, stock, CAD files)."""
     from .links import format_links
@@ -637,12 +654,19 @@ def build_parser() -> argparse.ArgumentParser:
     lk = sub.add_parser("links", help="show search links for a part: datasheet, stock, symbol, footprint, 3D model")
     lk.add_argument("mpn", metavar="MPN")
     lk.set_defaults(func=cmd_links)
+    fd = sub.add_parser("find", help="find a part at the distributors: concrete MPNs, state, stock, prices "
+                                     "(needs DATASHEET_LENS_MOUSER_KEY)")
+    fd.add_argument("mpn", metavar="MPN", help="an MPN, or the start of the MPNs (a base part)")
+    fd.add_argument("-x", "--exact", action="store_true", help="only this MPN")
+    fd.set_defaults(func=cmd_find)
+    sk = sub.add_parser("stock", help="show the lifecycle state and the stock of each project part")
+    sk.set_defaults(func=cmd_stock)
     ls = sub.add_parser("ls", help="show the parts and documents of the project (project status)")
     ls.set_defaults(func=cmd_project_status)
     psync_short = sub.add_parser("sync", help="synchronize the project (project sync)")
     psync_short.add_argument("--restore", action="store_true", help="copy a changed copy again from the store")
     psync_short.set_defaults(func=cmd_project_sync)
-    for p in (rm, st, ck, ls, psync_short):
+    for p in (rm, st, ck, sk, ls, psync_short):
         p.add_argument("-p", "--path", "--project", dest="path",
                        help="the project folder (default: the current folder or a parent folder)")
 

@@ -51,6 +51,11 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
   orderable MPN of the BOM (for example TLV75533PDBVR; get_ordering_codes, CLI
   `datasheet-lens codes DOC`, gives the codes) and base. CLI:
   `datasheet-lens add PATH|URL -m MPN`.
+- project_availability (CLI `datasheet-lens stock`) gives the lifecycle state
+  and the stock of each part at the distributors; tell the user about each
+  warning. search_distributors (CLI `datasheet-lens find MPN`) gives the
+  concrete orderable MPNs of a part. They need a personal API key in the
+  environment (DATASHEET_LENS_MOUSER_KEY).
 - To change the MPN, the base part or the category of a part:
   project_update_part (CLI `datasheet-lens set MPN -m NEW`), not remove and add.
 - project_sync (CLI `datasheet-lens sync`) keeps `datasheet-lens.toml` and

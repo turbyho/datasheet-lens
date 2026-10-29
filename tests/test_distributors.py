@@ -1,0 +1,130 @@
+import io
+import json
+
+from datasheet_lens import distributors
+from datasheet_lens import project as prj
+from datasheet_lens.cli import main
+from datasheet_lens.store import Store
+
+PART = {"ManufacturerPartNumber": "TPS7A0233PYCHR", "Manufacturer": "Texas Instruments",
+        "Description": "LDO Voltage Regulators", "LifecycleStatus": "New Product", "IsDiscontinued": "false",
+        "AvailabilityInStock": "1234", "Availability": "1234 In Stock", "LeadTime": "6 Weeks", "Min": "1",
+        "Mult": "1", "PriceBreaks": [{"Quantity": 1, "Price": "0,52 €", "Currency": "EUR"}],
+        "ProductAttributes": [{"AttributeName": "Packaging", "AttributeValue": "Reel"},
+                              {"AttributeName": "Package / Case", "AttributeValue": "DSBGA-4"}],
+        "DataSheetUrl": "https://www.ti.com/lit/ds/symlink/tps7a02.pdf", "MouserPartNumber": "595-TPS7A0233PYCHR"}
+OLD = dict(PART, ManufacturerPartNumber="TPS7A0218PYCHR", LifecycleStatus="Obsolete", IsDiscontinued="true",
+           SuggestedReplacement="TPS7A0218PYCHR2", AvailabilityInStock="0")
+
+
+class Answer(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def fake_api(monkeypatch, parts, errors=()):
+    """The Mouser API gives these parts; the requests are kept."""
+    sent = []
+
+    def urlopen(request, timeout):
+        sent.append((request.full_url, json.loads(request.data)))
+        mpn = sent[-1][1]["SearchByPartRequest"]["mouserPartNumber"]
+        found = [p for p in parts if p["ManufacturerPartNumber"].startswith(mpn)]
+        return Answer(json.dumps({"Errors": [{"Message": m} for m in errors],
+                                  "SearchResults": {"NumberOfResult": len(found), "Parts": found}}).encode())
+
+    monkeypatch.setenv(distributors.MOUSER_ENV, "secret-key")
+    monkeypatch.setattr(distributors.urllib.request, "urlopen", urlopen)
+    distributors._cache.clear()
+    return sent
+
+
+def test_mouser_search(monkeypatch):
+    sent = fake_api(monkeypatch, [PART, OLD])
+    offers = distributors.mouser_search("TPS7A02", exact=False)
+    assert [o.mpn for o in offers] == ["TPS7A0233PYCHR", "TPS7A0218PYCHR"]
+    assert sent[0][1]["SearchByPartRequest"]["partSearchOptions"] == "None"
+    line = distributors.format_offer(offers[0])
+    assert "state: New Product" in line and "stock: 1234" in line and "DSBGA-4 / Reel" in line
+    assert "NOT ORDERABLE: Obsolete, replacement TPS7A0218PYCHR2" in distributors.format_offer(offers[1])
+    distributors.mouser_search("TPS7A02", exact=False)
+    assert len(sent) == 1  # the cache
+
+
+def test_mouser_errors_hide_the_key(monkeypatch):
+    import urllib.error
+
+    import pytest
+    from datasheet_lens.errors import LensError
+
+    def refuse(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+
+    monkeypatch.setenv(distributors.MOUSER_ENV, "secret-key")
+    monkeypatch.setattr(distributors.urllib.request, "urlopen", refuse)
+    distributors._cache.clear()
+    with pytest.raises(LensError) as e:
+        distributors.mouser_search("X1")
+    assert "401" in str(e.value) and "secret-key" not in str(e.value)
+    fake_api(monkeypatch, [], errors=["Invalid unique identifier."])
+    with pytest.raises(LensError, match="Invalid unique identifier"):
+        distributors.mouser_search("X1")
+    monkeypatch.delenv(distributors.MOUSER_ENV)
+    with pytest.raises(LensError, match=distributors.MOUSER_ENV):
+        distributors.mouser_search("X1")
+
+
+def test_project_availability(store_home, monkeypatch, tmp_path, capsys):
+    fake_api(monkeypatch, [PART, OLD])
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        for mpn in ("TPS7A0233PYCHR", "TPS7A0218PYCHR", "TPS7A02"):
+            prj.add_part(project, store, mpn)
+    assert main(["stock", "-p", str(project.root)]) == 0
+    out = capsys.readouterr().out
+    assert "TPS7A0233PYCHR: New Product, stock 1234" in out
+    assert "TPS7A0218PYCHR: Obsolete, stock 0. WARNING: not orderable: Obsolete, replacement TPS7A0218PYCHR2" in out
+    assert "TPS7A02: WARNING: Mouser does not have this MPN" in out
+
+
+def test_offers_of_one_mpn_and_failures(store_home, monkeypatch, tmp_path):
+    """Two offers of one MPN (cut tape, reel): orderable when one is, stock is
+    the sum. No stock data is a warning. No connection stops the check."""
+    import urllib.error
+
+    import pytest
+    from datasheet_lens.errors import LensError
+
+    reel = dict(PART, MouserPartNumber="595-A", AvailabilityInStock="100")
+    tape = dict(OLD, ManufacturerPartNumber="TPS7A0233PYCHR", MouserPartNumber="595-B", AvailabilityInStock="5")
+    unknown = dict(PART, ManufacturerPartNumber="TMP112D0IDPWR", AvailabilityInStock=None, Availability="On Order")
+    fake_api(monkeypatch, [tape, reel, unknown])
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        for mpn in ("TPS7A0233PYCHR", "TMP112D0IDPWR"):
+            prj.add_part(project, store, mpn)
+    lines = distributors.availability(prj.load(project.root))
+    assert "TPS7A0233PYCHR: New Product, stock 100" in lines
+    assert "TMP112D0IDPWR: New Product, stock unknown. WARNING: no stock (On Order), lead time 6 Weeks" in lines
+
+    calls = []
+
+    def offline(request, timeout):
+        calls.append(1)
+        raise urllib.error.URLError("no route")
+
+    monkeypatch.setattr(distributors.urllib.request, "urlopen", offline)
+    distributors._cache.clear()
+    lines = distributors.availability(prj.load(project.root))
+    assert len(calls) == 1 and lines[-1].startswith("not checked: TPS7A0233PYCHR, TMP112D0IDPWR: Mouser API")
+    with pytest.raises(LensError, match="not one MPN"):
+        distributors.mouser_search("A|B")
+    with pytest.raises(LensError, match="3 or more characters"):
+        distributors.mouser_search("TP", exact=False)
+    monkeypatch.delenv(distributors.MOUSER_ENV)
+    assert "Findchips" in "\n".join(distributors.search_lines("TPS7A02"))
+    with pytest.raises(LensError, match="the MPN is empty"):
+        distributors.search_lines(" ")
