@@ -870,7 +870,11 @@ def get_ordering_codes(document: DocRef) -> str:
 
 class CadPart(BaseModel):
     """One part of the CAD project (a symbol or a BOM line)."""
-    mpn: str = Field(description="The MPN of the part, for example from the MPN or the Value field.")
+    mpn: str = Field("", description="The MPN field of the symbol, as it is (empty if there is none).")
+    value: str = Field("", description=(
+        "The Value field of the symbol, as it is: it can hold a value (100nF), an MPN, a value and an MPN "
+        "(\"390uF (EEU-FS1H391L)\") or alternatives (\"AP2205-33YR-13 / AP7370-33Y-13\"). The tool finds the "
+        "MPNs in it."))
     datasheet: str = Field("", description="The Datasheet field: a URL or a path. Empty if there is none.")
     reference: str = Field("", description="The reference of the symbol, for example U3.")
 
@@ -878,14 +882,18 @@ class CadPart(BaseModel):
 @tool
 def project_check(
         parts: Annotated[list[CadPart], Field(description=(
-            "The parts of the CAD project with an MPN, from the CAD tool (for example its MCP server or its "
-            "BOM export). One item for each symbol or BOM line; give each part, not only the new ones."))],
+            "The parts of the CAD project, from the CAD tool (for example its MCP server or its BOM export). "
+            "One item for each symbol or BOM line, with its MPN and Value fields as they are; give each "
+            "part, not only the new ones. A part with no MPN in the two fields needs no datasheet."))],
         path: ProjectPath = "") -> str:
     """Compare the project file with the parts of the CAD project, so that the
-    two hold the same parts. Gives the number of the same parts, and one line for
-    each part that is different (one part with two MPNs), missing (with the
-    documents of the store or the Datasheet field, and the next call) or extra.
-    It changes nothing."""
+    two hold the same parts. Each part with an MPN needs its datasheet, also a
+    passive part with an MPN in its Value. Gives one line for each symbol whose
+    MPN and Value fields name different parts (a conflict in the CAD project),
+    the number of the same parts, and one line for each part that is different
+    (one part with two MPNs), missing (with the documents of the store or the
+    Datasheet field, and the next call; an alternative of a part is missing
+    too) or extra. It changes nothing."""
     from .project import check_parts, format_check, load
 
     with Store() as store:

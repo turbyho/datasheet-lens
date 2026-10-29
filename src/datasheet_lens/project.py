@@ -853,6 +853,91 @@ def update_part(project: Project, store: Store, mpn: str, manufacturer: str = ""
     return part
 
 
+def mpns_in_value(text: str) -> list[str]:
+    """The MPNs in a Value field of a CAD symbol, in their order. The field can
+    hold a value, a value and an MPN ("390uF (EEU-FS1H391L)", "10uF/10V
+    (GRM188R61A106KE69D)"), an MPN, or more MPNs: alternatives with any separator
+    ("AP2205-33YR-13 / AP7370-33Y-13", "A, B", "A | B"). Each character that an
+    MPN does not have separates. Not an MPN: a value with a unit (100nF,
+    4.7uF/10V, >=120R) or the name of a generic symbol (Conn_01x05_Socket,
+    Battery LiPo - 1 cell). A slash with no spaces separates two MPNs only when
+    the part after it is a full MPN with a digit: LM358DR/NOPB and
+    MCP1827S-3302E/EB are one MPN, AP2205-33YR-13/AP7370-33Y-13 are two. Words of
+    one part (OPA2134 (OPA2134PA)) give one MPN: the longest."""
+    from .identify import _is_mpn
+
+    def is_mpn(word: str) -> bool:
+        # A word with "_" is the name of a generic symbol (USB_C_Receptacle_GCT_USB4105).
+        return _is_mpn(word) and not re.search(r"_|^\W|^\d+(\.\d+)?\w*/", word)
+
+    out: list[str] = []
+    for word in re.split(r"[^A-Za-z0-9\-/.+#=_]+", text):
+        word = word.strip("-/.")
+        parts = word.split("/")
+        if len(parts) > 1 and all(is_mpn(p) and len(p) >= MIN_ALTERNATIVE for p in parts):
+            words = parts  # AP2205-33YR-13/AP7370-33Y-13
+        else:
+            words = [word]
+        for w in words:
+            if not is_mpn(w):
+                continue
+            same = next((i for i, o in enumerate(out) if _same_mpn(w, o)), None)
+            if same is None:
+                # A second MPN is a full code (not N16R8 of "ESP32-S3-WROOM-1 N16R8").
+                if not out or len(w) >= MIN_ALTERNATIVE:
+                    out.append(w)
+            elif len(w) > len(out[same]):  # the longer code of one part
+                out[same] = w
+    return out
+
+
+MIN_ALTERNATIVE = 6  # an alternative MPN in a Value field has this length or more
+
+
+def _same_mpn(a: str, b: str) -> bool:
+    """True if two MPNs of one symbol are probably one part (for a conflict, a
+    part with no doubt is enough): the same with no regard to signs
+    (LTC3588EMSE#PBF, LTC3588EMSEPBF); one starts with the other (TMP112D0 and
+    TMP112D0IDPWR, TPS7A02 and TPS7A0233PYCHR); the base part of a TI code with
+    digits in it (TLV755P and TLV75533PDBVR); or placeholders (see _near)."""
+    ka, kb = _norm(a), _norm(b)
+    if ka == kb:
+        return True
+    short, long = sorted((ka, kb), key=len)
+    if len(short) >= 4 and long.startswith(short):
+        return True
+    start = len(os.path.commonprefix([ka, kb]))
+    if start >= 4:
+        digits = re.match(r"\d{1,3}", long[start:])
+        if digits and long[start + digits.end():].startswith(short[start:]) and short[start:]:
+            return True
+    return _near(a, {"mpn": b})
+
+
+def cad_mpns(fields: list[tuple[str, str]], value: str = "") -> tuple[list[str], str]:
+    """The MPNs of one CAD symbol, the main one first, and a conflict text or "".
+    fields: (name, text) of its MPN fields, the best first; value: its Value
+    field. The first filled MPN field gives the main MPN; with none, the first
+    MPN of the Value. The other MPNs of the Value are alternatives (a second
+    source). A conflict: an MPN field or a Value that names a different part
+    (in Eagle: a new Value, and the attributes of the old library part)."""
+    named = [(n, t.strip()) for n, t in fields if t.strip()]
+    in_value = mpns_in_value(value)
+    if not named:
+        return in_value, ""
+    main = named[0][1]
+    other_fields = [(n, m) for n, m in named[1:] if not _same_mpn(m, main)]
+    alternatives = [m for m in in_value if not _same_mpn(m, main)]
+    wrong = []
+    if in_value and len(alternatives) == len(in_value):  # no MPN of the Value is the main part
+        wrong = [("Value", m) for m in in_value]
+        alternatives = []
+    wrong = other_fields + wrong
+    conflict = (f"{named[0][0]} {main}, " + ", ".join(f"{n} {m}" for n, m in wrong)
+                + f". The check uses {main}") if wrong else ""
+    return [main] + alternatives, conflict
+
+
 def check_parts(project: Project, store: Store, cad: list[dict]) -> dict:
     """Compare the parts of the project with the parts of the CAD project. cad:
     one item for each CAD part with an MPN: {"mpn", "datasheet" (optional),
@@ -864,18 +949,31 @@ def check_parts(project: Project, store: Store, cad: list[dict]) -> dict:
     - missing: the CAD parts that the project does not have, with the
       references of the CAD symbols, the Datasheet field and the documents
       that the store has for the MPN.
-    - extra: the project parts that the CAD project does not have."""
+    - extra: the project parts that the CAD project does not have.
+    - conflicts: the symbols whose fields name different parts (see cad_mpns).
+    An item can also give "value" (the Value field): the MPNs in it count (see
+    cad_mpns). An alternative is a CAD part too, and needs its own datasheet: the
+    Datasheet field of the symbol belongs to the main part."""
     merged: dict[str, dict] = {}
+    conflicts = []
     for item in cad:
-        mpn = str(item.get("mpn", "")).strip()
-        if not mpn:
-            continue
-        entry = merged.setdefault(mpn.lower(), {"mpn": mpn, "references": [], "datasheet": ""})
-        if str(item.get("reference", "")).strip():
-            entry["references"].append(str(item["reference"]).strip())
-        if not entry["datasheet"] and str(item.get("datasheet", "")).strip() not in ("", "~"):
-            entry["datasheet"] = str(item["datasheet"]).strip()
-    out = {"ok": [], "different": [], "missing": [], "extra": []}
+        reference = str(item.get("reference", "")).strip()
+        if "mpns" in item:  # computed by the caller (more MPN fields, see cad_mpns)
+            mpns, conflict = list(item["mpns"]), str(item.get("conflict", ""))
+        else:
+            mpns, conflict = cad_mpns([("MPN", str(item.get("mpn", "")))], str(item.get("value", "")))
+        if conflict:
+            conflicts.append(f"{reference or 'a symbol'}: {conflict}")
+        for i, mpn in enumerate(mpns):
+            entry = merged.setdefault(mpn.lower(), {"mpn": mpn, "references": [], "datasheet": "",
+                                                    "alternative_of": mpns[0] if i else ""})
+            if i == 0:
+                entry["alternative_of"] = ""  # a main part of a different symbol
+            if reference and reference not in entry["references"]:
+                entry["references"].append(reference)
+            if i == 0 and not entry["datasheet"] and str(item.get("datasheet", "")).strip() not in ("", "~"):
+                entry["datasheet"] = str(item["datasheet"]).strip()
+    out = {"ok": [], "different": [], "missing": [], "extra": [], "conflicts": conflicts}
     # First the exact matches, then the near matches of the other parts: a part
     # that is the same is not also "different".
     exact = {id(p) for p in project.parts if p["mpn"].lower() in merged}
@@ -929,7 +1027,9 @@ def format_check(result: dict, cli: bool = False) -> list[str]:
         return (f"project_add_part(mpn='{mpn}'" + (f", base='{base}'" if base else "")
                 + (f", document='{doc}'" if doc else "") + ")")
 
-    lines = [f"the same in the CAD project and in the project file: {len(result['ok'])} parts"]
+    lines = [f"conflict in the CAD project: {c}. Tell the user: one of the fields is wrong."
+             for c in result.get("conflicts", [])]
+    lines.append(f"the same in the CAD project and in the project file: {len(result['ok'])} parts")
     for d in result["different"]:
         cad, own, maker = d["cad"], d["mpn"], d["manufacturer"] if d["ambiguous"] else ""
         update = (f'datasheet-lens set "{own}"' + (f' --of "{maker}"' if maker else "") + f' -m "{cad}"' if cli
@@ -938,7 +1038,8 @@ def format_check(result: dict, cli: bool = False) -> list[str]:
         lines.append(f"different: CAD {cad}, project {own}. Probably one part with two MPNs. Tell the user: the "
                      f"CAD project or the project file must change ({update} when the CAD MPN is correct).")
     for m in result["missing"]:
-        refs = f" ({', '.join(m['references'])})" if m["references"] else ""
+        refs = (f" ({', '.join(m['references'])})" if m["references"] else "") + (
+            f" [alternative of {m['alternative_of']}]" if m.get("alternative_of") else "")
         if m["documents"]:
             step = f"the store has its documents {', '.join(m['documents'])}: {add(m['mpn'], doc=m['documents'][0])}"
         elif m["bases"]:

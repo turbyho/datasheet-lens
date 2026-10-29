@@ -506,7 +506,7 @@ def test_check_with_the_cad_project(store_home, text_pdf, tmp_path, capsys):
                    '"U8","LM3580DR/NOPB","~",""\n"U9","XYZ123","~","DNP"\n', encoding="utf-8")
     assert main(["check", str(bom), "-p", str(project.root)]) == 0
     out = capsys.readouterr().out
-    assert "column Value, 3 lines with an MPN" in out and "the same in the CAD project and in the project file: 2" in out
+    assert "MPN from Value; references from Reference; 3 lines with an MPN" in out and "the same in the CAD project and in the project file: 2" in out
     assert "extra: NRF9151-LACA-R7" in out and "missing: LM3580DR/NOPB (U8)" in out
     # One column: the sniffer cannot find a delimiter.
     bom.write_text("MPN\nOPA2134\n", encoding="utf-8")
@@ -521,3 +521,94 @@ def test_near_parts():
     assert near("TMP112D0", "TMP112D0IDPWR") and near("STM32F103C8Tx", "STM32F103C8T6")
     assert near("nRF9151-LAXX", "NRF9151-LACA-R7") and near("TLV75533PDBVR", "TLV755P", variants=["TLV75533PDBVR"])
     assert not near("LM3580", "LM358") and not near("LM3", "LM358") and not near("OPA134", "OPA2134")
+
+
+def test_check_reads_bom_files_of_other_cad_tools(store_home, text_pdf, tmp_path, capsys):
+    """Altium (Designator, "Manufacturer Part Number 1"), Eagle/Fusion (Parts,
+    MPN), a semicolon and a cp1252 file from Windows."""
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "OPA2134PA")
+    bom = tmp_path / "altium.csv"
+    bom.write_bytes('"Designator";"Comment";"Manufacturer Part Number 1"\n"U1";"Op amp µ";"OPA2134PA"\n'
+                    .encode("cp1252"))
+    assert main(["check", str(bom), "-p", str(project.root)]) == 0
+    out = capsys.readouterr().out
+    assert "MPN from Manufacturer Part Number 1; references from Designator; read as cp1252" in out
+    assert "the same in the CAD project and in the project file: 1" in out
+    bom = tmp_path / "eagle.csv"
+    # Each library puts the MPN into a different attribute: the first filled one of the row.
+    bom.write_text("Qty;Value;Parts;MP;MANUFACTURER_PART_NUMBER\n2;10k;R1 R2;;\n1;OPA2134;U1;OPA2134PA;\n"
+                   "1;X;U2;;LM358DR/NOPB\n1;1N4148W;D3;;\n", encoding="utf-8")
+    assert main(["check", str(bom), "-p", str(project.root)]) == 0
+    out = capsys.readouterr().out
+    assert "MPN from MANUFACTURER_PART_NUMBER, MP, Value; references from Parts; 3 lines with an MPN" in out
+    assert "missing: LM358DR/NOPB (U2)" in out and "missing: 1N4148W (D3)" in out
+
+
+def test_mpn_in_the_value_field():
+    """A Value field can hold a value, an MPN, a value with an MPN, or more MPNs
+    (alternatives)."""
+    from datasheet_lens.project import cad_mpns, mpns_in_value
+
+    assert mpns_in_value("100nF GRM155R71C104KA88D") == ["GRM155R71C104KA88D"]
+    assert mpns_in_value("10uF/10V (GRM188R61A106KE69D)") == ["GRM188R61A106KE69D"]
+    assert mpns_in_value("390uF (EEU-FS1H391L)") == ["EEU-FS1H391L"]
+    # Alternatives with any separator; a slash with no spaces only between two full MPNs.
+    for value in ("AP2205-33YR-13 / AP7370-33Y-13", "AP2205-33YR-13, AP7370-33Y-13", "AP2205-33YR-13;AP7370-33Y-13",
+                  "AP2205-33YR-13 | AP7370-33Y-13", "AP2205-33YR-13/AP7370-33Y-13", "AP2205-33YR-13 or AP7370-33Y-13"):
+        assert mpns_in_value(value) == ["AP2205-33YR-13", "AP7370-33Y-13"], value
+    assert mpns_in_value("MCP1827S-3302E/EB") == ["MCP1827S-3302E/EB"]
+    assert mpns_in_value("MAX20361BEWC+ (U5)") == ["MAX20361BEWC+"]
+    assert mpns_in_value("LM358DR/NOPB") == ["LM358DR/NOPB"] and mpns_in_value("nRF9151-LAXX") == ["nRF9151-LAXX"]
+    for value in ("100nF", "4.7uF/10V", ">=120R", "10nH RF LQ", "Conn_01x05_Socket", "Battery LiPo - 1 cell",
+                  "47uF/poly", "120R/0.7A", "10k"):
+        assert mpns_in_value(value) == [], value
+    # An MPN field and alternatives in the Value; a Value of a different part.
+    assert cad_mpns([("MPN", "AP2205-33YR-13")], "AP2205-33YR-13 / AP7370-33Y-13") == (
+        ["AP2205-33YR-13", "AP7370-33Y-13"], "")
+    assert cad_mpns([("MP", "BSS138")], "2N7002") == (["BSS138"], "MP BSS138, Value 2N7002. The check uses "
+                                                         "BSS138")
+    assert cad_mpns([("MPN", "")], "AP2205-33YR-13 / AP7370-33Y-13")[0] == ["AP2205-33YR-13", "AP7370-33Y-13"]
+
+
+def test_check_tells_about_two_parts_in_one_symbol(store_home, tmp_path, capsys):
+    """An MPN field and a Value that name different parts are a conflict; the
+    same part with other signs (#) or a longer code is not."""
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "TPS7A0218PYCHR")
+    bom = tmp_path / "bom.csv"
+    bom.write_text("Reference,Value,MPN\nU2,TPS7A0218PYCHR,TPS7A0233PYCHR\nU4,LTC3588EMSEPBF,LTC3588EMSE#PBF\n"
+                   "U5,TMP112D0,TMP112D0IDPWR\n", encoding="utf-8")
+    assert main(["check", str(bom), "-p", str(project.root)]) == 0
+    out = capsys.readouterr().out
+    assert ("conflict in the CAD project: U2: MPN TPS7A0233PYCHR, Value TPS7A0218PYCHR. The check uses "
+            "TPS7A0233PYCHR") in out
+    assert out.count("conflict in the CAD project") == 1
+
+
+def test_mpn_fields_review_cases(store_home, tmp_path, capsys):
+    """A base part in the Value is no conflict; words of one part give one MPN;
+    an ordering suffix and a generic symbol name are no alternative; a column
+    Part Number is not an MPN; a UTF-16 file; --column still reads the Value."""
+    from datasheet_lens.project import cad_mpns, mpns_in_value
+
+    assert cad_mpns([("MPN", "TLV75533PDBVR")], "TLV755P") == (["TLV75533PDBVR"], "")
+    assert cad_mpns([("MPN", "TPS7A0233PYCHR")], "TPS7A02") == (["TPS7A0233PYCHR"], "")
+    assert cad_mpns([("MPN", "")], "OPA2134 (OPA2134PA)") == (["OPA2134PA"], "")
+    assert cad_mpns([("MPN", "ESP32-S3-WROOM-1-N16R8")], "ESP32-S3-WROOM-1 N16R8") == (
+        ["ESP32-S3-WROOM-1-N16R8"], "")
+    assert mpns_in_value("USB_C_Receptacle_GCT_USB4105") == []
+    assert cad_mpns([("MP", "AP2205-18YR-13")], "AP2205-33YR-13 / AP7370-33Y-13")[1].startswith("MP AP2205-18YR-13")
+
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "OPA2134PA")
+    bom = tmp_path / "bom.csv"
+    bom.write_text("Reference\tValue\tPart Number\tMPN\nU1\tOPA2134PA / OPA1612AIDR\tPN-00123\tOPA2134PA\n",
+                   encoding="utf-16")
+    assert main(["check", str(bom), "-p", str(project.root), "--column", "MPN"]) == 0
+    out = capsys.readouterr().out
+    assert "MPN from MPN, Value" in out and "conflict" not in out and "PN-00123" not in out
+    assert "missing: OPA1612AIDR (U1) [alternative of OPA2134PA]" in out
