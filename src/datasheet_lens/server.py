@@ -946,7 +946,8 @@ def project_update_part(
         category: Annotated[str | None, Field(description=(
             "The function of the part. None: no change; an empty text removes it."))] = None,
         new_manufacturer: Annotated[str, Field(description=(
-            "The manufacturer, with the spelling of list_parts. Empty: no change."))] = "",
+            "The new manufacturer, any name of the manufacturer of the part in the store (TI or Texas "
+            "Instruments). The project file and its layout use this name. Empty: no change."))] = "",
         path: ProjectPath = "") -> str:
     """Change a part of the user project in place: its MPN, base part, category
     or manufacturer. The part keeps its place in datasheet-lens.toml and its

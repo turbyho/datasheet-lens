@@ -129,7 +129,7 @@ come before the first `[[part]]`.
 | Key | Value |
 |---|---|
 | `mpn` | Necessary. The MPN of the part in the BOM: the concrete orderable MPN. |
-| `manufacturer` | The manufacturer, with the spelling of the store. Necessary when two parts have the same MPN. |
+| `manufacturer` | The manufacturer, as the project writes it (the layout uses it as a folder). It can be any name of the manufacturer that the store knows (see `datasheet-lens maker` in [cli.md](cli.md)). Necessary when two parts have the same MPN. |
 | `base` | The base part of the datasheet, when `mpn` is a concrete part of it. |
 | `category` | The function of the part, for example `ADC`, `LDO`, `MCU`. The layout can use it. |
 | `variants` | For information only: the parts that the same datasheet covers. The tool writes it from the store. |
@@ -293,9 +293,10 @@ of the project file to that folder.
 
 `set` keeps the part at its place in the project file, and keeps its copies. Use it,
 not a removal and a new addition. After a change, run `datasheet-lens sync` to move
-the copies to the subfolders of the layout. Give the manufacturer with the spelling
-of the store (`datasheet-lens parts`). Else the store gets a second part with the
-same MPN.
+the copies to the subfolders of the layout. Give a name of the manufacturer that the
+store knows (`datasheet-lens maker`). With a name that the store does not relate to
+the manufacturer of the part, the command stops with an error and tells how to record
+the name. Thus the store does not get a second part with the same MPN.
 
 `rm MPN` removes the part from the project file, and deletes its copies that no other
 part uses. `rm -d DOC` removes a document from each part that has it, or only from
