@@ -130,7 +130,9 @@ export DATASHEET_LENS_HOME=/data/datasheet-lens
 Set the variable for the CLI and for the MCP server. If the two use different
 folders, they see different documents.
 
-The store folder holds these files:
+The store folder holds these files. With the key `data` in `config.json`, the
+first four are in a different folder (see
+[Move the data to a different disk](#move-the-data-to-a-different-disk)).
 
 | Path | Content |
 |---|---|
@@ -138,10 +140,70 @@ The store folder holds these files:
 | `blobs/` | One file for each document, with its SHA-256 as the file name. |
 | `render/` | The rendered page images and PDF extracts (a cache). |
 | `tmp/` | Temporary files of the downloads. |
-| `config.json` | The configuration: the element map backend and the global list of distributors. |
+| `config.json` | The configuration: the element map backend, the global list of distributors and the data folder. |
 | `keys.toml` | The API keys, only on a system with no key store. See [distributors.md](distributors.md). |
 
 The tool makes a file in `render/` again when the file is not there.
+
+### Move the data to a different disk
+
+The documents and the database can be on a different disk, for example a RAID
+array. The key `data` in `config.json` gives this data folder:
+
+- The data folder holds `db/`, `blobs/`, `render/` and `tmp/`.
+- The store folder keeps `config.json`, `keys.toml` and `update_check.json`.
+- The CLI and the MCP server read the same `config.json`. They need no other
+  setting.
+
+To move the data:
+
+1. Stop the MCP clients and each other process that uses datasheet-lens.
+2. Move the folders `db/`, `blobs/` and `render/` to the new folder. `tmp/`
+   holds only temporary files: you can delete it.
+
+   ```sh
+   mkdir -p /mnt/raid/datasheet-lens
+   mv ~/.datasheet-lens/db ~/.datasheet-lens/blobs ~/.datasheet-lens/render /mnt/raid/datasheet-lens/
+   ```
+
+3. Add the key `data` to the JSON object in `config.json` in the store folder:
+
+   ```json
+   {
+    "element_backend": "docling",
+    "data": "/mnt/raid/datasheet-lens"
+   }
+   ```
+
+4. Make sure that `datasheet-lens info` shows the two folders:
+
+   ```text
+   store: /home/user/.datasheet-lens
+   data: /mnt/raid/datasheet-lens
+   ```
+
+5. Start the MCP clients again.
+
+The value of `data` must be an absolute path. It can start with `~`.
+`DATASHEET_LENS_HOME` gives the store folder, thus the location of `config.json`.
+
+The tool stops with an error, and does not make an empty store in a different
+folder, in these conditions:
+
+- It cannot read `config.json`.
+- The data folder does not exist, for example because its disk is not mounted.
+
+If the store folder still holds `db/lens.db`, `datasheet-lens info` and
+`datasheet-lens init` show a note. The MCP server gives the same note one time
+in `project_status`, `project_check` and `distributor_status`. The tool does not
+use that database.
+
+To move the data back, move the folders to the store folder and remove the key
+`data`.
+
+CAUTION: USE A LOCAL DISK FOR THE DATA FOLDER. SQLITE IN WAL MODE DOES NOT
+OPERATE CORRECTLY ON A NETWORK FILE SYSTEM (NFS, SMB). A LOCAL RAID ARRAY HAS NO
+PROBLEM.
 
 ## Upgrade
 
@@ -213,13 +275,15 @@ or add `"update_check": false` to `config.json` in the store folder.
    ```
 
 4. If you do not want the documents and the facts, delete the store folder
-   (`~/.datasheet-lens` or the folder in `DATASHEET_LENS_HOME`).
+   (`~/.datasheet-lens` or the folder in `DATASHEET_LENS_HOME`), and the data
+   folder in the key `data` of `config.json`.
 
 The project files and the document copies in your design repositories stay.
 
 ## Check the installation
 
-`datasheet-lens info` shows the version and the store folder:
+`datasheet-lens info` shows the version and the store folder (and the data folder,
+if `config.json` gives one):
 
 ```text
 datasheet-lens 0.1.0.dev0

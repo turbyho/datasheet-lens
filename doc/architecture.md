@@ -54,8 +54,10 @@ session read from it, are at once available in each other project. A project fil
 keeps only the list of the parts of the design and the references (SHA-256) to the
 documents.
 
-`store.py` keeps the store in one folder (`config.py`: `~/.datasheet-lens`, or the
-environment variable `DATASHEET_LENS_HOME`):
+`store.py` keeps the store in one data folder (`config.py`: `~/.datasheet-lens`, or
+the environment variable `DATASHEET_LENS_HOME`). The key `data` in `config.json`
+can put the data folder on a different disk. `config.json` and the API keys stay
+in the store folder.
 
 - `db/lens.db`: an SQLite database in WAL mode. Many readers and one writer can use
   it at the same time.
@@ -200,7 +202,7 @@ or the database.
 | `version_check.py` | The update check: a newer release on PyPI, and a server that runs an older version than the installed one. |
 | `agents.py` | The datasheet-lens block in `AGENTS.md` and `CLAUDE.md`. |
 | `cli.py` | The command line interface. |
-| `config.py` | The location of the central store (`DATASHEET_LENS_HOME`). |
+| `config.py` | The location of the central store (`DATASHEET_LENS_HOME`), `config.json`, and the data folder (key `data`). |
 | `distributors.py` | The part data from the distributor APIs: search, availability, distributor list. |
 | `elements.py` | The element map: docling and text backends, page map, caption search. |
 | `errors.py` | `LensError`: a wrong input or a state that the user can repair. |

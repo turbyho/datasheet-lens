@@ -10,25 +10,32 @@ from pathlib import Path
 import pypdfium2 as pdfium
 
 from . import __version__
-from .config import store_home
+from .config import data_lines, store_home
 from .errors import LensError
 from .store import ROLES, Store
 
 
 def cmd_info(_args: argparse.Namespace) -> int:
-    """The command info: show the version, the store folder, and a newer release
-    on PyPI (it asks PyPI each time, and waits for the answer a few seconds at
-    most)."""
+    """The command info: show the version, the store folder, the data folder (if
+    it is a different one), and a newer release on PyPI (it asks PyPI each time,
+    and waits for the answer a few seconds at most)."""
     from .version_check import TIMEOUT, start_update_check, user_notes
 
     print(f"datasheet-lens {__version__}")
     print(f"store: {store_home()}")
+    code = 0
+    try:  # a wrong data folder is a line: info shows the other state too
+        for line in data_lines():
+            print(line)
+    except LensError as e:
+        print(f"datasheet-lens: error: {e}", file=sys.stderr)
+        code = 2
     thread = start_update_check(force=True)
     if thread is not None:
         thread.join(TIMEOUT)
     for note in user_notes():
         print(note)
-    return 0
+    return code
 
 
 def _input(prompt: str) -> str:
@@ -537,7 +544,8 @@ def cmd_dist(args: argparse.Namespace) -> int:
     globally or (--local) for the project."""
     from .distributors import check_names, status_lines
     from .project import load, load_optional, set_distributors
-    from .setup import load_config, save_config
+    from .config import load_config
+    from .setup import save_config
 
     if args.local:
         project = load(args.path)

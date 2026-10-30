@@ -314,7 +314,7 @@ def add_document(
     the part into the user project: project_add_part."""
     from pathlib import Path
 
-    from .config import store_home
+    from .config import data_home
     from .fetch import downloaded, is_url
     from .indexer import build_index
 
@@ -325,7 +325,8 @@ def add_document(
     with contextlib.ExitStack() as stack:
         # The download runs before the lock: a slow server must not stop the other tools.
         if is_url(path):
-            file, source = stack.enter_context(downloaded(path, store_home())), path.strip()
+            # tmp/ is on the disk of blobs/: add_document moves the file.
+            file, source = stack.enter_context(downloaded(path, data_home())), path.strip()
         else:
             file, source = Path(path).expanduser(), ""
         with _add_lock, Store() as store:

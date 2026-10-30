@@ -8,9 +8,8 @@ import shutil
 import subprocess
 import sys
 
-from .config import store_home
+from .config import config_path, data_lines, load_config, store_home
 from .elements import docling_available
-from .errors import LensError
 from .fileutil import write_atomic
 
 DOCLING_SPEC = "docling>=2.144"
@@ -30,30 +29,6 @@ Cost: docling installs PyTorch and models (some GB of disk). It runs on a
 CPU (about 0.3 s for each page with 24 cores) or a GPU (CUDA, Apple MPS).
 A team server can build the element map one time for all users.
 """
-
-
-def config_path():
-    """The configuration file of the store (config.json)."""
-    return store_home() / "config.json"
-
-
-def load_config(strict: bool = False) -> dict:
-    """The configuration, or {} if there is none or it cannot be read. strict:
-    a file that cannot be read gives a LensError (before a change of the file)."""
-    path = config_path()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}
-    except (OSError, ValueError) as e:
-        if strict:
-            raise LensError(f"{path}: cannot read the configuration ({e}): correct or remove the file") from None
-        return {}
-    if not isinstance(data, dict):
-        if strict:
-            raise LensError(f"{path}: the configuration is not a JSON object: correct or remove the file")
-        return {}
-    return data
 
 
 def save_config(cfg: dict) -> None:
@@ -87,7 +62,9 @@ def init(layout: str = "ask", out=print, ask=input) -> int:
     home = store_home()
     home.mkdir(parents=True, exist_ok=True)
     out(f"store: {home}")
-    cfg = load_config()
+    for line in data_lines():
+        out(line)
+    cfg = load_config(strict=True)  # a file that cannot be read is not written over
     if docling_available():
         out("docling: installed; the element map uses the layout model.")
         cfg["element_backend"] = "docling"

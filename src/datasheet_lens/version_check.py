@@ -103,7 +103,7 @@ def is_editable_install() -> bool | None:
 def check_enabled() -> bool:
     """True when the user lets datasheet-lens ask PyPI, and the install is not
     editable."""
-    from .setup import load_config
+    from .config import load_config
 
     if os.environ.get(DISABLE_ENV, "") not in ("", "0"):
         return False
@@ -191,13 +191,21 @@ _told: set[str] = set()  # the notes that this MCP server process gave already
 
 
 def version_notes() -> list[str]:
-    """The lines for the LLM: a restart of the client, or a newer release. Each
-    note one time for each server process: the agent tells the user one time."""
+    """The lines for the LLM: a restart of the client, a newer release, or a
+    database in the store directory that the data folder of config.json hides.
+    Each note one time for each server process: the agent tells the user one
+    time."""
+    from .config import data_note
+
     notes = []
     with contextlib.suppress(Exception):
         reason = restart_reason()
         if reason:
             notes.append(reason)
+    with contextlib.suppress(Exception):  # an error of config.json comes from the tool itself
+        note = data_note()
+        if note:
+            notes.append(f"{note} Tell the user one time in this session.")
     found = newer_release()
     if found:
         notes.append(f"datasheet-lens {found[0]} is available on PyPI, and this machine has {found[1]}. Tell "

@@ -1,8 +1,9 @@
 """Central store: SQLite database and content-addressed file store.
 
-Layout of the store directory (default ~/.datasheet-lens):
+Layout of the data folder (config.data_home: default ~/.datasheet-lens):
   db/lens.db                    SQLite database (WAL mode)
   blobs/<sha[:2]>/<sha>.<ext>   the files (PDF and other documents)
+  render/, tmp/                 the cache of the page images, the downloads
 
 Large files are never in the database. The database keeps the hash, the size, the
 type and the path of each file.
@@ -20,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import makers
-from .config import store_home
+from .config import data_home
 from .errors import LensError
 from .pdflock import PDFIUM
 from .fileutil import temp_path
@@ -316,7 +317,7 @@ class Store:
     """The local central store. One instance for each process."""
 
     def __init__(self, home: Path | None = None):
-        self.home = Path(home) if home else store_home()
+        self.home = Path(home) if home else data_home()
         self.home.mkdir(parents=True, exist_ok=True)
         (self.home / "blobs").mkdir(exist_ok=True)
         (self.home / "db").mkdir(exist_ok=True)
@@ -440,7 +441,7 @@ class Store:
         tmp = temp_path(target)
         try:
             if move:
-                path.replace(tmp)
+                shutil.move(path, tmp)  # a copy and a delete when blobs/ is on a different disk
             else:
                 shutil.copyfile(path, tmp)
             tmp.replace(target)

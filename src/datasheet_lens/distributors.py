@@ -86,7 +86,7 @@ def enabled(project=None) -> tuple[list[str], str, list[str]]:
     list that is not supported (for example a list of a newer version): it is
     left out, so the others still work. A user in the USA does not want
     Farnell, for example."""
-    from .setup import load_config
+    from .config import load_config
 
     if project is not None and getattr(project, "distributors", None) is not None:
         names, source = project.distributors, f"the project file {project.path}"
