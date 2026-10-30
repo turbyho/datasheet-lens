@@ -83,6 +83,7 @@ project folder. The other tools only read.
 | `list_documents` | Give the documents in the store, or the documents of one part. A concrete part also gets the documents of its base part. | `part` | no |
 | `add_document` | Copy or download a PDF into the store, build its index, start its element map and link it to a part. Without `part`, propose an MPN from the PDF. | `path` (file or URL), `part`, `manufacturer`, `role`, `variants` | store |
 | `get_ordering_codes` | Give the orderable codes of a datasheet from its text layer, with page and line. | `document` | no |
+| `manufacturer_relation` | Give the manufacturer registry, or record how two manufacturer names relate: `alias` or `distinct` (see `datasheet-lens maker` in [cli.md](cli.md)). The agent records a relation only after the user confirms it. | `relation`, `name`, `other` | store |
 
 ### Reading
 

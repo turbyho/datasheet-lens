@@ -101,6 +101,42 @@ datasheet-lens parts
 
 List the parts of the store, with the manufacturer and the number of documents.
 
+### maker
+
+```text
+datasheet-lens maker
+datasheet-lens maker alias NAME OTHER
+datasheet-lens maker distinct NAME OTHER
+```
+
+Show the manufacturer registry of the store, or record how two manufacturer names
+relate. A part keeps the manufacturer name of its datasheet. The registry tells if two
+names are one manufacturer, so that the store does not get a second part with the
+same MPN.
+
+| Relation | Meaning |
+|---|---|
+| (none) | Show each manufacturer, its other names and the manufacturers that are not the same. |
+| `alias NAME OTHER` | One manufacturer with two names, for example `TI` and `"Texas Instruments"`. |
+| `distinct NAME OTHER` | Two manufacturers. Each can make a part with the same MPN (a second source). |
+
+Two spellings of one name are always the same manufacturer, with no relation: the
+comparison ignores case, punctuation, spaces and a legal suffix (`Microchip`,
+`Microchip Inc.` and `MICROCHIP TECHNOLOGY INC.` with the alias `Microchip
+Technology`). The registry does not follow the name changes and mergers of companies.
+
+The registry knows the names of the built-in manufacturer table, and some short names
+(`TI`, `ADI`, `ST`). Only you record a
+relation: the registry does not learn one from the data, because two manufacturers
+can make a part with the same MPN and one datasheet. With no relation, `maker` also
+shows the pairs of names to examine: two parts with the same MPN and these names
+have the same documents (for example `TI` and `Texas Instruments`).
+
+When the registry cannot tell if two names are one manufacturer, a command that adds
+a part stops with an error. Record the relation, then do the command again. After
+`alias`, the parts with the same MPN of the two names merge into one part. The part
+keeps its manufacturer name.
+
 ### docs
 
 ```text
@@ -451,6 +487,9 @@ With no `NAME`, show where each key is (no values).
 |---|---|
 | `NAME` | The distributor: `mouser`. |
 | `--delete` | Remove the saved key from the key store and from the key file. |
+
+For Mouser, use the key of the Search API, not the key of the Cart API. See
+[distributors.md](distributors.md).
 
 When the input is not a terminal, the command reads the key from the first line of
 the input.

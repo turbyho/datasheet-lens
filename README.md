@@ -116,7 +116,8 @@ only the files that exist: make one of them first if you want the block.
 All commands and options are in [doc/cli.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/cli.md).
 
 Each user has a personal API key for each distributor. Get a free Mouser key at
-the [Mouser API Hub](https://www.mouser.com/api-hub/) (Search API), then run
+the [Mouser API Hub](https://www.mouser.com/api-hub/) (the Search API key, not the
+Cart API key), then run
 `datasheet-lens key mouser`. See [doc/distributors.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/distributors.md).
 
 ## Documentation

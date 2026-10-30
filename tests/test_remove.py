@@ -107,6 +107,7 @@ def test_review_cases(store_home, text_pdf, tmp_path, capsys):
 def test_rm_document_with_the_manufacturer(store_home, text_pdf, tmp_path, capsys):
     with Store() as store:
         doc = store.add_document(text_pdf("lm358.pdf", [[(50, 60, 12, "LM358")]]))
+        store.maker_relation("distinct", "TI", "ST")
         for maker in ("TI", "ST"):
             store.link(store.add_part("LM358", maker), doc.id)
         project = prj.init_project(tmp_path / "board", layout="")
@@ -152,7 +153,8 @@ def test_set_keeps_the_store_consistent(store_home, text_pdf, tmp_path):
         prj.update_part(project, store, "OPA134", new_mpn="OPA134PA")
         assert {r["sha256"] for r in store.part_documents("OPA134PA")} == {d.sha256}
         with pytest.raises(LensError, match="the store has OPA134PA from TI"):
-            prj.update_part(project, store, "OPA134PA", new_manufacturer="Texas Instruments")
+            prj.update_part(project, store, "OPA134PA", new_manufacturer="TXN")
+        prj.update_part(project, store, "OPA134PA", new_manufacturer="Texas Instruments")  # a name of TI
         assert len(store.match_parts("OPA134PA")) == 1
         project.parts[1]["base"] = "OPA134PA"
         prj.update_part(project, store, "OPA134PA", category="op amp")

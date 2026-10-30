@@ -29,7 +29,7 @@ import tomlkit.exceptions
 from tomlkit.container import Container
 from tomlkit.items import AoT, Comment, Whitespace
 
-from . import PROJECT_URL
+from . import PROJECT_URL, makers
 from .errors import LensError
 from .fileutil import temp_path, write_atomic
 from .store import ROLES, Document, Store, sha256_file
@@ -105,12 +105,13 @@ class Project:
         """The path of a file in the folder (rel is relative to the folder)."""
         return self.folder_path.joinpath(*_rel_parts(rel, "the file"))
 
-    def find(self, mpn: str, manufacturer: str = "") -> dict | None:
-        """The part with this MPN (and this manufacturer, if given), or None."""
+    def find(self, mpn: str, manufacturer: str = "", store: Store | None = None) -> dict | None:
+        """The part with this MPN (and this manufacturer, if given), or None. With
+        the store, two names of one manufacturer are the same (makers.same)."""
         for part in self.parts:
             if part["mpn"].lower() == mpn.lower() and (
                     not manufacturer or not part["manufacturer"]
-                    or part["manufacturer"].lower() == manufacturer.lower()):
+                    or makers.same(store.db if store else None, part["manufacturer"], manufacturer)):
                 return part
         return None
 
@@ -654,14 +655,17 @@ def _refresh(project: Project, store: Store, part: dict, part_id: int, files: di
     return added
 
 
-def _entry(project: Project, store: Store, part_id: int) -> dict:
-    """The project part of a store part (made if necessary). An empty
-    manufacturer or category of the project part comes from the store."""
+def _entry(project: Project, store: Store, part_id: int, manufacturer: str = "") -> dict:
+    """The project part of a store part (made if necessary). A new project part
+    gets the manufacturer name of the caller: the store part can have a
+    different name of the same manufacturer (TI and Texas Instruments), and
+    the layout of the project uses the name as a folder. An empty manufacturer
+    or category of the project part comes from the store."""
     row = store.part(part_id)
-    part = project.find(row["mpn"], row["manufacturer"])
+    part = project.find(row["mpn"], row["manufacturer"], store)
     if part is None:
-        part = {"mpn": row["mpn"], "manufacturer": row["manufacturer"], "category": row["family"] or "",
-                "documents": []}
+        part = {"mpn": row["mpn"], "manufacturer": manufacturer.strip() or row["manufacturer"],
+                "category": row["family"] or "", "documents": []}
         project.parts.append(part)
     _fill(part, row)
     return part
@@ -686,6 +690,9 @@ def add_part(project: Project, store: Store, mpn: str, manufacturer: str = "", d
     (TLV755P); the document is then linked to the base part."""
     if role not in ROLES:
         raise LensError(f"role must be one of {', '.join(ROLES)}")
+    doc = store.document(document) if document else None
+    if document and doc is None:
+        raise LensError(f"document not found: {document}")
     owner = None
     existing = store.match_parts(mpn)  # an existing concrete part, with any spelling of its manufacturer
     if base.strip() and base.strip().lower() != mpn.strip().lower():
@@ -705,15 +712,12 @@ def add_part(project: Project, store: Store, mpn: str, manufacturer: str = "", d
         owner = part_id
     if category.strip():
         store.set_category(part_id, category.strip())
-    if document:
-        doc = store.document(document)
-        if doc is None:
-            raise LensError(f"document not found: {document}")
+    if doc is not None:
         store.link(owner, doc.id, role)
-    part = _entry(project, store, part_id)
+    part = _entry(project, store, part_id, manufacturer)
     if category.strip():
         part["category"] = category.strip()
-    if document and doc.sha256 in part.get("exclude", []):
+    if doc is not None and doc.sha256 in part.get("exclude", []):
         # An explicit request adds a document that remove_document took away.
         part["exclude"] = [s for s in part["exclude"] if s != doc.sha256]
         if not part["exclude"]:
@@ -757,10 +761,12 @@ def _drop_copies(project: Project, removed: list[dict], delete_pinned: bool, app
     return out
 
 
-def _one_part(project: Project, mpn: str, manufacturer: str = "") -> dict:
-    """The project part with this MPN (and manufacturer, if more parts have it)."""
+def _one_part(project: Project, mpn: str, manufacturer: str = "", store: Store | None = None) -> dict:
+    """The project part with this MPN (and manufacturer, if more parts have it).
+    With the store, two names of one manufacturer are the same (makers.same)."""
     found = [p for p in project.parts if p["mpn"].lower() == mpn.strip().lower()
-             and (not manufacturer or p["manufacturer"].lower() == manufacturer.strip().lower())]
+             and (not manufacturer or makers.same(store.db if store else None, p["manufacturer"],
+                                                  manufacturer.strip()))]
     if not found:
         raise LensError(f"the project has no part {mpn}")
     if len(found) > 1:
@@ -770,11 +776,12 @@ def _one_part(project: Project, mpn: str, manufacturer: str = "") -> dict:
 
 
 def remove_part(project: Project, mpn: str, manufacturer: str = "", delete_pinned: bool = False,
-                apply: bool = True) -> dict:
+                apply: bool = True, store: Store | None = None) -> dict:
     """Remove a part from the project, and delete its copies (see _drop_copies).
     The central store does not change: other projects can use the part. If apply
-    is false, nothing changes: the result tells what would change."""
-    part = _one_part(project, mpn, manufacturer)
+    is false, nothing changes: the result tells what would change. store: its
+    manufacturer registry finds the part by any name of its manufacturer."""
+    part = _one_part(project, mpn, manufacturer, store)
     rest = [p for p in project.parts if p is not part]
     result = _drop_copies(Project(project.root, project.folder, rest, project.layout), part["documents"],
                           delete_pinned, apply)
@@ -789,7 +796,7 @@ def _store_part(store: Store, mpn: str, manufacturer: str, create: bool) -> int 
     the only part with the MPN (a different spelling of the manufacturer). Else
     a new part if create is true, or None."""
     rows = store.match_parts(mpn)
-    same = [r for r in rows if r["manufacturer"].lower() in ("", manufacturer.strip().lower())]
+    same = [r for r in rows if not r["manufacturer"] or store.same_maker(r["manufacturer"], manufacturer)]
     if len(same) == 1:
         return same[0]["id"]
     if len(rows) == 1 and not same:
@@ -805,12 +812,13 @@ def update_part(project: Project, store: Store, mpn: str, manufacturer: str = ""
     place in the project file and its copies: sync moves a copy when the layout
     gives a different subfolder. In the store, the part with the new MPN gets
     the base part; with no base part, it gets the documents of the old MPN. The
-    manufacturer must have the spelling of the store, so that the store does not
-    get a second part with the same MPN."""
-    part = _one_part(project, mpn, manufacturer)
+    manufacturer must be the same manufacturer as in the store (any of its names
+    in the registry), so that the store does not get a second part with the same
+    MPN."""
+    part = _one_part(project, mpn, manufacturer, store)
     target = new_mpn.strip() or part["mpn"]
     maker = new_manufacturer.strip() or part["manufacturer"]
-    if any(p is not part and p["mpn"].lower() == target.lower() and p["manufacturer"].lower() == maker.lower()
+    if any(p is not part and p["mpn"].lower() == target.lower() and store.same_maker(p["manufacturer"], maker)
            for p in project.parts):
         raise LensError(f"the project has a part {target} already: remove one of the two parts")
     old_base = "" if part.get("base", "").lower() == part["mpn"].lower() else part.get("base", "")
@@ -825,8 +833,10 @@ def update_part(project: Project, store: Store, mpn: str, manufacturer: str = ""
     old_id = _store_part(store, part["mpn"], part["manufacturer"], create=False)
     part_id = _store_part(store, target, maker, create=True)
     known = store.part(part_id)["manufacturer"]
-    if new_manufacturer.strip() and known and known.lower() != maker.lower():
-        raise LensError(f"the store has {target} from {known}: use this spelling of the manufacturer")
+    if new_manufacturer.strip() and known and not store.same_maker(known, maker):
+        raise LensError(f"the store has {target} from {known}: use this name, or record that the two names are one "
+                        f"manufacturer (datasheet-lens maker alias \"{maker}\" \"{known}\", or the MCP tool "
+                        f"manufacturer_relation)")
     if maker:
         store.fill_manufacturer(part_id, maker)
     if base:
@@ -1061,16 +1071,18 @@ def format_check(result: dict, cli: bool = False) -> list[str]:
 
 
 def remove_document(project: Project, document: str, mpn: str = "", manufacturer: str = "",
-                    delete_pinned: bool = False, apply: bool = True) -> dict:
+                    delete_pinned: bool = False, apply: bool = True, store: Store | None = None) -> dict:
     """Remove a document (SHA-256 prefix of 8 or more characters, or its file
     name, with or without the folder) from the parts of the project, or from part
     mpn only. Each part remembers it in "exclude", so that sync does not add it
     again (add_part with the document adds it again). The copies are deleted when
-    no part uses them (see _drop_copies). The central store does not change."""
+    no part uses them (see _drop_copies). The central store does not change.
+    store: its manufacturer registry finds the part by any name of its
+    manufacturer."""
     key = document.strip()
     if key.startswith(project.folder + "/"):
         key = key[len(project.folder) + 1:]
-    parts = [_one_part(project, mpn, manufacturer)] if mpn else project.parts
+    parts = [_one_part(project, mpn, manufacturer, store)] if mpn else project.parts
     hits = [(p, d) for p in parts for d in p["documents"]
             if (len(key) >= 8 and d["sha256"].startswith(key.lower())) or d["file"] == _norm_rel(key)]
     if not hits:
@@ -1300,7 +1312,7 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
         linked = store.parts_of_document(doc.id) if doc else []
         assigned = False
         for row in linked:
-            part = project.find(row["mpn"], row["manufacturer"])
+            part = project.find(row["mpn"], row["manufacturer"], store)
             if part is not None and sha not in part.get("exclude", []):
                 if apply:  # the user put the file there: it stays there
                     part["documents"].append({"sha256": sha, "file": rel, "role": row["role"], "pinned": True})

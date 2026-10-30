@@ -226,7 +226,11 @@ def test_save_of_unusual_files(setup):
 def test_manufacturer_selects_the_part(setup):
     project, opa, _ = setup
     with Store() as store:
-        # An MPN of a different manufacturer is a different part.
+        # An MPN of a manufacturer that is not the same in the registry: an error.
+        with pytest.raises(LensError, match="does not know if Burr-Brown is the same manufacturer"):
+            prj.add_part(project, store, "OPA2134", manufacturer="Burr-Brown")
+        # An MPN of a different manufacturer (a second source) is a different part.
+        store.maker_relation("distinct", "Burr-Brown", "TI")
         part = prj.add_part(project, store, "OPA2134", manufacturer="Burr-Brown")
         assert part["manufacturer"] == "Burr-Brown" and part["documents"] == []
         assert len(store.match_parts("OPA2134")) == 2

@@ -37,7 +37,8 @@ DocRef = Annotated[str, Field(description=(
 PartRef = Annotated[str, Field(description="A part number (MPN) or an alias. Case is ignored.")]
 Page = Annotated[int, Field(description="The page number, from 1, as get_index and search_text give it.")]
 Manufacturer = Annotated[str, Field(description=(
-    "The manufacturer, for example TI. Necessary only when two parts have the same MPN."))]
+    "The manufacturer, any of its names (TI or Texas Instruments: the store knows the names of one "
+    "manufacturer). Necessary only when two parts have the same MPN."))]
 Role = Annotated[str, Field(description="The role of the document: datasheet, manual, errata, appnote or other.")]
 ProjectPath = Annotated[str, Field(description=(
     "A folder of the user project (default: the working folder of the server). The project file "
@@ -339,7 +340,7 @@ def add_document(
     state, text = _state(job)
     if state == "running":
         text += "; get_page_map tells when the map is complete"
-    problems = "".join(f"\n{f} (give the manufacturer)" for f in failures)
+    problems = "".join(f"\n{f}" for f in failures)
     return (f"document {doc.sha256[:12]}: {doc.filename}, {doc.pages} pages; index: "
             f"{idx['outline']} outline entries, {idx['captions']} captions; element map: {text}"
             + problems + proposal)
@@ -349,13 +350,13 @@ def _proposal(store: Store, doc) -> str:
     """The part that the PDF proposes, for a document with no part."""
     from .identify import propose
 
-    p = propose(store, doc)
+    p = propose(doc)
     if not p.mpn:
         return "\nno part: the PDF gives no MPN; find it (title, ordering information) and link it"
     covers = (f" The datasheet covers the variants {', '.join(p.variants)}: give one as part and the "
               "others as variants." if p.variants else "")
     return (f"\nno part: a rough proposal from the text of the PDF (it can be wrong): {p.mpn} "
-            f"({p.manufacturer or 'manufacturer unknown'}; from {', '.join(p.sources)}"
+            f"({store.known_maker(p.mpn, p.manufacturer) or 'manufacturer unknown'}; from {', '.join(p.sources)}"
             + (f"; other candidates: {', '.join(p.candidates)}" if p.candidates else "")
             + f").{covers} Read the MPN on page 1 of the original (get_page_image page 1), then link it: "
             f"add_document again with part (and variants). For the user "
@@ -743,8 +744,9 @@ def project_add_part(
             "grade, for example TLV75533PDBVR. A base part MPN only for a short time, when the BOM has no "
             "concrete one yet: the result then gives a note."))],
         manufacturer: Annotated[str, Field(description=(
-            "The manufacturer. Use the spelling of list_parts (for example Texas Instruments, not TI "
-            "when the store has it so): the layout of the project folder can use it as a folder name."))] = "",
+            "The manufacturer, any of its names (the store knows the names of one manufacturer). The "
+            "layout of the project folder can use it as a folder name: use the name that the project has "
+            "already (project_status)."))] = "",
         document: Annotated[str, Field(description=(
             "A document to link first: its reference from project_status, list_documents or "
             "add_document. The link is in the central store (to the base part, if base is given), and "
@@ -773,6 +775,30 @@ def project_add_part(
                       f"{len(part['documents'])} documents"]
                      + [f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}"
                         for d in part["documents"]] + ([note] if note else []))
+
+
+@tool
+def manufacturer_relation(
+        relation: Annotated[str, Field(description=(
+            "alias: one manufacturer with two names (TI and Texas Instruments). distinct: two manufacturers "
+            "that each make a part with the same MPN (a second source). Empty: only show the registry."))] = "",
+        name: Annotated[str, Field(description="A manufacturer name.")] = "",
+        other: Annotated[str, Field(description="The other manufacturer name.")] = ""
+) -> str:
+    """The manufacturer registry of the store: the names of each manufacturer,
+    and the pairs that are two manufacturers. A part keeps the manufacturer
+    name of its datasheet; the registry tells if two names are one
+    manufacturer. When a tool reports that the registry does not know if two
+    names are the same manufacturer, ask the user which relation is correct,
+    then record it here and do the step again. Do not record a relation that the
+    user did not confirm. Parts with the same MPN that become one manufacturer
+    merge. Gives the merges, or the registry and the pairs of names that are
+    probably one manufacturer (give them to the user to decide)."""
+    with Store() as store:
+        if not relation:
+            return "\n".join(store.maker_listing())
+        merged = store.maker_relation(relation, name, other)
+    return "\n".join([f"recorded: {relation} {name!r} {other!r}"] + [f"merged: {m}" for m in merged])
 
 
 @tool
@@ -830,7 +856,8 @@ def project_availability(path: ProjectPath = "") -> str:
     from .distributors import availability
     from .project import load
 
-    return "\n".join(availability(load(path or None)))
+    with Store() as store:
+        return "\n".join(availability(load(path or None), store))
 
 
 @tool
@@ -961,9 +988,9 @@ def project_remove_part(
     files."""
     from .project import load, remove_part
 
-    with _add_lock:
+    with _add_lock, Store() as store:
         project = load(path or None)
-        result = remove_part(project, mpn, manufacturer, delete_pinned, not dry_run)
+        result = remove_part(project, mpn, manufacturer, delete_pinned, not dry_run, store)
     return _removal(result, project.folder, dry_run, f"part {result['part']}")
 
 
@@ -983,12 +1010,11 @@ def project_remove_document(
     no part uses it. The central store does not change."""
     from .project import load, remove_document
 
-    with _add_lock:
+    with _add_lock, Store() as store:
         if document.strip().isdigit() and len(document.strip()) < 8:  # a document ID
-            with Store() as store:
-                document = _doc(store, document.strip()).sha256
+            document = _doc(store, document.strip()).sha256
         project = load(path or None)
-        result = remove_document(project, document, mpn, manufacturer, delete_pinned, not dry_run)
+        result = remove_document(project, document, mpn, manufacturer, delete_pinned, not dry_run, store)
     return _removal(result, project.folder, dry_run,
                     f"document {result['document']} from {', '.join(result['parts'])}")
 

@@ -37,6 +37,10 @@ shared key, and each person saves a personal key on each machine.
 2. Ask for a key for the Search API. The key is free.
 3. Wait until Mouser approves the key. Before the approval, the API gives an error.
 
+> CAUTION: Use the key of the **Search API**, not the key of the Cart API (the
+> Order API). The API Hub gives a different key for each API. With the Cart key,
+> Mouser answers `Invalid unique identifier`, as for a key that is not correct.
+
 ### Save a key
 
 ```sh
@@ -126,9 +130,17 @@ part with its lifecycle state and its stock. It gives a `WARNING` for a part tha
 - Is not orderable (obsolete or discontinued), with the replacement.
 - The distributor does not have (a base part, or a wrong MPN).
 - Has no stock, with the availability and the lead time.
+- Has no offer from the manufacturer of the part, when the MPN has offers of two or
+  more manufacturers: the line then gives the data of a different manufacturer.
 
 One MPN can have more offers (for example cut tape and reel). The part is orderable
 when one offer is orderable, and its stock is the sum of the offers.
+
+Two manufacturers can make a part with the same MPN (a second source, for example
+`LM358DR` of TI and ROHM). The tool then uses only the offers of the manufacturer of
+the project part. It compares the names through the manufacturer registry (see
+`datasheet-lens maker` in [cli.md](cli.md)). Each distributor writes the names in its
+own form. A distributor name does not change the registry.
 
 When the API cannot answer (no connection, rate limit, server error), the tool stops
 and lists the parts that it did not check. The tool keeps each answer for one hour,
@@ -153,9 +165,13 @@ The MCP server cannot ask for a key. The agent gives the note to the user. With 
 key for any distributor, `find` and `search_distributors` give the search links of
 `part_links` in place of the data.
 
-When Mouser does not accept the key (the key is not correct, or Mouser did not
-approve it yet), the error tells the user to examine the key at the API Hub and save
-it again.
+When Mouser does not accept the key (`Invalid unique identifier`), the error tells
+the user to examine the key at the API Hub and save it again. There are three
+frequent causes:
+
+- The key is the key of the Cart API, not of the Search API.
+- Mouser did not approve the key yet.
+- The key is not correct (for example, a part of it is missing).
 
 ## Search links
 

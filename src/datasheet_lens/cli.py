@@ -65,11 +65,11 @@ def _ask_part(store: Store, doc, args: argparse.Namespace) -> tuple[str, str, li
                 print(f"  {answer} is not one of them: give it with --part")
             return "", "", []
         return row["mpn"], row["manufacturer"], []
-    p = propose(store, doc)
+    p = propose(doc)
     if not p.mpn:
         print("part: no MPN found in the PDF; give it with --part")
         return "", "", []
-    manufacturer = (args.manufacturer or "").strip() or p.manufacturer
+    manufacturer = (args.manufacturer or "").strip() or store.known_maker(p.mpn, p.manufacturer)
     print(f"part: {p.mpn} ({manufacturer or 'manufacturer unknown'})\n  from: {', '.join(p.sources)}"
           + (f"; other candidates: {', '.join(p.candidates)}" if p.candidates else ""))
     if p.variants:
@@ -89,7 +89,8 @@ def _ask_part(store: Store, doc, args: argparse.Namespace) -> tuple[str, str, li
     chosen = next((v for v in p.variants if v.lower() == answer.lower()), "")
     if chosen:  # a variant of this datasheet: the same manufacturer
         return chosen, manufacturer, p.variants
-    return answer, _input(f"  manufacturer [{manufacturer}]: ") or manufacturer, []
+    default = (args.manufacturer or "").strip() or store.known_maker(answer, p.manufacturer)
+    return answer, _input(f"  manufacturer [{default}]: ") or default, []
 
 
 def cmd_add(args: argparse.Namespace) -> int:
@@ -112,7 +113,7 @@ def cmd_add(args: argparse.Namespace) -> int:
         if mpn:
             part_id, failures = store.link_parts(doc.id, mpn, variants, manufacturer, args.role, category)
             for text in failures:
-                print(f"{text} (give --manufacturer)", file=sys.stderr)
+                print(text, file=sys.stderr)
             if part_id is None:
                 mpn = ""
             else:
@@ -458,12 +459,15 @@ def cmd_rm(args: argparse.Namespace) -> int:
         raise LensError("give a part (MPN) or a document (-d)")
     project = load(args.path)
     apply = not args.dry_run
+    with Store() as store:
+        if args.document:
+            result = remove_document(project, _document_key(args.document), args.mpn or "",
+                                     args.manufacturer or "", args.pinned, apply, store)
+        else:
+            result = remove_part(project, args.mpn, args.manufacturer or "", args.pinned, apply, store)
     if args.document:
-        result = remove_document(project, _document_key(args.document), args.mpn or "", args.manufacturer or "",
-                                 args.pinned, apply)
         what = f"document {result['document']} from {', '.join(result['parts'])}"
     else:
-        result = remove_part(project, args.mpn, args.manufacturer or "", args.pinned, apply)
         what = f"part {result['part']}"
     prefix = "would remove" if args.dry_run else "removed"
     print(f"{prefix}: {what}")
@@ -563,7 +567,21 @@ def cmd_stock(args: argparse.Namespace) -> int:
     from .distributors import availability
     from .project import load
 
-    print("\n".join(availability(load(args.path))))
+    with Store() as store:
+        print("\n".join(availability(load(args.path), store)))
+    return 0
+
+
+def cmd_maker(args: argparse.Namespace) -> int:
+    """The command maker: show the manufacturer registry, or record a relation
+    of two manufacturer names."""
+    with Store() as store:
+        if not args.relation:
+            print("\n".join(store.maker_listing()))
+            return 0
+        for line in store.maker_relation(args.relation, args.name, args.other):
+            print(f"merged: {line}")
+        print(f"recorded: {args.relation} {args.name!r} {args.other!r}")
     return 0
 
 
@@ -774,6 +792,17 @@ def build_parser() -> argparse.ArgumentParser:
     ky.add_argument("name", nargs="?", metavar="NAME", help="the distributor: mouser. Empty: show the keys")
     ky.add_argument("--delete", action="store_true", help="remove the saved key")
     ky.set_defaults(func=cmd_key)
+    mk = sub.add_parser("maker", help="show the manufacturer registry, or record a relation of two manufacturer "
+                                      "names")
+    mk_sub = mk.add_subparsers(dest="relation")
+    for relation, text, name, other in (
+            ("alias", "one manufacturer with two names, for example TI and \"Texas Instruments\"", "NAME", "OTHER"),
+            ("distinct", "two manufacturers: each makes a part with the same MPN (a second source)", "NAME",
+             "OTHER")):
+        rel = mk_sub.add_parser(relation, help=text)
+        rel.add_argument("name", metavar=name)
+        rel.add_argument("other", metavar=other)
+    mk.set_defaults(func=cmd_maker)
     sk = sub.add_parser("stock", help="show the lifecycle state and the stock of each project part")
     sk.set_defaults(func=cmd_stock)
     ls = sub.add_parser("ls", help="show the parts and documents of the project (project status)")

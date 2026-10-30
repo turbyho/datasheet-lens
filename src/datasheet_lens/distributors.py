@@ -11,6 +11,9 @@ with the MPN; None gives up to 50 parts whose MPN starts with it (the concrete
 MPNs of a base part). The terms of Mouser ask to name Mouser as the source of
 its data, and not to mix it with other data with no distinction: each result
 gives its source.
+
+Each distributor has its own manufacturer names. A distributor name does not
+change the manufacturer registry (makers.py): only the user changes it.
 """
 
 from __future__ import annotations
@@ -23,12 +26,14 @@ import urllib.request
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
+from . import makers
 from .errors import LensError
 from .keys import KEYS, get_key
 
 MOUSER_ENV = KEYS["mouser"]
 # The distributors that datasheet-lens can ask: name -> (label, where the user gets a key).
-SUPPORTED = {"mouser": ("Mouser", "https://www.mouser.com/api-hub/ (Search API, free, with a Mouser account)")}
+SUPPORTED = {"mouser": ("Mouser", "https://www.mouser.com/api-hub/ (the key of the Search API, not of the Cart "
+                                   "API; free, with a Mouser account)")}
 PLANNED = ("digikey", "farnell", "tme")  # not supported yet
 DEFAULT = ["mouser"]
 MOUSER_URL = "https://api.mouser.com/api/v1/search/partnumber?apiKey={key}"
@@ -204,8 +209,9 @@ def mouser_search(mpn: str, exact: bool = True, key: str = "") -> list[Offer]:
     if errors:
         text = "; ".join(errors).rstrip(".")
         if "unique identifier" in text.lower():  # the answer of Mouser for a wrong key or a key not approved yet
-            text += (". The API key is not valid, or Mouser has not approved it yet. Tell the user: check the "
-                     "key at https://www.mouser.com/api-hub/, then save it again with \"datasheet-lens key mouser\"")
+            text += (". The API key is not valid: it is the key of the Cart API (not of the Search API), Mouser "
+                     "has not approved it yet, or it is not correct. Tell the user: check the Search API key at "
+                     "https://www.mouser.com/api-hub/, then save it again with \"datasheet-lens key mouser\"")
         raise LensError(f"Mouser API: {text}")
     parts = (data.get("SearchResults") or {}).get("Parts") or []
     offers = [_mouser_offer(p) for p in parts if isinstance(p, dict) and p.get("ManufacturerPartNumber")]
@@ -250,8 +256,8 @@ def format_offer(o: Offer) -> str:
     package and datasheet URL."""
     prices = ", ".join(f"{q}: {p}" for q, p in o.prices[:3])
     warn = not_orderable(o)
-    parts = [f"{o.mpn} ({o.manufacturer})", f"state: {o.lifecycle or 'unknown'}" + (f" [NOT ORDERABLE: {warn}]"
-                                                                                    if warn else ""),
+    parts = [f"{o.mpn} ({o.manufacturer})",
+             f"state: {o.lifecycle or 'unknown'}" + (f" [NOT ORDERABLE: {warn}]" if warn else ""),
              f"stock: {o.stock if o.stock is not None else o.availability or 'unknown'}"]
     if o.lead_time:
         parts.append(f"lead time {o.lead_time}")
@@ -264,11 +270,25 @@ def format_offer(o: Offer) -> str:
     return "; ".join(parts)
 
 
-def availability(project) -> list[str]:
+def _of_maker(offers: list[Offer], manufacturer: str, store=None) -> tuple[list[Offer], bool]:
+    """The offers of the manufacturer of the part and True. Only an MPN with
+    offers of two or more manufacturers (a second source) needs the comparison
+    of the names (see makers.same): a distributor writes the names in its own
+    form (Mouser: "Analog Devices / Maxim Integrated"). With no offer of the
+    manufacturer: all offers and False."""
+    if len({o.manufacturer for o in offers}) <= 1:
+        return offers, True
+    db = store.db if store is not None else None
+    own = [o for o in offers if manufacturer and makers.same(db, o.manufacturer, manufacturer)]
+    return (own, True) if own else (offers, False)
+
+
+def availability(project, store=None) -> list[str]:
     """The lifecycle state and the stock of each project part, as lines, with a
     WARNING for a part that is not orderable, that the distributor does not have,
     or that has no stock. An enabled distributor with no key gives a note for
-    the user."""
+    the user. store: its manufacturer registry selects the offers of the
+    manufacturer of the part."""
     keys, notes = keys_of(project)
     if "mouser" not in keys:
         return notes or ["No enabled distributor: \"datasheet-lens dist\" shows the settings."]
@@ -286,6 +306,7 @@ def availability(project) -> list[str]:
         if not offers:
             lines.append(f"{part['mpn']}: WARNING: Mouser does not have this MPN (a base part, or a wrong MPN?)")
             continue
+        offers, own = _of_maker(offers, part.get("manufacturer", ""), store)
         # One MPN can have more offers (cut tape and reel): the part is orderable
         # when one offer is, and its stock is the sum.
         orderable = [o for o in offers if not not_orderable(o)]
@@ -298,6 +319,9 @@ def availability(project) -> list[str]:
         elif not stock:
             state += (". WARNING: no stock" + (f" ({o.availability})" if o.availability else "")
                       + (f", lead time {o.lead_time}" if o.lead_time else ""))
+        if part.get("manufacturer") and not own:
+            state += (f". WARNING: Mouser has no offer from {part['manufacturer']}: the data is of "
+                      + ", ".join(sorted({x.manufacturer for x in offers})))
         lines.append(state)
     return lines + notes
 

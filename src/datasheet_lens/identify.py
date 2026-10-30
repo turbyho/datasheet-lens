@@ -24,6 +24,7 @@ from pathlib import Path
 import pypdfium2 as pdfium
 
 from .errors import LensError
+from .makers import MANUFACTURERS
 from .pdflock import pdfium_locked
 from .store import Document, Store
 
@@ -46,41 +47,6 @@ NOT_MPN_RE = re.compile(r"(?i)^(rev[a-z0-9.]*|v\d+(\.\d+)+|s[lbncwp][a-z]{2}\d{3
 # after a hyphen: DS1307 is an MPN).
 DOC_WORD_RE = re.compile(r"(?i)(^|-)(data|sheet|datasheet|page|manual|errata|rev[\d.]*|ds)(-|$)|-ds\d+(-|$)")
 
-# Canonical name: names and abbreviations in a PDF or a file name (upper case).
-MANUFACTURERS = {
-    "Texas Instruments": ("TEXAS INSTRUMENTS", "TEXAS_INSTRUMENTS", "TI.COM"),
-    "Analog Devices": ("ANALOG DEVICES", "ANALOG.COM", "ANALOG_DEVICES"),
-    "Maxim Integrated": ("MAXIM INTEGRATED", "MAXIM_INTEGRATED"),
-    "STMicroelectronics": ("STMICROELECTRONICS", "ST.COM"),
-    "Microchip": ("MICROCHIP TECHNOLOGY", "MICROCHIP"),
-    "NXP": ("NXP SEMICONDUCTORS", "NXP.COM", "NXP"),
-    "Nordic Semiconductor": ("NORDIC SEMICONDUCTOR", "NORDICSEMI"),
-    "Infineon": ("INFINEON TECHNOLOGIES", "INFINEON"),
-    "onsemi": ("ON SEMICONDUCTOR", "ONSEMI"),
-    "Renesas": ("RENESAS ELECTRONICS", "RENESAS"),
-    "Micro Crystal": ("MICRO CRYSTAL", "MICROCRYSTAL"),
-    "Espressif": ("ESPRESSIF SYSTEMS", "ESPRESSIF"),
-    "ROHM": ("ROHM SEMICONDUCTOR", "ROHM CO"),
-    "Vishay": ("VISHAY INTERTECHNOLOGY", "VISHAY"),
-    "Toshiba": ("TOSHIBA ELECTRONIC", "TOSHIBA"),
-    "Diodes Incorporated": ("DIODES INCORPORATED", "DIODES INC"),
-    "Nexperia": ("NEXPERIA",),
-    "Silicon Labs": ("SILICON LABORATORIES", "SILICON LABS", "SILABS"),
-    "Murata": ("MURATA MANUFACTURING", "MURATA"),
-    "TDK": ("TDK CORPORATION", "TDK-LAMBDA"),
-    "Littelfuse": ("LITTELFUSE",),
-    "Monolithic Power Systems": ("MONOLITHIC POWER", "MPSIC.COM"),
-    "Richtek": ("RICHTEK",),
-    "Bosch Sensortec": ("BOSCH SENSORTEC",),
-    "Sensirion": ("SENSIRION",),
-    "u-blox": ("U-BLOX",),
-    "Würth Elektronik": ("WÜRTH ELEKTRONIK", "WURTH ELEKTRONIK", "WE-ONLINE"),
-    "GigaDevice": ("GIGADEVICE",),
-    "Macronix": ("MACRONIX",),
-    "Coto Technology": ("COTO TECHNOLOGY", "COTOTECHNOLOGY", "COTORELAY"),
-    "ECS": ("ECS INC", "ECSXTAL"),
-    "1GLOBAL": ("1GLOBAL",),
-}
 # The manufacturer of an MPN prefix, when the text does not name it (the name
 # is only in the logo): nRF52805 is from Nordic Semiconductor.
 MPN_PREFIXES = {
@@ -124,30 +90,21 @@ def _is_mpn(token: str) -> bool:
             and not NOT_MPN_RE.match(token) and not DOC_WORD_RE.search(token))
 
 
-def _manufacturer(store: Store, texts: list[str], mpn: str = "") -> str:
+def _manufacturer(texts: list[str], mpn: str = "") -> str:
     """The manufacturer that the texts name most often, else the manufacturer of
-    the prefix of mpn. The spelling of a part in the store wins (for example "TI"
-    for Texas Instruments)."""
+    the prefix of mpn. Any spelling is good for the store: its manufacturer
+    registry knows the names of one manufacturer (makers.py)."""
     counts: dict[str, int] = {}
     for text in texts:
         for alias in ALIAS_RE.findall(text.upper().replace("_", " ")):
             counts[OWNER[alias]] = counts.get(OWNER[alias], 0) + 1
     if counts:
-        name = max(counts, key=counts.get)
-    else:
-        name = next((m for p, m in MPN_PREFIXES.items() if mpn.upper().startswith(p)), "")
-        if not name:
-            return ""
-    known = {r[0] for r in store.db.execute("SELECT DISTINCT manufacturer FROM parts")}
-    for spelling in known:
-        if spelling and (spelling.upper() in MANUFACTURERS.get(name, ()) or _norm(spelling) == _norm(name)
-                         or (name == "Texas Instruments" and spelling.upper() == "TI")):
-            return spelling
-    return name
+        return max(counts, key=counts.get)
+    return next((m for p, m in MPN_PREFIXES.items() if mpn.upper().startswith(p)), "")
 
 
 @pdfium_locked
-def propose(store: Store, doc: Document) -> Proposal:
+def propose(doc: Document) -> Proposal:
     """Propose the part of a document from its PDF (see the module docstring). It is
     only a proposal: the user or the model confirms it."""
     pdf = pdfium.PdfDocument(str(doc.path))
@@ -211,8 +168,8 @@ def propose(store: Store, doc: Document) -> Proposal:
     variants = [spelling[k] for k in sorted(
         k for k in order if k == best or (best and _variant(spelling[best], spelling[k], found[k], k == stem_norm)))]
     return Proposal(mpn=spelling.get(best, ""),
-                    manufacturer=_manufacturer(store, [title, page1[:3000], stem, meta.get("Author", ""),
-                                                       meta.get("Creator", "")], spelling.get(best, "")),
+                    manufacturer=_manufacturer([title, page1[:3000], stem, meta.get("Author", ""),
+                                                meta.get("Creator", "")], spelling.get(best, "")),
                     sources=found.get(best, []), candidates=[spelling[k] for k in ranked[1:5]],
                     variants=variants if len(variants) > 1 else [])
 
@@ -318,7 +275,7 @@ def base_hint(store: Store, part_id: int, mpn: str, concrete: bool = False) -> t
     family, codes = _family_codes(store, docs, key)
     if family:
         return True, codes
-    proposed = {_norm(propose(store, store.document(d["id"])).mpn) for d in docs}
+    proposed = {_norm(propose(store.document(d["id"])).mpn) for d in docs}
     if _norm(key) not in proposed:
         return False, []
     rows = store.db.execute(
@@ -374,7 +331,7 @@ def ordering_codes(store: Store, doc_id: int) -> list[tuple[str, int, str, bool]
     store links to it, or else the proposal from the PDF."""
     keys = sorted({p["mpn"] for p in store.parts_of_document(doc_id) if p["base_id"] is None}, key=len)
     if not keys:
-        proposal = propose(store, store.document(doc_id)).mpn
+        proposal = propose(store.document(doc_id)).mpn
         keys = [proposal] if proposal else []
     order_rx = re.compile(ORDER_WORDS, re.I)
     variants = {k.upper() for k in keys}  # TL071A of a datasheet of TL071 is a variant, not a code

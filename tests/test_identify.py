@@ -32,32 +32,34 @@ def test_manufacturer_from_the_mpn_prefix(store_home):
     manufacturer name is not an MPN."""
     from datasheet_lens.identify import _manufacturer
     with Store() as store:
-        assert _manufacturer(store, ["Product Specification v1.4"], "nRF52805") == "Nordic Semiconductor"
-        assert _manufacturer(store, ["Product Specification"], "ABC123") == ""
-        assert _manufacturer(store, ["www.cototechnology.com"], "RR123") == "Coto Technology"
+        assert _manufacturer(["Product Specification v1.4"], "nRF52805") == "Nordic Semiconductor"
+        assert _manufacturer(["Product Specification"], "ABC123") == ""
+        assert _manufacturer(["www.cototechnology.com"], "RR123") == "Coto Technology"
 
 
 def test_manufacturer_is_not_an_mpn(store_home, text_pdf):
     path = text_pdf("sim_s_io3_mff2_2.pdf", [[(50, 60, 14, "1GLOBAL FOR THINGS SIM DATASHEET")]])
     with Store() as store:
-        p = propose(store, store.add_document(path))
+        p = propose(store.add_document(path))
     assert (p.mpn, p.manufacturer) == ("", "1GLOBAL")
 
 
 def test_proposal(store_home, text_pdf):
     path = text_pdf("SN74LV1T34DBVRG4_Texas_Instruments.pdf", [PAGE])
     with Store() as store:
-        p = propose(store, store.add_document(path))
+        p = propose(store.add_document(path))
     assert (p.mpn, p.manufacturer) == ("SN74LV1T34", "Texas Instruments")
     assert "file name" in p.sources and "page 1" in p.sources
     assert p.candidates[0] == "SN74LV1T34DBVRG4"
 
 
-def test_proposal_uses_the_store_spelling(store_home, text_pdf):
+def test_proposal_gives_the_name_of_the_pdf(store_home, text_pdf):
+    """The proposal does not take the name of the store: the manufacturer
+    registry of the store knows the names of one manufacturer."""
     with Store() as store:
         store.add_part("OPA2134", "TI")
-        p = propose(store, store.add_document(text_pdf("x.pdf", [PAGE])))
-    assert p.manufacturer == "TI"
+        p = propose(store.add_document(text_pdf("x.pdf", [PAGE])))
+    assert p.manufacturer == "Texas Instruments"
 
 
 def test_add_in_a_project(store_home, text_pdf, capsys, monkeypatch, tmp_path):
@@ -110,13 +112,14 @@ def test_review_cases(store_home, text_pdf, capsys):
     assert TOKEN_RE.findall("AD8605/AD8606/AD8608") == ["AD8605", "AD8606", "AD8608"]
     with Store() as store:
         text = "Texas Instruments ... compatible with NXP Semiconductors I2C ... TEXAS INSTRUMENTS"
-        assert _manufacturer(store, [text]) == "Texas Instruments"
-        p = propose(store, store.add_document(text_pdf("nrf54l15.pdf", [[(50, 60, 14, "nRF54L15 Product")]])))
+        assert _manufacturer([text]) == "Texas Instruments"
+        p = propose(store.add_document(text_pdf("nrf54l15.pdf", [[(50, 60, 14, "nRF54L15 Product")]])))
     assert p.mpn == "nRF54L15" and "NRF54L15" not in p.candidates
 
     # An MPN of two manufacturers with no manufacturer: the document is in the
     # store with its index, not linked, and the command says why.
     with Store() as store:
+        store.maker_relation("distinct", "TI", "onsemi")
         store.add_part("LM358", "TI")
         store.add_part("LM358", "onsemi")
     assert main(["add", str(text_pdf("lm358.pdf", [[(50, 60, 12, "LM358 Dual Op Amp")]])), "--part", "LM358"]) == 0
@@ -134,7 +137,7 @@ def test_variants(store_home, text_pdf, capsys, monkeypatch, tmp_path):
             (50, 760, 8, "TEXAS INSTRUMENTS")]
     path = text_pdf("adc34j24.pdf", [page])
     with Store() as store:
-        p = propose(store, store.add_document(path))
+        p = propose(store.add_document(path))
     assert p.mpn == "ADC34J24" and p.variants == ["ADC34J22", "ADC34J23", "ADC34J24", "ADC34J25"]
 
     project = prj.init_project(tmp_path / "board")
@@ -157,7 +160,7 @@ def test_variant_rules(store_home, text_pdf, capsys, monkeypatch):
         assert not _variant("LM358", other, ["page 1"], file_name=True)
     assert not _variant("LM20144", "LM20144Q", ["page 1"])
     with Store() as store:
-        p = propose(store, store.add_document(text_pdf("lm358dr.pdf", [[(50, 60, 14, "LM358 Dual Op Amp")]])))
+        p = propose(store.add_document(text_pdf("lm358dr.pdf", [[(50, 60, 14, "LM358 Dual Op Amp")]])))
     assert p.mpn == "LM358" and p.variants == []
 
     # A document that the store links to more variants: no silent choice.
@@ -166,6 +169,7 @@ def test_variant_rules(store_home, text_pdf, capsys, monkeypatch):
         doc = store.add_document(adc)
         assert store.link_parts(doc.id, "ADC34J24", ["ADC34J22"], "TI") == (store.find_part("ADC34J24"), [])
         # The chosen part fails: no variant is linked.
+        store.maker_relation("distinct", "A", "B")
         store.add_part("X1000", "A")
         store.add_part("X1000", "B")
         part_id, failures = store.link_parts(doc.id, "X1000", ["X1001"])
@@ -182,6 +186,7 @@ def test_mcp_variant_failures(store_home, text_pdf, monkeypatch):
 
     monkeypatch.setattr("datasheet_lens.setup.element_backend", lambda: "text")
     with Store() as store:
+        store.maker_relation("distinct", "TI", "ADI")
         store.add_part("ADC34J23", "TI")
         store.add_part("ADC34J23", "ADI")
     path = text_pdf("adc34j24.pdf", [[(50, 60, 14, "ADC34J24")]])
@@ -220,6 +225,6 @@ def test_document_names_are_not_mpns(store_home, text_pdf):
                 ("MCP1827-Data-Sheet-DS20002001.pdf", "MCP1827/S 1.5A Low Voltage LDO Regulator", "DATA"),
                 ("mcp6001.pdf", "MCP6001/1R/1U/2/4 1 MHz Op Amp", "MCP60011R"),
                 ("ads1113.pdf", "ADS1113/4/5 16-Bit ADC", "ADS11134")):
-            p = propose(store, store.add_document(text_pdf(name, [[(50, 60, 14, heading)]])))
+            p = propose(store.add_document(text_pdf(name, [[(50, 60, 14, heading)]])))
             assert not any(wrong in c for c in [p.mpn] + p.candidates + p.variants), (name, p)
     assert p.mpn == "ADS1113"

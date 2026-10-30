@@ -12,24 +12,20 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import itertools
 import shutil
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import makers
 from .config import store_home
 from .errors import LensError
 from .pdflock import PDFIUM
 from .fileutil import temp_path
 
-SCHEMA_VERSION = 2
-# Changes of a store of an older version, in sequence: {version: SQL}.
-MIGRATIONS = {
-    # A concrete orderable part (TLV75533PDBVR) refers to the base part of its
-    # datasheet (TLV755P).
-    2: "ALTER TABLE parts ADD COLUMN base_id INTEGER REFERENCES parts(id) ON DELETE SET NULL",
-}
+SCHEMA_VERSION = 2  # the manufacturer registry needs no change: see _update_registry
 # A build records the version of its format (indexer.INDEX_FORMAT,
 # elements.ELEMENTS_FORMAT), not the version of the package. The builds of the
 # development versions recorded the package version 0.1.0.dev0: format 1. No
@@ -54,6 +50,24 @@ CREATE TABLE IF NOT EXISTS part_aliases (
     part_id INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
     alias   TEXT NOT NULL,
     PRIMARY KEY (part_id, alias)
+);
+-- The manufacturer registry (makers.py): the names of each manufacturer, and
+-- the pairs that are two manufacturers.
+CREATE TABLE IF NOT EXISTS manufacturers (
+    id   INTEGER PRIMARY KEY,
+    name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS manufacturer_aliases (
+    key             TEXT PRIMARY KEY,  -- makers.key() of the name
+    manufacturer_id INTEGER NOT NULL REFERENCES manufacturers(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    source          TEXT NOT NULL,     -- builtin or user
+    created         TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS manufacturer_distinct (
+    a INTEGER NOT NULL REFERENCES manufacturers(id) ON DELETE CASCADE,
+    b INTEGER NOT NULL REFERENCES manufacturers(id) ON DELETE CASCADE,
+    PRIMARY KEY (a, b)
 );
 CREATE TABLE IF NOT EXISTS documents (
     id           INTEGER PRIMARY KEY,
@@ -200,6 +214,104 @@ class Document:
     path: Path
 
 
+def _common_document(db: sqlite3.Connection, a: int, b: int) -> bool:
+    """True if the two parts (or their base parts) have a document in common."""
+    return db.execute(
+        "SELECT 1 FROM part_documents x JOIN part_documents y ON y.document_id = x.document_id"
+        " WHERE x.part_id IN (:a, (SELECT base_id FROM parts WHERE id = :a))"
+        " AND y.part_id IN (:b, (SELECT base_id FROM parts WHERE id = :b)) LIMIT 1",
+        {"a": a, "b": b}).fetchone() is not None
+
+
+def _merge_part(db: sqlite3.Connection, keep: int, dup: int) -> None:
+    """Move the document links, the aliases, the concrete parts and the facts of
+    the part dup to the part keep, then delete dup. keep gets the category and
+    the base part of dup when it has none. Two levels only: when keep has a
+    base part, the concrete parts of dup go to that base part."""
+    ids = {"keep": keep, "dup": dup}
+    db.execute("UPDATE parts SET family = (SELECT family FROM parts WHERE id = :dup) WHERE id = :keep AND family = ''",
+               ids)
+    db.execute("UPDATE parts SET base_id = (SELECT base_id FROM parts WHERE id = :dup) WHERE id = :keep"
+               " AND base_id IS NULL AND NOT EXISTS (SELECT 1 FROM parts WHERE base_id IN (:keep, :dup))", ids)
+    db.execute("INSERT OR IGNORE INTO part_documents (part_id, document_id, role)"
+               " SELECT :keep, document_id, role FROM part_documents WHERE part_id = :dup", ids)
+    db.execute("INSERT OR IGNORE INTO part_aliases (part_id, alias)"
+               " SELECT :keep, alias FROM part_aliases WHERE part_id = :dup", ids)
+    db.execute("UPDATE parts SET base_id = coalesce((SELECT base_id FROM parts WHERE id = :keep), :keep)"
+               " WHERE base_id = :dup", ids)
+    db.execute("UPDATE parts SET base_id = NULL WHERE base_id = id")
+    db.execute("UPDATE knowledge SET part_id = :keep WHERE part_id = :dup", ids)
+    db.execute("DELETE FROM parts WHERE id = :dup", ids)
+
+
+def _by_mpn(db: sqlite3.Connection) -> list[list[sqlite3.Row]]:
+    """The parts, in groups of the same MPN (case is ignored), each by ID."""
+    groups: dict[str, list[sqlite3.Row]] = {}
+    for row in db.execute("SELECT id, mpn, manufacturer FROM parts ORDER BY id").fetchall():
+        groups.setdefault(row["mpn"].lower(), []).append(row)
+    return list(groups.values())
+
+
+def merge_duplicates(db: sqlite3.Connection) -> list[str]:
+    """Merge the parts with the same MPN and the same manufacturer in the
+    registry (see makers.same) into the part with the lowest ID. It keeps its
+    manufacturer name. Give one line for each merge. No commit."""
+    merged = []
+    for parts in _by_mpn(db):
+        groups: dict[tuple, list[sqlite3.Row]] = {}
+        for row in parts:
+            groups.setdefault(makers.group(db, row["manufacturer"]), []).append(row)
+        for keep, *dups in groups.values():
+            for dup in dups:
+                _merge_part(db, keep["id"], dup["id"])
+                merged.append(f"{keep['mpn']}: {dup['manufacturer']} into {keep['manufacturer']}")
+    return merged
+
+
+def _update_registry(db: sqlite3.Connection) -> None:
+    """Put the names of makers.MANUFACTURERS into the registry. Then a base part
+    with no manufacturer gets the manufacturer of its concrete parts, and the
+    parts with the same MPN and the same manufacturer merge. The registry does
+    not learn a name from the parts: two parts with one document can be a
+    second source (see alias_candidates). No schema change: an older version
+    of datasheet-lens still opens the store."""
+    makers.seed(db)
+    for base in db.execute("SELECT id, mpn FROM parts WHERE manufacturer = ''"
+                           " AND id IN (SELECT base_id FROM parts)").fetchall():
+        names = [r[0] for r in db.execute("SELECT DISTINCT manufacturer FROM parts WHERE base_id = ?"
+                                          " AND manufacturer != ''", (base["id"],))]
+        if (names and len({makers.group(db, n) for n in names}) == 1 and not db.execute(
+                "SELECT 1 FROM parts WHERE mpn = ? AND manufacturer = ?", (base["mpn"], names[0])).fetchone()):
+            db.execute("UPDATE parts SET manufacturer = ? WHERE id = ?", (names[0], base["id"]))
+    merge_duplicates(db)
+
+
+def alias_candidates(db: sqlite3.Connection) -> list[str]:
+    """The pairs of manufacturer names that are probably one manufacturer: two
+    parts with the same MPN and these names have a document in common, and the
+    registry does not record the two names as one or as two manufacturers. Only
+    the user can tell (a second source can share a datasheet). One line for
+    each pair, with the MPNs."""
+    pairs: dict[tuple[str, str], list[str]] = {}
+    for parts in _by_mpn(db):
+        for a, b in itertools.combinations(parts, 2):
+            x, y = a["manufacturer"], b["manufacturer"]
+            if (x and y and not makers.same(db, x, y) and not makers.distinct(db, x, y)
+                    and _common_document(db, a["id"], b["id"])):
+                pairs.setdefault(tuple(sorted((x, y), key=str.casefold)), []).append(a["mpn"])
+    return [f"{x} and {y}: the parts {', '.join(mpns)} have the same documents. If the two names are one "
+            f"manufacturer: alias \"{x}\" \"{y}\"; if not: distinct \"{x}\" \"{y}\""
+            for (x, y), mpns in pairs.items()]
+
+
+# Changes of a store of an older version, in sequence: {version: SQL}.
+MIGRATIONS = {
+    # A concrete orderable part (TLV75533PDBVR) refers to the base part of its
+    # datasheet (TLV755P).
+    2: "ALTER TABLE parts ADD COLUMN base_id INTEGER REFERENCES parts(id) ON DELETE SET NULL",
+}
+
+
 class Store:
     """The local central store. One instance for each process."""
 
@@ -218,7 +330,8 @@ class Store:
             raise
 
     def _prepare(self) -> None:
-        """Make the schema, or bring a store of an older version up to date."""
+        """Make the schema, or bring a store of an older version up to date. Then
+        bring the manufacturer registry up to date (see _update_registry)."""
         self.db.execute("PRAGMA journal_mode = WAL")
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.executescript(SCHEMA)
@@ -226,28 +339,34 @@ class Store:
         if row is None:
             self.db.execute("INSERT INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
             self.db.commit()
-            return
-        version = int(row["value"])
-        if version > SCHEMA_VERSION:
-            raise RuntimeError(f"store schema version {version} is not supported "
+        elif int(row["value"]) > SCHEMA_VERSION:
+            raise RuntimeError(f"store schema version {row['value']} is not supported "
                                f"(this version of datasheet-lens knows {SCHEMA_VERSION}: install a newer one)")
-        if version == SCHEMA_VERSION:
-            return
-        # A store of an older version. One write transaction (BEGIN IMMEDIATE) for
-        # all changes: a second process that opens the store at the same time
-        # waits, then reads the new version and changes nothing. SQLite can undo
-        # ALTER TABLE in a transaction.
+        elif int(row["value"]) < SCHEMA_VERSION:
+            self._in_transaction(self._migrate)
+        if not makers.seed_current(self.db):
+            self._in_transaction(lambda: makers.seed_current(self.db) or _update_registry(self.db))
+
+    def _in_transaction(self, func) -> None:
+        """Run func in one write transaction (BEGIN IMMEDIATE): a second process
+        that opens the store at the same time waits, then reads the result. func
+        must check the state again. An error undoes all changes (SQLite can also
+        undo ALTER TABLE)."""
         self.db.commit()
         self.db.execute("BEGIN IMMEDIATE")
         try:
-            version = int(self.db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0])
-            for target in range(version + 1, SCHEMA_VERSION + 1):
-                self.db.execute(MIGRATIONS[target])
-                self.db.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(target),))
+            func()
             self.db.execute("COMMIT")
         except BaseException:
             self.db.execute("ROLLBACK")
             raise
+
+    def _migrate(self) -> None:
+        """The changes of MIGRATIONS from the version of the store."""
+        version = int(self.db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0])
+        for target in range(version + 1, SCHEMA_VERSION + 1):
+            self.db.execute(MIGRATIONS[target])
+            self.db.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(target),))
 
     def close(self) -> None:
         """Close the database connection."""
@@ -367,22 +486,77 @@ class Store:
     # Parts
 
     def add_part(self, mpn: str, manufacturer: str = "", family: str = "") -> int:
-        """Give the ID of the part, and make it if necessary. Case is ignored. A part
-        with no manufacturer, or a part that has no manufacturer yet, is the same
-        part when only one part has this MPN."""
+        """Give the ID of the part, and make it if necessary. Case is ignored. The
+        same part:
+        - a part with this MPN and the same manufacturer in the registry (makers.same)
+        - a part with no manufacturer, or a part that has no manufacturer yet, when
+          only one part has this MPN
+        A different manufacturer that the registry records as distinct is a second
+        source: a new part. Else a LensError: the user must record the relation of
+        the two names (maker_relation)."""
+        manufacturer = manufacturer.strip()
         rows = self.db.execute("SELECT id, manufacturer FROM parts WHERE mpn = ?", (mpn,)).fetchall()
         for r in rows:
-            if r["manufacturer"].lower() == manufacturer.lower():
+            if makers.same(self.db, r["manufacturer"], manufacturer):
                 return r["id"]
         if len(rows) == 1 and (not manufacturer or not rows[0]["manufacturer"]):
             if manufacturer:
                 self.db.execute("UPDATE parts SET manufacturer = ? WHERE id = ?", (manufacturer, rows[0]["id"]))
                 self.db.commit()
             return rows[0]["id"]
+        named = [r for r in rows if r["manufacturer"]]
+        if manufacturer and named and not all(makers.distinct(self.db, r["manufacturer"], manufacturer)
+                                              for r in named):
+            raise self._unknown_relation(mpn, manufacturer, named)
         cur = self.db.execute("INSERT INTO parts (mpn, manufacturer, family, created) VALUES (?, ?, ?, ?)",
                               (mpn, manufacturer, family, now()))
         self.db.commit()
         return cur.lastrowid
+
+    @staticmethod
+    def _unknown_relation(mpn: str, manufacturer: str, rows: list[sqlite3.Row]) -> LensError:
+        """The error for a part with the MPN of rows and a manufacturer name that
+        the registry does not relate to their names: it tells how to record it."""
+        known = rows[0]["manufacturer"]
+        return LensError(
+            f"the store has {mpn} from {', '.join(r['manufacturer'] for r in rows)}, and the manufacturer registry "
+            f"does not know if {manufacturer} is the same manufacturer. Ask the user, then record it with the CLI "
+            f"command \"datasheet-lens maker RELATION NAME OTHER\" or the MCP tool manufacturer_relation: alias (one "
+            f"manufacturer, two names: alias \"{manufacturer}\" \"{known}\") or distinct (two "
+            f"manufacturers, a second source: distinct \"{manufacturer}\" \"{known}\"). Then do the step again.")
+
+    def maker_relation(self, relation: str, name: str, other: str) -> list[str]:
+        """Record a relation of two manufacturer names (makers.RELATIONS). Parts
+        with the same MPN that are now of one manufacturer merge. Give one line
+        for each merge."""
+        try:
+            makers.relate(self.db, relation, name, other)
+            merged = merge_duplicates(self.db) if relation != "distinct" else []
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
+        return merged
+
+    def same_maker(self, a: str, b: str) -> bool:
+        """True if the two names are the same manufacturer (makers.same)."""
+        return makers.same(self.db, a, b)
+
+    def known_maker(self, mpn: str, proposed: str) -> str:
+        """The manufacturer of the part with this MPN (when the store has one
+        part with a manufacturer, and the registry does not record the two names
+        as two manufacturers), else proposed. A proposal from a PDF is only a
+        guess: a different name of the same manufacturer must not stop a link."""
+        rows = [r for r in self.match_parts(mpn) if r["manufacturer"]]
+        if len(rows) == 1 and not (proposed and makers.distinct(self.db, rows[0]["manufacturer"], proposed)):
+            return rows[0]["manufacturer"]
+        return proposed
+
+    def maker_listing(self) -> list[str]:
+        """The manufacturer registry (makers.listing), then the pairs of names
+        that are probably one manufacturer (alias_candidates)."""
+        candidates = alias_candidates(self.db)
+        return makers.listing(self.db) + (["", "To check (the user decides):"] + candidates if candidates else [])
 
     def link(self, part_id: int, document_id: int, role: str = "datasheet") -> None:
         """Link a document to a part with a role. A second link changes the role."""
@@ -405,13 +579,13 @@ class Store:
             "SELECT id, mpn, manufacturer FROM parts WHERE mpn = ? COLLATE NOCASE OR id IN"
             " (SELECT part_id FROM part_aliases WHERE alias = ? COLLATE NOCASE)", (mpn, mpn)).fetchall()
         if manufacturer:
-            same = [r for r in rows if r["manufacturer"].lower() == manufacturer.lower()]
+            same = [r for r in rows if makers.same(self.db, r["manufacturer"], manufacturer)]
             rows = same or [r for r in rows if not r["manufacturer"]]
         return rows
 
     def find_part(self, mpn: str, manufacturer: str = "", create: bool = False) -> int:
         """The ID of the part (see match_parts). If no part matches and create is
-        true, make the part."""
+        true, make the part (see add_part)."""
         rows = self.match_parts(mpn, manufacturer)
         if not rows and create:
             return self.add_part(mpn, manufacturer)
@@ -419,7 +593,7 @@ class Store:
             raise LensError(f"part not found: {mpn}" + (f" ({manufacturer})" if manufacturer else ""))
         if len(rows) > 1:
             names = ", ".join(f"{r['mpn']} ({r['manufacturer'] or 'manufacturer unknown'})" for r in rows)
-            raise LensError(f"part {mpn} is not unique: {names}")
+            raise LensError(f"part {mpn} is not unique: {names}; give the manufacturer")
         return rows[0]["id"]
 
     def link_parts(self, doc_id: int, mpn: str, variants: list[str], manufacturer: str = "",
@@ -482,11 +656,15 @@ class Store:
         if self.db.execute("SELECT 1 FROM parts WHERE base_id = ? LIMIT 1", (part_id,)).fetchone():
             raise LensError(f"{self.part(part_id)['mpn']} is the base part of other parts: it cannot get a base part")
         self.db.execute("UPDATE parts SET base_id = ? WHERE id = ?", (base_id, part_id))
-        # A concrete part with no manufacturer gets the one of its base part (not
-        # when a part with this MPN and manufacturer is there: the pair is unique).
+        # A concrete part with no manufacturer gets the one of its base part, and
+        # a base part with no manufacturer the one of the concrete part (not when
+        # a part with this MPN and manufacturer is there: the pair is unique).
         with contextlib.suppress(sqlite3.IntegrityError):
             self.db.execute("UPDATE parts SET manufacturer = ? WHERE id = ? AND manufacturer = ''",
                             (base["manufacturer"], part_id))
+        with contextlib.suppress(sqlite3.IntegrityError):
+            self.db.execute("UPDATE parts SET manufacturer = (SELECT manufacturer FROM parts WHERE id = ?)"
+                            " WHERE id = ? AND manufacturer = ''", (part_id, base_id))
         self.db.commit()
 
     def base_of(self, part_id: int) -> sqlite3.Row | None:
