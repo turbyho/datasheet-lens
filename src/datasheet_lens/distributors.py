@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -142,6 +143,30 @@ def _attribute(part: dict, *names: str) -> str:
     return ""
 
 
+# Mouser gives the lead time in the language of the account ("182 Dny", "6 Weeks").
+LEAD_UNITS = {"days": ("day", "days", "den", "dny", "dnů", "tag", "tage", "jour", "jours", "día", "días"),
+              "weeks": ("week", "weeks", "týden", "týdny", "týdnů", "woche", "wochen", "semaine", "semaines",
+                        "semana", "semanas")}
+
+
+def _lead_time(text: str) -> str:
+    """The lead time in English ("182 days"), or the text as it is for an
+    unknown unit. 0 or no number: "" (Mouser gives 0 when it has no lead time)."""
+    match = re.fullmatch(r"(\d+)\s*(\w*)", text.strip())
+    if not match:
+        return text.strip()
+    if int(match[1]) == 0:
+        return ""
+    unit = next((u for u, words in LEAD_UNITS.items() if match[2].lower() in words), "")
+    return f"{int(match[1])} {unit}" if unit else text.strip()
+
+
+def restricted(offer: Offer) -> bool:
+    """True if the distributor does not sell the part now (Mouser: "Restricted
+    Availability"). This is not a lifecycle state of the manufacturer."""
+    return "restricted" in offer.lifecycle.lower()
+
+
 def _mouser_offer(part: dict) -> Offer:
     return Offer(
         source="Mouser", mpn=str(part.get("ManufacturerPartNumber", "")).strip(),
@@ -151,7 +176,7 @@ def _mouser_offer(part: dict) -> Offer:
         discontinued=str(part.get("IsDiscontinued", "")).lower() == "true",
         replacement=str(part.get("SuggestedReplacement") or "").strip(),
         stock=_int(part.get("AvailabilityInStock")), availability=str(part.get("Availability") or "").strip(),
-        lead_time=str(part.get("LeadTime") or "").strip(), minimum=_int(part.get("Min")),
+        lead_time=_lead_time(str(part.get("LeadTime") or "")), minimum=_int(part.get("Min")),
         multiple=_int(part.get("Mult")),
         prices=[(_int(p.get("Quantity")) or 0, f"{p.get('Price', '')} {p.get('Currency', '')}".strip())
                 for p in part.get("PriceBreaks") or []],
@@ -252,13 +277,16 @@ def not_orderable(offer: Offer) -> str:
 
 
 def format_offer(o: Offer) -> str:
-    """One line for an offer: MPN, manufacturer, lifecycle, stock, prices,
-    package and datasheet URL."""
+    """One line for an offer: MPN, manufacturer, lifecycle (Mouser gives it only
+    for some parts), stock, prices, package and datasheet URL."""
     prices = ", ".join(f"{q}: {p}" for q, p in o.prices[:3])
     warn = not_orderable(o)
-    parts = [f"{o.mpn} ({o.manufacturer})",
-             f"state: {o.lifecycle or 'unknown'}" + (f" [NOT ORDERABLE: {warn}]" if warn else ""),
-             f"stock: {o.stock if o.stock is not None else o.availability or 'unknown'}"]
+    parts = [f"{o.mpn} ({o.manufacturer})"]
+    if o.lifecycle or warn:
+        parts.append(f"state: {o.lifecycle or 'discontinued'}" + (f" [NOT ORDERABLE: {warn}]" if warn else "")
+                     + (" [the distributor does not sell it now; not a lifecycle state of the manufacturer]"
+                        if restricted(o) else ""))
+    parts.append(f"stock: {o.stock if o.stock is not None else o.availability or 'unknown'}")
     if o.lead_time:
         parts.append(f"lead time {o.lead_time}")
     if prices:
@@ -313,9 +341,13 @@ def availability(project, store=None) -> list[str]:
         o = (orderable or offers)[0]
         stocks = [x.stock for x in orderable or offers if x.stock is not None]
         stock = sum(stocks) if stocks else None
-        state = f"{part['mpn']}: {o.lifecycle or 'state unknown'}, stock {stock if stock is not None else 'unknown'}"
+        state = (f"{part['mpn']}: " + (f"{o.lifecycle}, " if o.lifecycle else "")
+                 + f"stock {stock if stock is not None else 'unknown'}")
         if not orderable:
             state += f". WARNING: not orderable: {not_orderable(o)}"
+        elif not stock and all(restricted(x) for x in offers):
+            state += (". WARNING: Mouser does not sell this part now (Restricted Availability). This is not the "
+                      "lifecycle state of the manufacturer: ask the manufacturer or a different distributor")
         elif not stock:
             state += (". WARNING: no stock" + (f" ({o.availability})" if o.availability else "")
                       + (f", lead time {o.lead_time}" if o.lead_time else ""))

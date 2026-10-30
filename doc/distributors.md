@@ -130,8 +130,16 @@ part with its lifecycle state and its stock. It gives a `WARNING` for a part tha
 - Is not orderable (obsolete or discontinued), with the replacement.
 - The distributor does not have (a base part, or a wrong MPN).
 - Has no stock, with the availability and the lead time.
+- Has the Mouser state `Restricted Availability`: Mouser does not sell the part now.
+  This is not the lifecycle state of the manufacturer. Ask the manufacturer or a
+  different distributor.
 - Has no offer from the manufacturer of the part, when the MPN has offers of two or
   more manufacturers: the line then gives the data of a different manufacturer.
+
+Mouser gives a lifecycle state only for some parts (for example `New Product`,
+`End of Life`, `Obsolete`). A line with no state is a part with no such state.
+Mouser gives the lead time in the language of the account. The tool shows it in
+English (`182 days`), and does not show a lead time of 0.
 
 One MPN can have more offers (for example cut tape and reel). The part is orderable
 when one offer is orderable, and its stock is the sum of the offers.

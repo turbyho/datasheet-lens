@@ -54,6 +54,32 @@ def test_mouser_search(monkeypatch):
     assert len(sent) == 1  # the cache
 
 
+def test_mouser_texts(store_home, monkeypatch, tmp_path):
+    """The lead time in the language of the Mouser account becomes English; 0
+    is no lead time. An empty lifecycle is not shown. Restricted Availability is
+    a warning about the distributor, not about the lifecycle."""
+    lead = distributors._lead_time
+    assert (lead("182 Dny"), lead("6 Weeks"), lead("3 Wochen"), lead("0 Dny"), lead("")) == (
+        "182 days", "6 weeks", "3 weeks", "", "")
+    assert lead("14 Tagen?") == "14 Tagen?"  # an unknown form stays as it is
+    active = dict(PART, LifecycleStatus=None, LeadTime="182 Dny")
+    line = distributors.format_offer(distributors._mouser_offer(active))
+    assert "state:" not in line and "lead time 182 days" in line
+    limited = dict(PART, ManufacturerPartNumber="MAX20361CEWC+T", LifecycleStatus="Restricted Availability",
+                   AvailabilityInStock=None, Availability="", LeadTime="0 Dny", PriceBreaks=[])
+    assert "not a lifecycle state" in distributors.format_offer(distributors._mouser_offer(limited))
+    fake_api(monkeypatch, [active, limited])
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        for mpn in ("TPS7A0233PYCHR", "MAX20361CEWC+T"):
+            prj.add_part(project, store, mpn)
+    lines = distributors.availability(prj.load(project.root))
+    assert "TPS7A0233PYCHR: stock 1234" in lines
+    assert ("MAX20361CEWC+T: Restricted Availability, stock unknown. WARNING: Mouser does not sell this part now "
+            "(Restricted Availability). This is not the lifecycle state of the manufacturer: ask the manufacturer "
+            "or a different distributor") in lines
+
+
 def test_mouser_errors_hide_the_key(monkeypatch):
     import urllib.error
 
@@ -108,7 +134,7 @@ def test_offers_of_one_mpn_and_failures(store_home, monkeypatch, tmp_path):
             prj.add_part(project, store, mpn)
     lines = distributors.availability(prj.load(project.root))
     assert "TPS7A0233PYCHR: New Product, stock 100" in lines
-    assert "TMP112D0IDPWR: New Product, stock unknown. WARNING: no stock (On Order), lead time 6 Weeks" in lines
+    assert "TMP112D0IDPWR: New Product, stock unknown. WARNING: no stock (On Order), lead time 6 weeks" in lines
 
     calls = []
 
