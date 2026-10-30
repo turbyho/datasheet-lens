@@ -4,7 +4,7 @@
     "turbyho"
   ],
   "title": "datasheet-lens",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Gives component datasheets (PDF) to LLM agents for electronics design and firmware: an index, a text search and the original pages and regions on demand. Keeps the datasheets of a design project consistent with the CAD project and the BOM, and checks the parts at the distributors.",
   "tags": [
     "datasheet",
