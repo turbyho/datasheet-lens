@@ -928,11 +928,18 @@ def project_check(
         bom_column: Annotated[str, Field(description=(
             "The column of the MPN in the BOM file. Empty: each column with a usual MPN name (MPN, "
             "Manufacturer Part Number, MP ...). The tool always reads the Value column too."))] = "",
+        bom_delimiter: Annotated[str, Field(description=(
+            "The delimiter of the BOM file: a text or 'tab'. Empty: the one of , ; tab | that splits "
+            "the header line. Give it when the tool asks for it."))] = "",
+        bom_quote: Annotated[str, Field(description=(
+            "The quote character of the BOM file: '\"' (CSV, Excel, kicad-cli and export_bom), \"'\" (the "
+            "Semicolons preset of KiCad) or 'none' (the TSV preset of KiCad). Empty: '\"'."))] = "",
         path: ProjectPath = "") -> str:
     """Compare the project file with the parts of the CAD project, so that the
     two hold the same parts. Each part with an MPN needs its datasheet, also a
     passive part with an MPN in its Value. Gives one line for each symbol whose
-    MPN and Value fields name different parts (a conflict in the CAD project),
+    MPN and Value fields name different parts, or whose columns of one role in
+    a BOM file are different (a conflict in the CAD project),
     the number of the same parts, and one line for each part that is different
     (one part with two MPNs), missing (with the documents of the store or the
     Datasheet field, and the next call; an alternative of a part is missing
@@ -945,11 +952,14 @@ def project_check(
 
     if (parts is None) == (not bom):
         raise LensError("give the parts of the CAD project in parts or in a BOM file (bom), not the two")
-    if bom_column and not bom:
-        raise LensError("bom_column needs a BOM file (bom)")
+    if (bom_column or bom_delimiter or bom_quote) and not bom:
+        raise LensError("bom_column, bom_delimiter and bom_quote need a BOM file (bom)")
     # A relative path is relative to the project folder, as the other paths of a project.
     bom_path = str(Path(path or ".").expanduser() / Path(bom).expanduser()) if bom else ""
-    read = bom_parts(bom_path, bom_column, "bom_column") if bom else None
+    read = None
+    if bom:
+        read = bom_parts(bom_path, bom_column, bom_delimiter, bom_quote,
+                         {"column": "bom_column", "delimiter": "bom_delimiter", "quote": "bom_quote"})
     cad = read.cad if read else [p.model_dump() for p in parts or []]
     with Store() as store:
         project = load(path or None)

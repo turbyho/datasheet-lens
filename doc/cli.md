@@ -410,21 +410,25 @@ Give `MPN`, `-d DOC`, or the two.
 ### check
 
 ```text
-datasheet-lens check [--column COLUMN] [-p PATH] BOM.csv
+datasheet-lens check [--column COLUMN] [--delimiter D] [--quote Q] [-p PATH] BOM.csv
 ```
 
 Compare the project with a BOM file (CSV) of the CAD project. Show the conflicts in
-the CAD project (an MPN field and the Value field that name different parts), and
-the same, different, missing and extra parts, with the next command for each one.
+the CAD project (an MPN field and the Value field that name different parts, or two
+columns of one role, for example two DNP columns, that are different), and the
+same, different, missing and extra parts, with the next command for each one.
 
 | Argument or option | Effect |
 |---|---|
 | `BOM.csv` | The BOM as a CSV file, for example from `kicad-cli sch export bom`. |
 | `--column COLUMN` | The MPN field. Default: each column that the file has of `MPN`, `Manufacturer Part Number`, `Manufacturer Part Number 1`, `MPN 1`, `MP`, `Mfr Part Number`, `Mfr PN`, `Manufacturer PN`; for each line, the first filled one. The `Value` column is always read too. |
+| `--delimiter D` | The delimiter of the values: a text (a preset of KiCad can have more characters) or `tab`. Default: the one of `,` `;` tab `\|` that splits the header line. When more of them split it, or none (and the header is not one known column name), the command asks for this option. |
+| `--quote Q` | The quote: `"` (default: CSV, Excel, kicad-cli), `'` (the Semicolons preset of KiCad), `none` (the TSV preset of KiCad), or an other text of a preset. |
 
-The command reads a CSV file with a comma, a semicolon or a tab as the separator. It
-reads UTF-8, UTF-16 with its byte order mark, or cp1252 when the file is not UTF-8.
-It does not read XLSX files. It
+The command reads a CSV file (RFC 4180) with the delimiter and the quote of the
+options (see [projects.md](projects.md#a-bom-file) for the rules). It reads UTF-8,
+UTF-16 with its byte order mark, or cp1252 when the file is not UTF-8. It does not
+read XLSX files. It
 compares the column names with no regard to case, spaces, `_`, `.` and `-`. It finds
 the reference, Datasheet and DNP columns by their names, and ignores the lines that
 are not fitted. In the Value column it finds the MPNs: a value and an MPN, or more

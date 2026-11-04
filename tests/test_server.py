@@ -254,7 +254,7 @@ def test_project_check_reads_a_bom_file(store_home, tmp_path):
 
     assert "not the two" in tool_error("project_check", path=str(project.root))
     assert "not the two" in tool_error("project_check", parts=[], bom=str(bom), path=str(project.root))
-    assert "bom_column needs a BOM file" in tool_error("project_check", parts=[], bom_column="MPN",
+    assert "need a BOM file" in tool_error("project_check", parts=[], bom_column="MPN",
                                                       path=str(project.root))
     assert "cannot read the BOM file" in tool_error("project_check", bom=str(tmp_path / "no.csv"),
                                                     path=str(project.root))
@@ -264,8 +264,8 @@ def test_project_check_reads_a_bom_file(store_home, tmp_path):
 
 def test_project_check_bom_errors(store_home, tmp_path):
     """A relative BOM path is relative to the project folder. A BOM with no data
-    lines, a line with more values than the header, a file that is not CSV text
-    and a broken CSV file give a tool error or a result, never an exception."""
+    lines gives a result. A line with more values than the header, a file that is
+    not CSV text and a broken CSV file give a tool error, never an exception."""
     from datasheet_lens import project as prj
     from datasheet_lens.store import Store
 
@@ -277,16 +277,30 @@ def test_project_check_bom_errors(store_home, tmp_path):
     out = text_of(call("project_check", bom="bom.csv", path=root))
     assert "bom.csv: MPN from MPN, Value; references from Reference; 0 lines with an MPN" in out
     assert "extra: OPA2134PA" in out
+    # A comma in a value with no quotes: the columns of the line are not known.
     (project.root / "bom.csv").write_text("Reference,Value,MPN\nC1,10uF, 25V,GRM188\nU1,OPA,OPA2134PA\n",
                                           encoding="utf-8")
-    out = text_of(call("project_check", bom="bom.csv", path=root))
-    assert "the same in the CAD project and in the project file: 1 parts" in out
+    assert "line 2 has more values than the header line" in tool_error("project_check", bom="bom.csv", path=root)
     (project.root / ".env").write_text("API_KEY=secret\n", encoding="utf-8")
     error = tool_error("project_check", bom=".env", path=root)
     assert "must be CSV text" in error and "secret" not in error
-    (project.root / "big.csv").write_text('MPN\n"' + "x" * 200000 + "\n", encoding="utf-8")
-    assert "not a valid CSV file" in tool_error("project_check", bom="big.csv", path=root)
+    (project.root / "open.csv").write_text('"Reference","MPN"\n"U1","abc\n"U2","X9"\n', encoding="utf-8")
+    assert "is not valid CSV" in tool_error("project_check", bom="open.csv", path=root)
     (project.root / "u16.txt").write_bytes(b"\xff\xfeM\x00P\x00N\x00\n")
     assert "not valid UTF-16 text" in tool_error("project_check", bom="u16.txt", path=root)
+    (project.root / "semi.csv").write_text("'Reference';'MPN'\n'U1';'X9'\n", encoding="utf-8")
+    assert "give the quote ' with bom_quote" in tool_error("project_check", bom="semi.csv", path=root)
+    out = text_of(call("project_check", bom="semi.csv", bom_quote="'", path=root))
+    assert "MPN from MPN; references from Reference; 1 lines with an MPN" in out
+    (project.root / "tab.txt").write_text('Reference\tMPN\nU1\t"X9" Y9\n', encoding="utf-8")
+    out = text_of(call("project_check", bom="tab.txt", bom_delimiter="tab", bom_quote="none", path=root))
+    assert "1 lines with an MPN" in out
+    assert "must be different (bom_delimiter, bom_quote)" in tool_error(
+        "project_check", bom="semi.csv", bom_delimiter="'", bom_quote="'", path=root)
+    # "~" is an empty field of KiCad, also in the parts of the MCP server of a CAD tool.
+    out = text_of(call("project_check", parts=[{"mpn": "~", "value": "~", "reference": "U9"}], path=root))
+    assert "missing: ~" not in out
+    out = text_of(call("project_check", parts=[], bom_quote="", path=root))  # the default of the agent
+    assert "extra: OPA2134PA" in out
     (project.root / "x.csv").write_text("Name,Qty\nA,1\n", encoding="utf-8")
     assert "give the column of the MPN with bom_column" in tool_error("project_check", bom="x.csv", path=root)

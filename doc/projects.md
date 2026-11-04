@@ -388,7 +388,9 @@ kicad-cli sch export bom --fields 'Reference,Value,MPN,Datasheet,${DNP}' \
 datasheet-lens check bom.csv
 ```
 
-Replace `MPN` with the name of the MPN field of your symbols. Write `${DNP}` in single
+Replace `MPN` with the name of the MPN field of your symbols. Use the default format
+of kicad-cli (the CSV preset): the Semicolons and TSV presets need the option
+`--quote`. Write `${DNP}` in single
 quotes: kicad-cli of KiCad 8 and 9 reads `DNP` with no `${}` as a field of the
 symbols, and that column is empty. Export one line for each symbol (no
 `--group-by`): in a line of a group, KiCad writes DNP when only some symbols of the
@@ -405,14 +407,53 @@ can work when its column names are in the lists below, but nobody has tested it.
 | CAD tool | State |
 |---|---|
 | KiCad (`kicad-cli sch export bom`) | Tested with real BOM exports. |
-| Eagle | Tested with a real BOM export (semicolon, the attributes `MP` and `MANUFACTURER_PART_NUMBER` of different libraries, `Parts`, `Value`). |
+| Eagle | Tested with a real BOM export (semicolon, the attributes `MP` and `MANUFACTURER_PART_NUMBER` of different libraries, `Parts`, `Value`), before the reader checked RFC 4180. A value with a quote that is not between quotes (`0.1" header`) now needs `--quote none`. |
 | Fusion, Altium and other tools | Not tested. The column names of Altium (`Designator`, `Manufacturer Part Number 1`) are in the lists. |
 
 The reader uses these rules:
 
-- The file is CSV text with the extension `.csv`, `.tsv` or `.txt`. The reader finds
-  the column separator: a comma, a semicolon or a tab. It does not read XLSX files:
-  export the BOM as CSV.
+- The file is CSV text with the extension `.csv`, `.tsv` or `.txt`. It does not read
+  XLSX files: export the BOM as CSV.
+- The reader reads CSV by the rules of RFC 4180 (Excel, kicad-cli, the CSV preset of
+  KiCad). It does not guess the format. The default quote is `"`.
+- For an other quote, use `--quote` (MCP: `bom_quote`): `'` for the Semicolons
+  preset of KiCad, `none` for its TSV preset, or the text of a preset. When each
+  name of the header is between `'`, the reader asks for the quote `'`.
+- The delimiter is the one of comma, semicolon, tab and `|` that splits the header
+  line. When more of them split it, the reader asks for the delimiter (`--delimiter`,
+  MCP: `bom_delimiter`, a text or `tab`). When none splits it, the reader asks for
+  the delimiter, the quote or the column.
+- A header with one column name is a file with one column only when the name is a
+  known name (for example `MPN`) or the name of `--column`.
+- The first line `sep=;` of Excel gives the delimiter. When LibreOffice saved the
+  file again, the delimiter after the marker counts. A different delimiter in the
+  option gives an error, and so does a line `sep=` that does not give one
+  delimiter.
+- A line with only spaces or delimiters is an empty line, also before the header.
+- Each line must follow RFC 4180. A value with the quote, the delimiter or a line
+  break is between quotes, and a quote in it is doubled. Each other line gives an
+  error with the number of the line where its record starts.
+- A line with fewer values than the header gets empty values. (Excel can leave out
+  the empty values at the end of a line.)
+- A line with more values gives an error when a value after the last column is not
+  empty. The cause is a delimiter in a value with no quotes, which moves the
+  columns.
+- A column with no name is permitted, but the reader does not use it.
+- More MPN columns can have one name, for example the fields `MPN` and `mpn` of
+  symbols from different libraries. Each one is an MPN field (see "MPN and Value
+  fields"). The comparison of the names ignores case, spaces, `_`, `.` and `-`.
+- More Value, DNP, Reference or Datasheet columns are permitted, also with
+  different names of one list below (for example `DNP` and `Do not populate`). The
+  first filled one gives the value, and each MPN of each Value column counts.
+- A line in which these columns are different gets a conflict, also a line with no
+  MPN. A value is compared with no regard to case and spaces, and two values of one
+  part (`TLV755P` and `TLV75533PDBVR`) are not a conflict. References are compared
+  as a set (`R1 R2`, `R1, R2` and the range `R1-R2` are the same). A datasheet is
+  compared as text.
+- A line is not fitted only when each DNP column says so. Thus the line of a DNP
+  conflict needs its datasheet. `~` is an empty value (KiCad).
+- A preset of KiCad can have a delimiter and a quote of more characters. Give them
+  with `--delimiter` and `--quote`.
 - The file must be UTF-8 text, or UTF-16 with its byte order mark (Excel "Unicode
   text"). When it is not UTF-8, the reader reads it as cp1252 (a BOM file from
   Windows), and the first line of the result says `read as cp1252`.

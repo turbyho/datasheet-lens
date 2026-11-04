@@ -621,7 +621,8 @@ def cmd_check(args: argparse.Namespace) -> int:
     project, for example from "kicad-cli sch export bom"."""
     from .project import bom_parts, check_parts, format_check, load
 
-    bom = bom_parts(args.bom, args.column or "", "--column")
+    bom = bom_parts(args.bom, args.column or "", args.delimiter, args.quote,
+                    {"column": "--column", "delimiter": "--delimiter", "quote": "--quote"})
     with Store() as store:
         result = check_parts(load(args.path), store, bom.cad)
     print(bom.summary)
@@ -697,6 +698,11 @@ def build_parser() -> argparse.ArgumentParser:
     ck.add_argument("bom", metavar="BOM.csv", help="the BOM, for example from kicad-cli sch export bom")
     ck.add_argument("--column", help="the column of the MPN (default: MPN, Manufacturer Part Number (1) ... "
                                      "or Value)")
+    ck.add_argument("--delimiter", default="", metavar="D", help="the delimiter of the values: a text or 'tab' (default: the "
+                                        "one of , ; tab | that splits the header line)")
+    ck.add_argument("--quote", default="", metavar="Q",
+                    help="the quote: \" (default, also when empty), ' (the Semicolons preset of KiCad), none (its "
+                         "TSV preset), or an other text of a preset")
     ck.set_defaults(func=cmd_check)
     cd = sub.add_parser("codes", help="show the orderable codes of a datasheet")
     cd.add_argument("document", metavar="DOC", help="document ID or SHA-256 prefix")

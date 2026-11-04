@@ -616,3 +616,232 @@ def test_mpn_fields_review_cases(store_home, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "MPN from MPN, Value" in out and "conflict" not in out and "PN-00123" not in out
     assert "missing: OPA1612AIDR (U1) [alternative of OPA2134PA]" in out
+
+
+def test_bom_formats(tmp_path):
+    """The reader reads CSV (RFC 4180). It finds the delimiter in the header line
+    only when one delimiter splits it; the caller gives an other delimiter and the
+    quote of the presets Semicolons and TSV of KiCad (BOM_FMT_PRESET)."""
+    from datasheet_lens.errors import LensError
+    from datasheet_lens.project import bom_parts
+
+    def mpns(name, text, delimiter="", quote=""):
+        bom = tmp_path / name
+        bom.write_text(text, encoding="utf-8")
+        return [p["mpns"] for p in bom_parts(str(bom), "", delimiter, quote).cad]
+
+    def error(name, text, delimiter="", quote=""):
+        with pytest.raises(LensError) as e:
+            mpns(name, text, delimiter, quote)
+        return str(e.value).split(": ", 1)[1]
+
+    filler = "".join(f'"R{i}","10k",""\n' for i in range(300))  # more than 4096 characters
+    assert mpns("csv.csv", '"Reference","Value","MPN"\n' + filler + '"U1","ICL7660","ICL7660""CPA"\n') == [
+        ['ICL7660"CPA']]
+    # Excel: quotes only where necessary, a value over two lines, apostrophes, and
+    # no empty values at the end of a line.
+    assert mpns("excel.csv", '"Qty, pcs",Reference,MPN,Note\n1,C1,"GRM188, X9",n\n2,C2,"A\nB"\n3,U1,X9\n'
+                "4,U2,'t Hooft,a'\n") == [["GRM188, X9"], ["A\nB"], ["X9"], ["'t Hooft"]]
+    assert mpns("names.csv", 'Reference;"Value, a, b, c";MPN\nR1;10k;X9\n') == [["X9"]]
+    assert mpns("trail.csv", "\nReference,Value,MPN,\nR1,10k,X9\nR2,1k,Y9,\n") == [["X9"], ["Y9"]]
+    assert mpns("one.csv", "MPN\nGRM188, X9\n") == [["GRM188, X9"]]
+    # The presets of KiCad: Semicolons ("'") and TSV (no quotes).
+    semi = "'Reference';'Value';'MPN';\n'U1';'10k; 1%';'J''X9';\n"
+    assert mpns("semi.csv", semi, quote="'") == [["J'X9"]]
+    assert "each name of the header is between ': give the quote '" in error("semi2.csv", semi)
+    tsv = 'Reference\tValue\tMPN\nU1\t5" LCD\tX1\nU2\t"Smart" LED\tX2\n'
+    assert mpns("kicad.tsv", tsv, quote="none") == [["X1"], ["X2"]]
+    # A quote inside a value with no quotes does not follow RFC 4180.
+    assert "line 2 is not valid CSV: a quote that is not around a full value" in error("kicad2.tsv", tsv)
+    # A delimiter that the reader does not find, or more delimiters in the header.
+    assert mpns("pipe.csv", '"Reference":"Value":"MPN"\n"U1":"a:b":"X9"\n', delimiter=":") == [["X9"]]
+    assert "give the delimiter" in error("tie.csv", "Description, long, text;MPN\nA;X9\n")
+    assert mpns("tie2.csv", "Description, long, text;MPN\nA;X9\n", delimiter=";") == [["X9"]]
+    assert error("extra.csv", 'Reference,Value,MPN\nC1,"10uF, 25V",G\nC2,1,G,extra\n').startswith(
+        "line 3 has more values than the header line")
+    assert error("broken.csv", 'Reference,Value,MPN\nR1,"5"" LCD",LCD-1\nR2,"bad"x,Y9\n').startswith(
+        "line 3 is not valid CSV")
+    assert error("open.csv", '"Reference","MPN"\n"U1","abc\n"U2","X9"\n').startswith("line 2 is not valid CSV")
+    assert error("none.csv", "").startswith("the BOM file has no header line")
+    # A doubled quote in a name of the header (RFC 4180), and one column with a
+    # delimiter at the end of the lines.
+    assert mpns("names2.csv", '"Size ""A""",MPN\n1,X9\n') == [["X9"]]
+    assert mpns("names3.csv", "'Manufacturer''s PN';'MPN'\n'a';'X9'\n", quote="'") == [["X9"]]
+    assert mpns("col.csv", "MPN,\nX9,\n") == [["X9"]]
+    assert mpns("col2.csv", "'MPN';\n'X9';\n", quote="'") == [["X9"]]
+    assert "with ',': a quote that is not around a full value" in error(
+        "space.csv", 'Reference, "Value", MPN\nU1,A,X9\n')
+    assert error("data.csv", 'Ref,Value,MPN\nR1,10k "x",Y9\n').startswith(
+        "line 2 is not valid CSV: a quote that is not around a full value")
+    # Excel writes "sep=;" for the delimiter. An unnamed last column holds values.
+    assert mpns("sep.csv", "sep=;\nRef;Value;MPN\nU1;A, B;X9\n") == [["X9"]]
+    assert mpns("unnamed.csv", "Ref,MPN,\nR1,X9,note\n") == [["X9"]]
+    # Two columns of one name (fields of symbols from different libraries) are two
+    # MPN fields: the first filled one gives the MPN; a different MPN in an other
+    # one is a conflict, with the name of its column.
+    bom = tmp_path / "dupes.csv"
+    bom.write_text("Ref,MPN,mpn,MP\nU1,X9,,\nU2,,Y9,\nU3,Z9,W9,\nU4,A1,,B1\n", encoding="utf-8")
+    parts = bom_parts(str(bom)).cad
+    assert [p["mpns"] for p in parts] == [["X9"], ["Y9"], ["Z9"], ["A1"]]
+    assert [p["conflict"].split(".")[0] for p in parts] == ["", "", "MPN Z9, mpn W9", "MPN A1, MP B1"]
+    # More columns of one role: the first filled one, and a conflict when they are
+    # different.
+    def parts_of(name, text):
+        bom = tmp_path / name
+        bom.write_text(text, encoding="utf-8")
+        return [(p["mpns"], p["conflict"]) for p in bom_parts(str(bom)).cad]
+
+    assert parts_of("values.csv", "Ref,Value,value\nU1,GRM188R61A106KE69D,\nU2,TPS7A02,X9\n") == [
+        (["GRM188R61A106KE69D"], ""), (["TPS7A02"], "Value TPS7A02, value X9")]
+    # LibreOffice saved a "sep=;" file again with commas; quoted names with spaces;
+    # one column with a delimiter in the data; a UTF-8 byte order mark in a cp1252 file.
+    assert mpns("sep10.csv", '"sep=;",,\nRef,MPN,Value\nU1,X9,Y9\n') == [["X9"]]
+    # The quote none is an option of the caller: the names keep their quotes.
+    assert 'no MPN column' in error("qs.tsv", '"Ref" \t"MPN"\nU1\tX9\n', quote="none")
+    assert "no delimiter splits the header line, thus the reader uses one column" in error(
+        "onecol.csv", 'MPN\n"X9",Y9\n')
+    bom = tmp_path / "bom1252.csv"
+    bom.write_bytes(b'\xef\xbb\xbf"Reference","MPN"\n"U1","X9 \xb5"\n')
+    assert [p["mpns"] for p in bom_parts(str(bom)).cad] == [["X9 µ"]]
+    assert "no delimiter of , ; tab | splits the header line" in error("colon.csv", "Reference:MPN\nU1:X9\n")
+    assert mpns("sep4.csv", "SEP=;;;\nRef;MPN;;\nU1;X9;;\n") == [["X9"]]
+    assert mpns("sep5.csv", '"sep=;"\nRef;MPN\nU1;X9\n') == [["X9"]]
+    assert mpns("sep7.tsv", "sep=\t\nRef\tMPN\nU1\tX9\n") == [["X9"]]
+    assert mpns("sep8.csv", "sep=\t\t\t\nRef\tMPN\nU1\tX9\n") == [["X9"]]
+    assert mpns("sep9.csv", "'sep=;'\nRef;MPN\nU1;X9\n", quote="'") == [["X9"]]
+    # One column with the name of the column option; a given delimiter that does
+    # not split the header; CR and CRLF in a value and as line ends.
+    bom = tmp_path / "partno.csv"
+    bom.write_text("PartNo\nX1\nX2\n", encoding="utf-8")
+    assert [p["mpns"] for p in bom_parts(str(bom), "PartNo").cad] == [["X1"], ["X2"]]
+    assert "the delimiter ',' does not split the header line" in error(
+        "given.csv", "Reference;Value;MPN\nU1;A;X9\n", delimiter=",")
+    bom = tmp_path / "cr.csv"
+    bom.write_bytes(b'Reference,Description,MPN\r"U1","A\rB",X9\r\n"U2","C\r\nD",Y9\rU3,E,Z9')
+    parts = bom_parts(str(bom))
+    assert [p["mpns"] for p in parts.cad] == [["X9"], ["Y9"], ["Z9"]]
+    from datasheet_lens.project import _read_bom
+    assert [row[1] for row in _read_bom(str(bom))[1]] == ["A\rB", "C\r\nD", "E"]
+    assert "(none for a file with no quotes)" in error("inch.csv", 'Ref,Size 5",MPN\nU1,A,X9\n')
+    bom = tmp_path / "spaces3.csv"
+    bom.write_text("Reference, Value, MPN\nU1, A, X9\n", encoding="utf-8")
+    assert "MPN from MPN, Value; references from Reference;" in bom_parts(str(bom)).summary
+    assert '"Ref", "MPN"' in error("none2.csv", '"Ref","MPN"\n"U1","X9"\n', quote="none")
+    assert "give the delimiter" in error("desc.csv", "Desc, long;\nA;\n")
+    # A name over two lines, a partly quoted header, two names of one column, and
+    # the Excel line "sep=".
+    assert mpns("two.csv", '"Ref\r\nerence",MPN\r\nU1,X9\r\n') == [["X9"]]
+    # One name between "'" is a valid name of CSV: the reader keeps it.
+    bom = tmp_path / "part.csv"
+    bom.write_text("Ref,'Note',MPN\nU1,a,X9\n", encoding="utf-8")
+    assert [p["mpns"] for p in bom_parts(str(bom)).cad] == [["X9"]]
+    # Synonyms of one role, a header with no names, a quote that is a delimiter of
+    # the list, and the line "sep=" with spaces before it or a letter.
+    # A line is not fitted only when each DNP column says so; a conflict is fitted.
+    assert parts_of("syn.csv", "Ref,MPN,DNP,Do not populate\nU1,X9,,1\nU2,Y9,DNP,1\n") == [
+        (["X9"], "DNP (empty), Do not populate 1")]
+    assert parts_of("syn2.csv", "Reference,Designator,MPN\nU1,U1,X9\nU2,R2,Y9\n") == [
+        (["X9"], ""), (["Y9"], "Reference U2, Designator R2")]
+    # A line with only delimiters is an empty line, also before the header.
+    assert mpns("empty2.csv", ",,\nRef,MPN\nU1,X9\n") == [["X9"]]
+    # "~" in a DNP column is empty (fitted); a broken line "sep="; an explicit quote
+    # '"' with names between "'"; a conflict on a line with no MPN; values of one
+    # part in two columns.
+    assert mpns("tdnp.csv", "Reference,MPN,DNP\nR1,TLV75533PDBVR,~\n") == [["TLV75533PDBVR"]]
+    assert "the line 'sep=' of the file does not give one delimiter" in error("sepx.csv", "sep=;,;\nRef;MPN\n")
+    bom = tmp_path / "apos.csv"
+    bom.write_text("'Reference','MPN'\nU1,X9\n", encoding="utf-8")
+    assert "no MPN column" in str(pytest.raises(LensError, bom_parts, str(bom), "", "", '"').value)
+    assert parts_of("passive.csv", "Reference,Value,value\nC1,100nF,10nF\n") == [([], "Value 100nF, value 10nF")]
+    # Each MPN of each Value column counts; the values of all pairs are compared;
+    # "~" in an MPN field is empty; a line of delimiters before "sep="; an overlap
+    # after a value between quotes.
+    assert parts_of("v2.csv", "Ref,Value,value\nU1,TLV755P,TLV75533PDBVR\n") == [(["TLV75533PDBVR"], "")]
+    assert parts_of("v3.csv", "Ref,Value,value,VALUE\nU1,TLV755P,TLV75533PDBVR,TLV75518PDBVR\n")[0][1] == (
+        "Value TLV755P, value TLV75533PDBVR, VALUE TLV75518PDBVR")
+    assert parts_of("tm.csv", "Ref;Value;MPN\nR2;10k;~\nU1;OPA2134;~\n") == [(["OPA2134"], "")]
+    assert mpns("sepd.csv", ",,,\nsep=;\nRef;MPN\nU1;X9\n") == [["X9"]]
+    assert "can start at more than one place" in error("ovq.csv", 'Ref||MPN\n"a"|||b\n', delimiter="||")
+    assert parts_of("same.csv", "Reference,Designator,MPN,Value,value\nR1 R2,\"R1, R2\",X9,TLV75533PDBVR,"
+                    "tlv75533\n") == [(["X9"], "MPN X9, Value TLV75533PDBVR. The check uses X9")]
+    assert mpns("pipeq.csv", "|Ref|,|MPN|\n|U1|,|X9|\n", quote="|") == [["X9"]]
+    assert mpns("sep11.csv", "  sep=;\nRef;MPN\nU1;X9\n") == [["X9"]]
+    assert "the line 'sep=' of the file does not give one delimiter" in error("sep12.csv", "sep=a\nRefaMPN\n")
+    assert "the line 'sep=' of the file gives the delimiter '\"', which is the quote" in error(
+        "sep2.csv", 'sep="\nA"B\n')
+    # A preset of KiCad with a delimiter and a quote of more characters.
+    assert mpns("preset.csv", "`Ref`||`Value`||`MPN`\n`U1`||`a||``b`||`X9`\n", delimiter="||", quote="`") == [["X9"]]
+    # One column with a name that is not known, and a name between "'".
+    assert "give its name with the column option" in error("partno2.csv", "PartNo\nX9\n")
+    assert "each name of the header is between ': give the quote '" in error("q1.csv", "'MPN'\n'X9'\n")
+    assert parts_of("dnp2.csv", "Ref,MPN,DNP,dnp\nU1,X9,0,DNP\n") == [(["X9"], "DNP 0, dnp DNP")]
+    bom = tmp_path / "dupes2.csv"
+    bom.write_text("Ref,MPN,MPN\nU1,X9,Y9\n", encoding="utf-8")
+    assert "MPN from MPN (column 2), MPN (column 3)" in bom_parts(str(bom)).summary
+    assert parts_of("dupes3.csv", "Ref,MPN,MPN\nU1,X9,Y9\n")[0][1].startswith("MPN (column 2) X9, MPN (column 3) Y9")
+    assert "the delimiter can start at more than one place ('||'): put the value between quotes" in error(
+        "overlap.csv", "Ref||MPN\nU1|||X9\n", delimiter="||")
+    # Empty values with a delimiter of more characters, two Value columns with the
+    # MPN in the second one, and "~" (the empty Datasheet of KiCad).
+    assert mpns("empty.csv", "Ref||Value||MPN\nU1||||X9\n", delimiter="||") == [["X9"]]
+    assert mpns("empty2.csv", "Ref, Value, MPN\nU1, , X9\n", delimiter=", ") == [["X9"]]
+    assert parts_of("values2.csv", "Ref,Value,value\nU1,10k,GRM188R61A106KE69D\n") == [
+        (["GRM188R61A106KE69D"], "Value 10k, value GRM188R61A106KE69D")]
+    bom = tmp_path / "tilde.csv"
+    bom.write_text("Ref,MPN,Datasheet,Datasheet URL\nU1,X9,~,http://a\n", encoding="utf-8")
+    assert [(p["datasheet"], p["conflict"]) for p in bom_parts(str(bom)).cad] == [("http://a", "")]
+    assert mpns("sepblank.csv", "sep=;\n\nRef;MPN\nU1;X9\n") == [["X9"]]
+    assert "if the file uses the quote ', give it" in error("semicut.csv", "'Ref';'Value; tol';'MPN'\n'U1';'a';'X9'\n")
+    assert "but the delimiter option gives ','" in error("sep3.csv", "sep=;\nRef;MPN\nU1;X9\n", delimiter=",")
+    assert error("cr.csv", 'Ref,MPN\rU1,"bad"x\r').startswith("line 2 is not valid CSV")
+
+
+def test_bom_format_options():
+    """The options of the interfaces: tab, none, and the errors with the name of
+    the option."""
+    from datasheet_lens.errors import LensError
+    from datasheet_lens.project import bom_format
+
+    options = {"delimiter": "bom_delimiter", "quote": "bom_quote"}
+    assert bom_format("tab", "none", options) == ("\t", "")
+    assert bom_format("", '"', options) == ("", '"')
+    assert bom_format("", "", options) == ("", '"')  # an empty option is the default
+    # A preset of KiCad can have a delimiter and a quote of more characters.
+    assert bom_format(", ", "`", options) == (", ", "`")
+    with pytest.raises(LensError, match="is not a delimiter for bom_delimiter: a tab is 'tab'"):
+        bom_format("\\t", '"', options)
+    # Only the quote of the file cannot be the delimiter.
+    assert bom_format("'", "none", options) == ("'", "")
+    assert bom_format('"', "'", options) == ('"', "'")
+    with pytest.raises(LensError, match="must be different"):
+        bom_format('"', '"', options)
+    with pytest.raises(LensError, match="cannot have a line end"):
+        bom_format("\n", '"', options)
+
+
+def test_bom_size_limit(tmp_path, monkeypatch):
+    """A file larger than BOM_MAX_BYTES is not a BOM."""
+    from datasheet_lens import project as prj
+    from datasheet_lens.errors import LensError
+
+    monkeypatch.setattr(prj, "BOM_MAX_BYTES", 20)
+    bom = tmp_path / "big.csv"
+    bom.write_text("Reference,MPN\n" + "U1,X9\n" * 3, encoding="utf-8")
+    with pytest.raises(LensError, match="larger than"):
+        prj.bom_parts(str(bom))
+    bom.write_text("MPN\nX9\n", encoding="utf-8")
+    assert [p["mpns"] for p in prj.bom_parts(str(bom)).cad] == [["X9"]]
+
+
+def test_bom_conflict_rules(tmp_path):
+    """References as a set (a range of KiCad), "~" in the parts of project_check,
+    and a long run of a delimiter of more characters (one check for each run)."""
+    import time
+
+    from datasheet_lens.project import _records, _references
+
+    assert _references("R1-R3") == _references("R1,R2,R3") == _references("r1 r2 R3")
+    assert _references("R1-R3") != _references("R1, R3")
+    start = time.monotonic()
+    assert len(list(_records("Ref||MPN\nU1||X1" + "||" * 8000 + "\n", "||", '"'))[1][1]) == 8002
+    assert time.monotonic() - start < 1

@@ -950,8 +950,9 @@ def cad_mpns(fields: list[tuple[str, str]], value: str = "") -> tuple[list[str],
 
 def check_parts(project: Project, store: Store, cad: list[dict]) -> dict:
     """Compare the parts of the project with the parts of the CAD project. cad:
-    one item for each CAD part with an MPN: {"mpn", "datasheet" (optional),
-    "reference" (optional)}. Give:
+    one item for each CAD part: {"mpn", "datasheet" (optional), "reference"
+    (optional)}, or {"mpns", "conflict"} of bom_parts (mpns can be empty: a line
+    that gives only a conflict). Give:
     - ok: the MPNs that the project has.
     - different: {"cad", "mpn", "manufacturer", "ambiguous"} for a project part
       that is probably the same part with a different MPN (see _near).
@@ -960,7 +961,8 @@ def check_parts(project: Project, store: Store, cad: list[dict]) -> dict:
       references of the CAD symbols, the Datasheet field and the documents
       that the store has for the MPN.
     - extra: the project parts that the CAD project does not have.
-    - conflicts: the symbols whose fields name different parts (see cad_mpns).
+    - conflicts: the symbols whose fields name different parts (see cad_mpns), or
+      whose columns of one role are different (see bom_parts).
     An item can also give "value" (the Value field): the MPNs in it count (see
     cad_mpns). An alternative is a CAD part too, and needs its own datasheet: the
     Datasheet field of the symbol belongs to the main part."""
@@ -971,7 +973,8 @@ def check_parts(project: Project, store: Store, cad: list[dict]) -> dict:
         if "mpns" in item:  # computed by the caller (more MPN fields, see cad_mpns)
             mpns, conflict = list(item["mpns"]), str(item.get("conflict", ""))
         else:
-            mpns, conflict = cad_mpns([("MPN", str(item.get("mpn", "")))], str(item.get("value", "")))
+            mpns, conflict = cad_mpns([("MPN", _filled(str(item.get("mpn", ""))))],
+                                      _filled(str(item.get("value", ""))))
         if conflict:
             conflicts.append(f"{reference or 'a symbol'}: {conflict}")
         for i, mpn in enumerate(mpns):
@@ -1027,7 +1030,7 @@ def _near(cad: str, part: dict) -> bool:
     return not (shorter[-1].isdigit() and rest[:1].isdigit())
 
 
-# The column names of a BOM file, the best first, as _bom_column() compares them
+# The column names of a BOM file, the best first, as _bom_columns() compares them
 # (case, spaces, "_", "." and "-" do not count). KiCad (kicad-cli sch export
 # bom): Reference, Value, Datasheet, DNP and the fields of the symbols, for
 # example MPN or Manufacturer_Part_Number. Altium: Designator, "Manufacturer
@@ -1042,99 +1045,420 @@ DNP_COLUMNS = ("DNP", "Do not populate", "Do not place", "Not fitted")
 DATASHEET_COLUMNS = ("Datasheet", "Datasheet URL", "Datasheet Link")
 
 
-def _bom_column(names: list[str], wanted) -> str:
-    """The first name of wanted that the BOM has, as the BOM spells it, or "".
-    The case, spaces, "_", "." and "-" do not count."""
-    def key(text: str) -> str:
-        return re.sub(r"[\s_.\-]", "", text).lower()
+def _column_key(name: str) -> str:
+    """The name of a BOM column with no case, spaces, "_", "." and "-"."""
+    return re.sub(r"[\s_.\-]", "", name).lower()
 
-    have = {key(n): n for n in names}
-    return next((have[key(w)] for w in wanted if key(w) in have), "")
+
+def _bom_columns(keys: list[str], name: str) -> list[int]:
+    """The columns of a name. keys: the _column_key of each column name. The case,
+    spaces, "_", "." and "-" do not count, thus more columns can have the name (for
+    example the fields MPN and mpn of symbols from different libraries)."""
+    key = _column_key(name)
+    return [i for i, k in enumerate(keys) if k and k == key]
 
 
 BOM_SUFFIXES = (".csv", ".tsv", ".txt")  # CSV text; Excel writes "Unicode text" as .txt
+BOM_DELIMITERS = (",", ";", "\t", "|")  # the delimiters that the reader finds in the header
+BOM_MAX_BYTES = 20 * 1024 * 1024  # a larger file is not a BOM
 
 
-def _read_bom(path: str) -> tuple[list[str], list[dict], str]:
-    """The column names and the rows of a BOM file (CSV: comma, semicolon or tab), and
-    its encoding: UTF-16 with its byte order mark (Excel "Unicode text"), UTF-8, or
-    cp1252 (a BOM file from Windows) when it is not UTF-8."""
-    import csv
-
-    if Path(path).suffix.lower() not in BOM_SUFFIXES:
-        raise LensError(f"{path}: a BOM file must be CSV text ({', '.join(BOM_SUFFIXES)}): export the BOM as CSV")
+def _decode_bom(path: str) -> tuple[str, str]:
+    """The text of a BOM file and its encoding: UTF-16 with its byte order mark
+    (Excel "Unicode text"), UTF-8, or cp1252 (a BOM file from Windows) when it is
+    not UTF-8."""
     try:
         with open(path, "rb") as f:
-            head = f.read(2)
+            data = f.read(BOM_MAX_BYTES + 1)
     except OSError as e:
         raise LensError(f"{path}: cannot read the BOM file: {e.strerror or e}") from e
-    utf16 = head in (b"\xff\xfe", b"\xfe\xff")
-    for encoding in ("utf-16",) if utf16 else ("utf-8-sig", "cp1252"):
+    if len(data) > BOM_MAX_BYTES:
+        raise LensError(f"{path}: the file is larger than {BOM_MAX_BYTES // 2**20} MB: it is not a BOM file")
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
         try:
-            with open(path, encoding=encoding, newline="") as f:
-                sample = f.read(4096)
-                f.seek(0)
-                try:
-                    dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
-                except csv.Error:  # one column, or a sample that the sniffer cannot read
-                    dialect = csv.excel
-                reader = csv.DictReader(f, dialect=dialect)
-                rows = list(reader)
-                return [n for n in reader.fieldnames or [] if n], rows, encoding
+            return data.decode("utf-16"), "utf-16"
+        except UnicodeDecodeError:
+            raise LensError(f"{path}: not valid UTF-16 text: export the BOM again") from None
+    for encoding in ("utf-8", "cp1252"):
+        try:
+            # A UTF-8 byte order mark is not text of cp1252 either.
+            return data.removeprefix(b"\xef\xbb\xbf").decode(encoding), encoding
         except UnicodeDecodeError:
             continue
-        except csv.Error as e:
-            raise LensError(f"{path}: not a valid CSV file: {e}") from e
-    if utf16:
-        raise LensError(f"{path}: not valid UTF-16 text: export the BOM again")
     raise LensError(f"{path}: not UTF-8 or cp1252 text: export the BOM as UTF-8")
+
+
+def _filled(value: str) -> str:
+    """The value with no outer spaces, or "" for an empty value of KiCad ("~")."""
+    value = value.strip()
+    return "" if value == "~" else value
+
+
+def _references(text: str) -> frozenset[str]:
+    """The references of a text, with no regard to case and to the separators: R1 R2,
+    "R1, R2" and the range R1-R2 of KiCad give the same set."""
+    out: set[str] = set()
+    for word in re.split(r"[\s,;]+", text.upper()):
+        m = re.fullmatch(r"([A-Z_#]+)(\d+)-\1?(\d+)", word)
+        if m and int(m.group(2)) <= int(m.group(3)) <= int(m.group(2)) + 10000:
+            out.update(f"{m.group(1)}{n}" for n in range(int(m.group(2)), int(m.group(3)) + 1))
+        elif word:
+            out.add(word)
+    return frozenset(out)
+
+
+def _option_names(options: dict[str, str] | None) -> dict[str, str]:
+    """The names of the options column, delimiter and quote in the interface of the
+    caller, with a general name for a name that the caller does not give."""
+    return {key: (options or {}).get(key, f"the {key} option") for key in ("column", "delimiter", "quote")}
+
+
+def bom_format(delimiter: str, quote: str, options: dict[str, str]) -> tuple[str, str]:
+    """The delimiter and the quote of the options of an interface.
+
+    The delimiter is empty (the reader finds it), "tab", or a text (a preset of
+    KiCad can have a delimiter of more characters). The quote is '"' (also when
+    empty), "none" (no quotes), or a text, for example "'" (the Semicolons preset
+    of KiCad). options: the names of the options (see _option_names), for the
+    errors."""
+    delimiter_option = options["delimiter"]
+    if quote.lower() == "none":
+        quote = ""
+    elif not quote:
+        quote = '"'  # the default, also for an empty option
+    if delimiter.lower() == "tab":
+        delimiter = "\t"
+    elif delimiter == "\\t":
+        raise LensError(f"'\\t' is not a delimiter for {delimiter_option}: a tab is 'tab'")
+    if any(c in "\r\n" for c in delimiter + quote):
+        raise LensError(f"the delimiter and the quote cannot have a line end ({delimiter_option}, "
+                        f"{options['quote']})")
+    if delimiter and quote and (quote in delimiter or delimiter in quote):
+        raise LensError(f"the delimiter {delimiter!r} and the quote {quote!r} must be different "
+                        f"({delimiter_option}, {options['quote']})")
+    return delimiter, quote
+
+
+class _RecordError(Exception):
+    """A record of a BOM file that does not follow RFC 4180: (the line, the reason)."""
+
+
+QUOTE_NOT_CLOSED = "a quote that is not closed"
+QUOTE_NOT_AROUND_VALUE = "a quote that is not around a full value"
+DELIMITER_OVERLAP = "the delimiter can start at more than one place"
+QUOTE_RULE = "a value between quotes starts directly after a delimiter and ends directly before the next one"
+_LINE_END = re.compile(r"\r\n?|\n")
+
+
+def _between(value: str, quote: str) -> bool:
+    return len(value) >= 2 * len(quote) and value.startswith(quote) and value.endswith(quote)
+
+
+def _records(text: str, delimiter: str, quote: str, pos: int = 0, line: int = 1):
+    """The records of a BOM text from the offset pos (the start of the line line),
+    by the rules of RFC 4180: (the line where the record starts, its values). A
+    value with the quote, the delimiter or a line end is between quotes, and a
+    quote in it is doubled. A line end is CRLF, LF or CR. quote "": no quotes.
+    delimiter "": one column. The delimiter and the quote can have more
+    characters. A record with no value that is not empty (an empty line, or a
+    line with only delimiters) is not given.
+
+    Raises:
+        _RecordError: a record that does not follow the rules.
+    """
+    n = len(text)
+    run_end = -1  # the end of the run of delimiters that the check of DELIMITER_OVERLAP did
+    end_of_value = re.compile((re.escape(delimiter) + "|" if delimiter else "") + r"\r|\n")
+    while pos < n:
+        start, values = line, []
+        while True:
+            if quote and text.startswith(quote, pos):
+                parts, pos = [], pos + len(quote)
+                while True:
+                    k = text.find(quote, pos)
+                    if k < 0:
+                        raise _RecordError(start, QUOTE_NOT_CLOSED)
+                    parts.append(text[pos:k])
+                    line += len(_LINE_END.findall(text, pos, k))
+                    if not text.startswith(quote, k + len(quote)):
+                        pos = k + len(quote)
+                        break
+                    parts.append(quote)
+                    pos = k + 2 * len(quote)
+                values.append("".join(parts))
+                if pos < n and not (delimiter and text.startswith(delimiter, pos)) and text[pos] not in "\r\n":
+                    raise _RecordError(start, QUOTE_NOT_AROUND_VALUE)
+            else:
+                m = end_of_value.search(text, pos)
+                stop = m.start() if m else n
+                value = text[pos:stop]
+                if quote and quote in value:
+                    raise _RecordError(start, QUOTE_NOT_AROUND_VALUE)
+                values.append(value)
+                pos = stop
+            if delimiter and text.startswith(delimiter, pos):
+                if len(delimiter) > 1 and pos >= run_end:
+                    # A run of full delimiters is clear (empty values). A delimiter
+                    # that starts inside the last one of the run ("|||" with "||")
+                    # gives two readings.
+                    run = pos
+                    while text.startswith(delimiter, run):
+                        run += len(delimiter)
+                    if any(text.startswith(delimiter, run - len(delimiter) + k) for k in range(1, len(delimiter))):
+                        raise _RecordError(start, DELIMITER_OVERLAP)
+                    run_end = run
+                pos += len(delimiter)
+                continue
+            m = _LINE_END.match(text, pos)
+            pos = m.end() if m else n
+            line += 1
+            break
+        if any(value.strip() for value in values):
+            yield start, values
+
+
+def _known_columns(column: str) -> set[str]:
+    """The keys of the column names that the reader knows, and of the column of the caller."""
+    names = MPN_COLUMNS + REFERENCE_COLUMNS + DNP_COLUMNS + DATASHEET_COLUMNS + ((column,) if column else ())
+    return {_column_key(n) for n in names}
+
+
+def _bom_delimiter(path: str, text: str, pos: int, line: int, quote: str, option: str) -> tuple[str, list[str]]:
+    """The delimiter of a BOM file: the one of BOM_DELIMITERS that splits the header
+    record into more than one value (a delimiter at the end of the line counts),
+    or "" (one column) when none splits it. When more delimiters split it, the
+    caller must give it. Also gives the errors of the delimiters that do not
+    follow the rules of CSV in the header."""
+    found, errors = [], []
+    for d in BOM_DELIMITERS:
+        if quote and (d in quote or quote in d):
+            continue  # the quote of the file is not its delimiter
+        try:
+            header = next(_records(text, d, quote, pos, line), None)
+        except _RecordError as e:
+            errors.append(f"with {d!r}: {e.args[1]}")
+            continue
+        if header and len(header[1]) > 1:
+            found.append(d)
+    if len(found) > 1:
+        raise LensError(f"{path}: the delimiters {' and '.join(map(repr, found))} split the header line: give the "
+                        f"delimiter with {option}")
+    return (found[0] if found else ""), errors
+
+
+def _sep_line(path: str, line: str, number: int, quote: str) -> str:
+    """The delimiter of the Excel line "sep=;", or "" when the line is not one. The
+    line can be between quotes. LibreOffice can save the file again with
+    delimiters after it ("sep=;;;", or an other delimiter: "sep=;",,), which give
+    the delimiter of the file."""
+    if not re.match(r"""\s*["']?sep=""", line, re.IGNORECASE):
+        return ""
+    marker = re.fullmatch(r"""\s*(["']?)sep=([^\w\r\n])\1(.*)""", line, re.IGNORECASE)
+    sep, rest = (marker.group(2), marker.group(3)) if marker else ("", "")
+    rest = rest if sep == " " else rest.strip(" ")
+    if not marker or len(set(rest)) > 1 or (rest and rest[0] not in set(BOM_DELIMITERS) | {sep}):
+        raise LensError(f"{path}: line {number}: the line 'sep=' of the file does not give one delimiter: correct or "
+                        "remove the line")
+    found = rest[0] if rest else sep
+    if quote and found in quote:
+        raise LensError(f"{path}: line {number}: the line 'sep=' of the file gives the delimiter {found!r}, which is "
+                        f"the quote {quote!r}: correct the line in the file, or give an other quote")
+    return found
+
+
+def _read_bom(path: str, delimiter: str = "", quote: str = '"', column: str = "",
+              options: dict[str, str] | None = None,
+              quote_given: bool = False) -> tuple[list[str], list[list[str]], str]:
+    """The column names, the rows (one value for each column) and the encoding of a
+    BOM file: CSV (RFC 4180).
+
+    quote: the quote, '"' (CSV, Excel, the CSV preset of KiCad), "'" (the
+    Semicolons preset of KiCad), "" (no quotes: the TSV preset of KiCad), or an
+    other text. delimiter: empty to find it (the Excel line "sep=;", else
+    _bom_delimiter). column: the MPN column of the caller. See bom_format for the
+    values of the options of the interfaces. options: the names of the options
+    column, delimiter and quote (see _option_names), for the errors.
+    quote_given: the caller gave the quote; else it is the default '"'.
+
+    A header with one value is a file with one column only when the value is a
+    known column name or the column of the caller. A record with fewer values than
+    the header gets empty values (Excel can leave out the empty values at the end
+    of a line). A record with more values gives an error when a value after the
+    last column is not empty: a delimiter in a value with no quotes moves the
+    columns. A column with no name is not used."""
+    options = options or _option_names(None)
+    delimiter_option, quote_option, column_option = options["delimiter"], options["quote"], options["column"]
+    if Path(path).suffix.lower() not in BOM_SUFFIXES:
+        raise LensError(f"{path}: a BOM file must be CSV text ({', '.join(BOM_SUFFIXES)}): export the BOM as CSV")
+    text, encoding = _decode_bom(path)
+    pos, first = 0, 1
+    while True:  # the first line that is not empty (only spaces or delimiters)
+        m = _LINE_END.search(text, pos)
+        line = text[pos:m.start()] if m else text[pos:]
+        if line.strip(" \t" + "".join(BOM_DELIMITERS)) or not m:
+            break
+        pos, first = m.end(), first + 1
+    sep = _sep_line(path, line, first, quote)
+    if sep:
+        if delimiter and delimiter != sep:
+            raise LensError(f"{path}: the file gives the delimiter {sep!r} (line {first}, 'sep='), but "
+                            f"{delimiter_option} gives {delimiter!r}")
+        delimiter = sep
+        m = _LINE_END.search(text, pos)  # the header is after the line "sep="
+        pos, first = (m.end() if m else len(text)), first + 1
+    errors: list[str] = []
+    try:
+        if not delimiter:
+            delimiter, errors = _bom_delimiter(path, text, pos, first, quote, delimiter_option)
+        records = _records(text, delimiter, quote, pos, first)
+        header = next(records, None)
+        if header is None:
+            return [], [], encoding
+        first, names = header
+        # The Semicolons preset of KiCad puts each name between "'": with the quote
+        # '"', such a header means that the file uses the quote "'". (One name
+        # between "'" is a valid name of CSV.)
+        if not quote_given and all(_between(n.strip(), "'") for n in names if n.strip()):
+            raise LensError(f"{path}: line {first}: each name of the header is between ': give the quote ' with "
+                            f"{quote_option}")
+        if len(names) == 1 and _column_key(names[0]) not in _known_columns(column):
+            why = f" (by the rules of CSV: {'; '.join(errors)}; {QUOTE_RULE})" if errors else ""
+            which = f"the delimiter {delimiter!r} does not split" if delimiter else "no delimiter of , ; tab | splits"
+            raise LensError(f"{path}: line {first}: {which} the header line{why}. Give the "
+                            f"delimiter of the file with {delimiter_option}, or the quote with {quote_option} (none for "
+                            f"a file with no quotes); for a "
+                            f"file with one column, give its name with {column_option}")
+        rows: list[list[str]] = []
+        for start, row in records:
+            if any(value.strip() for value in row[len(names):]):
+                raise LensError(f"{path}: line {start} has more values than the header line: a delimiter in a "
+                                f"value with no quotes moves the columns; or give the delimiter with "
+                                f"{delimiter_option}")
+            rows.append(row[:len(names)] + [""] * (len(names) - len(row)))
+    except _RecordError as e:
+        line, reason = e.args
+        if not delimiter:
+            why = f" (by the rules of CSV: {'; '.join(errors)})" if errors else ""
+            hint = (f"; no delimiter splits the header line{why}, thus the reader uses one column. {QUOTE_RULE}. "
+                    f"Give the delimiter with {delimiter_option}, or the quote with {quote_option} (none for a "
+                    "file with no quotes)")
+        elif reason == DELIMITER_OVERLAP:
+            hint = f" ({delimiter!r}): put the value between quotes, or give an other delimiter with {delimiter_option}"
+        else:
+            hint = (f"; {QUOTE_RULE}. For an other quote, give it with {quote_option}: ' (the Semicolons preset "
+                    "of KiCad) or none (a file with no quotes: the TSV preset of KiCad, Eagle)")
+        raise LensError(f"{path}: line {line} is not valid CSV: {reason}{hint}") from e
+    return [n.strip() for n in names], rows, encoding
 
 
 @dataclass
 class BomParts:
     """The CAD parts of a BOM file, for check_parts."""
-    cad: list[dict]  # one item for each line with an MPN that is fitted
+    cad: list[dict]  # one item for each fitted line with an MPN or a conflict (mpns can be empty)
     summary: str  # one line: the columns that the parts come from, and the number of lines with an MPN
 
 
-def bom_parts(path: str, column: str = "", column_option: str = "the column option") -> BomParts:
+def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
+              options: dict[str, str] | None = None) -> BomParts:
     """Read the CAD parts of a BOM file (CSV), for example from "kicad-cli sch
     export bom". column: the column of the MPN; empty: each column of
-    MPN_COLUMNS that the BOM has. The Value column is always read (alternatives,
-    conflicts). A line with a value in the DNP column is not fitted: it gives no
-    part. The values empty, 0, no and false mean fitted. column_option: the name
-    of the option for column in the interface of the caller, for the errors."""
-    names, rows, encoding = _read_bom(path)
-    value_column = _bom_column(names, ["Value"])
+    MPN_COLUMNS that the BOM has, each one an MPN field for cad_mpns (also more
+    columns of one name, for example MPN and mpn of symbols from different
+    libraries). The Value column is always read (alternatives, conflicts). A line
+    with a value in the DNP column is not fitted: it gives no part. The values
+    empty, 0, no and false mean fitted.
+
+    More Value, DNP, Reference or Datasheet columns (also with different names of
+    one list, for example DNP and "Do not populate"): the first filled one gives
+    the value, and a line in which they are different gets a conflict. A line is
+    not fitted only when each DNP column says so; thus the line of a conflict
+    needs its datasheet. All MPNs of more Value columns count.
+
+    delimiter, quote: the values of the options of the interface (see
+    bom_format). options: the names of the options column, delimiter and quote in
+    the interface of the caller, for the errors."""
+    options = _option_names(options)
+    quote_given = bool(quote)
+    delimiter, quote = bom_format(delimiter, quote, options)
+    names, rows, encoding = _read_bom(path, delimiter, quote, column, options, quote_given)
+    if not names:
+        raise LensError(f"{path}: the BOM file has no header line: export the BOM again")
+    # A name that more columns have gets the number of its column.
+    labels = [f"{n} (column {i + 1})" if n and names.count(n) > 1 else n for i, n in enumerate(names)]
+    shown = [label for label in labels if label]
+    roles = {"Value": ["Value"], "DNP": DNP_COLUMNS, "Reference": REFERENCE_COLUMNS, "Datasheet": DATASHEET_COLUMNS}
+    # Each column of each name of a role, for example DNP and "Do not populate".
+    keys = [_column_key(n) for n in names]
+    found = {role: [i for w in wanted for i in _bom_columns(keys, w)] for role, wanted in roles.items()}
+    value_columns = found["Value"]
     if column:
-        chosen = _bom_column(names, [column])
-        if not chosen:
-            raise LensError(f"{path}: no column {column!r} ({', '.join(names)})")
-        field_columns = [] if chosen == value_column else [chosen]
+        matched = _bom_columns(keys, column)
+        if not matched:
+            raise LensError(f"{path}: no column {column!r} ({', '.join(shown)})")
+        field_columns = [i for i in matched if i not in value_columns]
     else:
-        field_columns = [c for c in dict.fromkeys(_bom_column(names, [w]) for w in MPN_COLUMNS)
-                         if c and c != value_column]
-    columns = field_columns + ([value_column] if value_column else [])
+        field_columns = [i for w in MPN_COLUMNS if _column_key(w) != "value"
+                         for i in _bom_columns(keys, w) if i not in value_columns]
+    columns = list(dict.fromkeys(labels[i] for i in field_columns + value_columns))
     if not columns:
-        raise LensError(f"{path}: no MPN column; give the column of the MPN with {column_option} "
-                        f"({', '.join(names)})")
-    ref_column, dnp = _bom_column(names, REFERENCE_COLUMNS), _bom_column(names, DNP_COLUMNS)
-    datasheet = _bom_column(names, DATASHEET_COLUMNS)
+        hint = (f"; if the file uses the quote ', give it with {options['quote']}"
+                if quote == '"' and any(n.strip().startswith("'") for n in names) else "")
+        raise LensError(f"{path}: no MPN column; give the column of the MPN with {options['column']} "
+                        f"({', '.join(shown)}){hint}")
+
+    # How the values of more columns of one role compare: a value with no regard to
+    # case and spaces (100nF, 100 nF), the references as a set (R1 R2, "R1, R2"),
+    # a datasheet as text.
+    compare = {"Value": lambda v: re.sub(r"\s+", "", v.lower()),
+               "Reference": _references,
+               "Datasheet": lambda v: v}
+
+    def role(row: list[str], name: str) -> tuple[str, str]:
+        """The first filled value of the columns of a role, and the conflict text
+        when two filled values are different."""
+        filled = [(labels[i], _filled(row[i])) for i in found[name] if _filled(row[i])]
+        conflict = len({compare[name](v) for _, v in filled}) > 1
+        return (filled[0][1] if filled else ""), (", ".join(f"{label} {v}" for label, v in filled) if conflict else "")
+
+    def fitted(value: str) -> bool:
+        return _filled(value).lower() in ("", "0", "no", "false")
+
     cad = []
     for row in rows:
-        if dnp and (row.get(dnp) or "").strip().lower() not in ("", "0", "no", "false"):
+        states = [fitted(row[i]) for i in found["DNP"]]
+        if states and not any(states):
             continue  # not fitted
-        # The MPN fields, and the Value field: it also holds values of passive
-        # parts and alternatives (see cad_mpns).
-        mpns, conflict = cad_mpns([(c, row.get(c) or "") for c in field_columns],
-                                  row.get(value_column) or "" if value_column else "")
-        if not mpns:
-            continue
-        cad.append({"mpns": mpns, "conflict": conflict,
-                    "datasheet": (row.get(datasheet) or "").strip() if datasheet else "",
-                    "reference": (row.get(ref_column) or "").strip() if ref_column else ""})
-    summary = (f"{path}: MPN from {', '.join(columns)}" + (f"; references from {ref_column}" if ref_column else "")
-               + ("; read as cp1252" if encoding == "cp1252" else "") + f"; {len(cad)} lines with an MPN")
+        # The MPN fields, and each Value column: a Value also holds values of
+        # passive parts and alternatives (see cad_mpns).
+        values = [(labels[i], row[i]) for i in value_columns]
+        # Each MPN of each Value column counts (more Value columns: see role).
+        value = "; ".join(_filled(text) for _, text in values if _filled(text))
+        mpns, conflict = cad_mpns([(labels[i], _filled(row[i])) for i in field_columns], value)
+        # Two Value columns are different when their values are different, and when
+        # they are not one part (TLV755P and TLV75533PDBVR are one part).
+        filled = [(label, _filled(text)) for label, text in values if _filled(text)]
+        found_mpns = [mpns_in_value(text) for _, text in filled]
+
+        def one_part(a: int, b: int) -> bool:
+            ma, mb = found_mpns[a], found_mpns[b]
+            return len(ma) == len(mb) == 1 and _same_mpn(ma[0], mb[0])
+
+        value_conflict = ", ".join(f"{label} {text}" for label, text in filled) if any(
+            compare["Value"](filled[a][1]) != compare["Value"](filled[b][1]) and not one_part(a, b)
+            for a in range(len(filled)) for b in range(a + 1, len(filled))) else ""
+        reference, reference_conflict = role(row, "Reference")
+        datasheet, datasheet_conflict = role(row, "Datasheet")
+        # An empty DNP value is a state too (fitted).
+        dnp_conflict = (", ".join(f"{labels[i]} {_filled(row[i]) or '(empty)'}" for i in found["DNP"])
+                        if len(set(states)) > 1 else "")
+        conflicts = [c for c in (conflict, value_conflict, dnp_conflict, reference_conflict, datasheet_conflict) if c]
+        if mpns or conflicts:  # a line with no MPN gives only its conflicts
+            cad.append({"mpns": mpns, "conflict": "; ".join(conflicts), "datasheet": datasheet,
+                        "reference": reference})
+    references = ", ".join(labels[i] for i in found["Reference"])
+    summary = (f"{path}: MPN from {', '.join(columns)}" + (f"; references from {references}" if references else "")
+               + ("; read as cp1252" if encoding == "cp1252" else "")
+               + f"; {sum(1 for item in cad if item['mpns'])} lines with an MPN")
     return BomParts(cad, summary)
 
 
