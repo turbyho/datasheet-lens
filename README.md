@@ -2,16 +2,29 @@
 
 # datasheet-lens
 
-datasheet-lens gives the content of component datasheets (PDF) to an LLM agent,
-for electronics design (KiCad and other CAD tools) and firmware work.
+datasheet-lens is a central store for the datasheets of electronic components. It
+keeps each datasheet one time and connects it to the projects that use it. Thus each
+person and each AI agent of a project uses the same correct documents.
 
-The tool does not convert a datasheet to text. A conversion makes errors that look
-correct: lost superscripts, merged table rows, shifted columns, wrong values from
-graphs. datasheet-lens builds an index to find the content, and gives the original
-pages and regions to the model on demand. The model reads only the parts that the
-work needs, and reads each value from the original.
+- **Electronics design.** The project file `datasheet-lens.toml` in the repository
+  of a design holds the parts of the design and their datasheets. datasheet-lens
+  keeps this list the same as the parts of the CAD project (KiCad and other EDA
+  tools).
+- **Software and firmware.** The developers and their AI agents get the same
+  datasheets as the hardware team: the same document and revision, not a copy from
+  an unknown source.
+- **One source for the two.** The hardware design and the software can use one
+  project file, or each a project file with the same parts. The store identifies
+  each PDF by its SHA-256, thus the two projects use the same document.
 
-Status: in development (version 0.1). The tools work and have tests. The
+An LLM agent reads the datasheets through an MCP server. The tool does not convert
+a datasheet to text. A conversion makes errors that look correct: lost
+superscripts, merged table rows, shifted columns, wrong values from graphs.
+datasheet-lens builds an index to find the content, and gives the original pages
+and regions to the model on demand. The model reads only the parts that the work
+needs, and reads each value from the original.
+
+Status: in development (version 0.2). The tools work and have tests. The
 interfaces can change.
 
 ## Features
