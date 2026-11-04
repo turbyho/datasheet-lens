@@ -111,7 +111,7 @@ project folder. The other tools only read.
 | Tool | Function | Main parameters | Changes |
 |---|---|---|---|
 | `project_status` | Give the parts and documents of the project file, and the state of the copies. | `path` | no |
-| `project_check` | Compare the project file with the parts of the CAD project. Give the conflicts in the CAD project, and the same, different, missing and extra parts, with the next call for each. | `parts` (list of `mpn`, `value`, `datasheet`, `reference`; the fields as they are), `path` | no |
+| `project_check` | Compare the project file with the parts of the CAD project. Give the conflicts in the CAD project, and the same, different, missing and extra parts, with the next call for each. | `parts` (list of `mpn`, `value`, `datasheet`, `reference`; the fields as they are) or `bom` (the path of a BOM file, CSV), `bom_column`, `path` | no |
 | `project_add_part` | Add a part to the project file, with the documents that the store links to it. | `mpn`, `base`, `document`, `manufacturer`, `category`, `role`, `path` | store, project file |
 | `project_update_part` | Change the MPN, base part, category or manufacturer of a project part in place. | `mpn`, `new_mpn`, `base`, `category`, `new_manufacturer`, `manufacturer`, `path` | store, project file |
 | `project_remove_part` | Remove a part from the project, and delete its copies that no other part uses. | `mpn`, `manufacturer`, `delete_pinned`, `dry_run`, `path` | project file, project folder |

@@ -43,14 +43,14 @@ project file must hold the same parts as the CAD project.
 
 **Steps.**
 
-1. Get the parts of the CAD project: from the CAD tool or its MCP server, or a BOM
-   export as CSV (`kicad-cli sch export bom`). Give the MPN and Value fields as they
-   are: each part with an MPN needs its datasheet, also a capacitor with
-   `390uF (EEU-FS1H391L)` in its Value.
-2. Compare them with the project file:
-   `project_check(parts)` (CLI: `datasheet-lens check bom.csv`). The MCP tool takes
-   a list of parts from any source. The CLI command reads a CSV file. It is tested
-   only with BOM exports of KiCad and Eagle.
+1. Get the parts of the CAD project: a BOM export as CSV with one line for each
+   symbol (`kicad-cli sch export bom`, or `export_bom` of the MCP server
+   kicad-workbench), or a list from the MCP server of the CAD tool. Give the MPN and
+   Value fields as they are: each part with an MPN needs its datasheet, also a
+   capacitor with `390uF (EEU-FS1H391L)` in its Value.
+2. Compare them with the project file: `project_check(bom=<CSV file>)` or
+   `project_check(parts)` (CLI: `datasheet-lens check bom.csv`). The CSV reader is
+   tested only with BOM exports of KiCad and Eagle.
 3. For each `conflict`: tell the user. The MPN field and the Value field of one
    symbol name different parts, for example a new Value and the attributes of the
    old library part. One of the fields is wrong.

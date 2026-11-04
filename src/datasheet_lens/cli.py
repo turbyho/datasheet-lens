@@ -3,7 +3,6 @@
 import argparse
 import contextlib
 import math
-import re
 import sys
 from pathlib import Path
 
@@ -617,93 +616,15 @@ def cmd_codes(args: argparse.Namespace) -> int:
     return 0
 
 
-# The column names of a BOM file, the best first, as _column() compares them
-# (case, spaces, "_", "." and "-" do not count). KiCad (kicad-cli sch export
-# bom): Reference, Value, Datasheet, DNP and the fields of the symbols, for
-# example MPN or Manufacturer_Part_Number. Altium: Designator, "Manufacturer
-# Part Number 1". Eagle and Fusion: Parts, Value, and the attributes of the
-# libraries: MP (SnapEDA) or MANUFACTURER_PART_NUMBER (Mouser, SamacSys), each
-# part in one of them. Thus each row gets the MPN from the first filled column.
-# Value is the last choice: it also holds values of passive parts.
-MPN_COLUMNS = ("MPN", "Manufacturer Part Number", "Manufacturer Part Number 1", "MPN 1", "MP", "Mfr Part Number",
-               "Mfr PN", "Manufacturer PN", "Value")  # not "Part Number": often a part number of the company
-REFERENCE_COLUMNS = ("Reference", "References", "Refs", "Designator", "Designators", "RefDes", "Parts")
-DNP_COLUMNS = ("DNP", "Do not populate", "Do not place", "Not fitted")
-DATASHEET_COLUMNS = ("Datasheet", "Datasheet URL", "Datasheet Link")
-
-
-def _column(names: list[str], wanted) -> str:
-    """The first name of wanted that the BOM has, as the BOM spells it, or "".
-    The case, spaces, "_", "." and "-" do not count."""
-    def key(text: str) -> str:
-        return re.sub(r"[\s_.\-]", "", text).lower()
-
-    have = {key(n): n for n in names}
-    return next((have[key(w)] for w in wanted if key(w) in have), "")
-
-
-def _read_bom(path: str) -> tuple[list[dict], str]:
-    """The rows of a BOM file (CSV: comma, semicolon or tab) and its encoding:
-    UTF-16 with its byte order mark (Excel "Unicode text"), UTF-8, or cp1252 (a
-    BOM file from Windows) when it is not UTF-8."""
-    import csv
-
-    with open(path, "rb") as f:
-        head = f.read(2)
-    utf16 = head in (b"\xff\xfe", b"\xfe\xff")
-    for encoding in ("utf-16",) if utf16 else ("utf-8-sig", "cp1252"):
-        try:
-            with open(path, encoding=encoding, newline="") as f:
-                sample = f.read(4096)
-                f.seek(0)
-                try:
-                    dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
-                except csv.Error:  # one column, or a sample that the sniffer cannot read
-                    dialect = csv.excel
-                return list(csv.DictReader(f, dialect=dialect)), encoding
-        except UnicodeDecodeError:
-            continue
-    raise LensError(f"{path}: not UTF-8 or cp1252 text: export the BOM as UTF-8")
-
-
 def cmd_check(args: argparse.Namespace) -> int:
     """The command check: compare the project with a BOM file (CSV) of the CAD
     project, for example from "kicad-cli sch export bom"."""
-    from .project import cad_mpns, check_parts, format_check, load
+    from .project import bom_parts, check_parts, format_check, load
 
-    rows, encoding = _read_bom(args.bom)
-    names = list(rows[0]) if rows else []
-    # The Value field is always read (alternatives, conflicts); --column selects the MPN field.
-    value_column = _column(names, ["Value"])
-    if args.column:
-        chosen = _column(names, [args.column])
-        if not chosen:
-            raise LensError(f"{args.bom}: no column {args.column!r} ({', '.join(names)})")
-        field_columns = [] if chosen == value_column else [chosen]
-    else:
-        field_columns = [c for c in dict.fromkeys(_column(names, [w]) for w in MPN_COLUMNS) if c and c != value_column]
-    columns = field_columns + ([value_column] if value_column else [])
-    if not columns:
-        raise LensError(f"{args.bom}: no MPN column; give one with --column ({', '.join(names)})")
-    ref_column, dnp = _column(names, REFERENCE_COLUMNS), _column(names, DNP_COLUMNS)
-    datasheet = _column(names, DATASHEET_COLUMNS)
-    cad = []
-    for row in rows:
-        if dnp and (row.get(dnp) or "").strip().lower() not in ("", "0", "no", "false"):
-            continue  # not fitted
-        # The MPN fields, and the Value field: it also holds values of passive
-        # parts and alternatives (see project.cad_mpns).
-        mpns, conflict = cad_mpns([(c, row.get(c) or "") for c in field_columns],
-                                  row.get(value_column) or "" if value_column else "")
-        if not mpns:
-            continue
-        cad.append({"mpns": mpns, "conflict": conflict,
-                    "datasheet": (row.get(datasheet) or "").strip() if datasheet else "",
-                    "reference": (row.get(ref_column) or "").strip() if ref_column else ""})
+    bom = bom_parts(args.bom, args.column or "", "--column")
     with Store() as store:
-        result = check_parts(load(args.path), store, cad)
-    print(f"{args.bom}: MPN from {', '.join(columns)}" + (f"; references from {ref_column}" if ref_column else "")
-          + ("; read as cp1252" if encoding == "cp1252" else "") + f"; {len(cad)} lines with an MPN")
+        result = check_parts(load(args.path), store, bom.cad)
+    print(bom.summary)
     print("\n".join(format_check(result, cli=True)))
     return 0
 

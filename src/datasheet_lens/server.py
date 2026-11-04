@@ -91,12 +91,13 @@ User project: the project file datasheet-lens.toml must hold the same parts as
 the CAD project (schematic, BOM). This is critical: the team uses the file as
 the list of the datasheets of the design. At the start of the work, and after
 each change of the CAD project, do these steps:
-1. Get the parts of the CAD project (MPN, Datasheet field) from the CAD tool,
-   for example its MCP server or its BOM export. A part with no MPN (a generic
-   resistor, a test point) needs no datasheet.
-2. project_check(parts) with all of these parts: it gives the parts that are
-   missing, extra or different, with the next call. Give path when the working
-   folder of the server is not in the project.
+1. Get the parts of the CAD project (MPN, Datasheet field) from the CAD tool:
+   a BOM file (CSV, one line for each symbol, for example export_bom of the
+   MCP server kicad-workbench) or a list from its MCP server. A part with no
+   MPN (a generic resistor, a test point) needs no datasheet.
+2. project_check(bom=<CSV file>) or project_check(parts) with all parts: it
+   gives the parts that are missing, extra or different, with the next call.
+   Give path when the working folder of the server is not in the project.
 3. For each missing part: find its datasheet (list_documents), or add it with
    add_document (the URL of the Datasheet field or of a distributor, or a local
    PDF). Then project_add_part(mpn, base, document). mpn is the concrete
@@ -913,10 +914,20 @@ class CadPart(BaseModel):
 
 @tool
 def project_check(
-        parts: Annotated[list[CadPart], Field(description=(
-            "The parts of the CAD project, from the CAD tool (for example its MCP server or its BOM export). "
-            "One item for each symbol or BOM line, with its MPN and Value fields as they are; give each "
-            "part, not only the new ones. A part with no MPN in the two fields needs no datasheet."))],
+        parts: Annotated[list[CadPart] | None, Field(description=(
+            "The parts of the CAD project, from the CAD tool (for example its MCP server). One item for each "
+            "symbol or BOM line, with its MPN and Value fields as they are; give each part, not only the new "
+            "ones. A part with no MPN in the two fields needs no datasheet. Give parts or bom, not the two."))]
+        = None,
+        bom: Annotated[str, Field(description=(
+            "The path of a BOM file (CSV) of the full CAD project, with one line for each symbol: for example "
+            "the CSV file of 'kicad-cli sch export bom' (the MCP server kicad-workbench writes it with "
+            "export_bom and output_path). A .csv, .tsv or .txt file: an absolute path, or a path relative to "
+            "the project folder (path). The tool finds the columns by their names (MPN, Value, Reference, "
+            "Datasheet, DNP); a line with DNP is not fitted. Give parts or bom, not the two."))] = "",
+        bom_column: Annotated[str, Field(description=(
+            "The column of the MPN in the BOM file. Empty: each column with a usual MPN name (MPN, "
+            "Manufacturer Part Number, MP ...). The tool always reads the Value column too."))] = "",
         path: ProjectPath = "") -> str:
     """Compare the project file with the parts of the CAD project, so that the
     two hold the same parts. Each part with an MPN needs its datasheet, also a
@@ -925,14 +936,25 @@ def project_check(
     the number of the same parts, and one line for each part that is different
     (one part with two MPNs), missing (with the documents of the store or the
     Datasheet field, and the next call; an alternative of a part is missing
-    too) or extra. It changes nothing."""
-    from .project import check_parts, format_check, load
+    too) or extra. With bom, one line before the result gives the columns
+    that the tool read. It changes nothing."""
+    from pathlib import Path
+
+    from .project import bom_parts, check_parts, format_check, load
     from .version_check import version_notes
 
+    if (parts is None) == (not bom):
+        raise LensError("give the parts of the CAD project in parts or in a BOM file (bom), not the two")
+    if bom_column and not bom:
+        raise LensError("bom_column needs a BOM file (bom)")
+    # A relative path is relative to the project folder, as the other paths of a project.
+    bom_path = str(Path(path or ".").expanduser() / Path(bom).expanduser()) if bom else ""
+    read = bom_parts(bom_path, bom_column, "bom_column") if bom else None
+    cad = read.cad if read else [p.model_dump() for p in parts or []]
     with Store() as store:
         project = load(path or None)
-        result = check_parts(project, store, [p.model_dump() for p in parts])
-    return "\n".join(version_notes() + format_check(result))
+        result = check_parts(project, store, cad)
+    return "\n".join(version_notes() + ([read.summary] if read else []) + format_check(result))
 
 
 @tool

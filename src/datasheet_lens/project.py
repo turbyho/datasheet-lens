@@ -1027,6 +1027,117 @@ def _near(cad: str, part: dict) -> bool:
     return not (shorter[-1].isdigit() and rest[:1].isdigit())
 
 
+# The column names of a BOM file, the best first, as _bom_column() compares them
+# (case, spaces, "_", "." and "-" do not count). KiCad (kicad-cli sch export
+# bom): Reference, Value, Datasheet, DNP and the fields of the symbols, for
+# example MPN or Manufacturer_Part_Number. Altium: Designator, "Manufacturer
+# Part Number 1". Eagle and Fusion: Parts, Value, and the attributes of the
+# libraries: MP (SnapEDA) or MANUFACTURER_PART_NUMBER (Mouser, SamacSys), each
+# part in one of them. Thus each row gets the MPN from the first filled column.
+# Value is the last choice: it also holds values of passive parts.
+MPN_COLUMNS = ("MPN", "Manufacturer Part Number", "Manufacturer Part Number 1", "MPN 1", "MP", "Mfr Part Number",
+               "Mfr PN", "Manufacturer PN", "Value")  # not "Part Number": often a part number of the company
+REFERENCE_COLUMNS = ("Reference", "References", "Refs", "Designator", "Designators", "RefDes", "Parts")
+DNP_COLUMNS = ("DNP", "Do not populate", "Do not place", "Not fitted")
+DATASHEET_COLUMNS = ("Datasheet", "Datasheet URL", "Datasheet Link")
+
+
+def _bom_column(names: list[str], wanted) -> str:
+    """The first name of wanted that the BOM has, as the BOM spells it, or "".
+    The case, spaces, "_", "." and "-" do not count."""
+    def key(text: str) -> str:
+        return re.sub(r"[\s_.\-]", "", text).lower()
+
+    have = {key(n): n for n in names}
+    return next((have[key(w)] for w in wanted if key(w) in have), "")
+
+
+BOM_SUFFIXES = (".csv", ".tsv", ".txt")  # CSV text; Excel writes "Unicode text" as .txt
+
+
+def _read_bom(path: str) -> tuple[list[str], list[dict], str]:
+    """The column names and the rows of a BOM file (CSV: comma, semicolon or tab), and
+    its encoding: UTF-16 with its byte order mark (Excel "Unicode text"), UTF-8, or
+    cp1252 (a BOM file from Windows) when it is not UTF-8."""
+    import csv
+
+    if Path(path).suffix.lower() not in BOM_SUFFIXES:
+        raise LensError(f"{path}: a BOM file must be CSV text ({', '.join(BOM_SUFFIXES)}): export the BOM as CSV")
+    try:
+        with open(path, "rb") as f:
+            head = f.read(2)
+    except OSError as e:
+        raise LensError(f"{path}: cannot read the BOM file: {e.strerror or e}") from e
+    utf16 = head in (b"\xff\xfe", b"\xfe\xff")
+    for encoding in ("utf-16",) if utf16 else ("utf-8-sig", "cp1252"):
+        try:
+            with open(path, encoding=encoding, newline="") as f:
+                sample = f.read(4096)
+                f.seek(0)
+                try:
+                    dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+                except csv.Error:  # one column, or a sample that the sniffer cannot read
+                    dialect = csv.excel
+                reader = csv.DictReader(f, dialect=dialect)
+                rows = list(reader)
+                return [n for n in reader.fieldnames or [] if n], rows, encoding
+        except UnicodeDecodeError:
+            continue
+        except csv.Error as e:
+            raise LensError(f"{path}: not a valid CSV file: {e}") from e
+    if utf16:
+        raise LensError(f"{path}: not valid UTF-16 text: export the BOM again")
+    raise LensError(f"{path}: not UTF-8 or cp1252 text: export the BOM as UTF-8")
+
+
+@dataclass
+class BomParts:
+    """The CAD parts of a BOM file, for check_parts."""
+    cad: list[dict]  # one item for each line with an MPN that is fitted
+    summary: str  # one line: the columns that the parts come from, and the number of lines with an MPN
+
+
+def bom_parts(path: str, column: str = "", column_option: str = "the column option") -> BomParts:
+    """Read the CAD parts of a BOM file (CSV), for example from "kicad-cli sch
+    export bom". column: the column of the MPN; empty: each column of
+    MPN_COLUMNS that the BOM has. The Value column is always read (alternatives,
+    conflicts). A line with a value in the DNP column is not fitted: it gives no
+    part. The values empty, 0, no and false mean fitted. column_option: the name
+    of the option for column in the interface of the caller, for the errors."""
+    names, rows, encoding = _read_bom(path)
+    value_column = _bom_column(names, ["Value"])
+    if column:
+        chosen = _bom_column(names, [column])
+        if not chosen:
+            raise LensError(f"{path}: no column {column!r} ({', '.join(names)})")
+        field_columns = [] if chosen == value_column else [chosen]
+    else:
+        field_columns = [c for c in dict.fromkeys(_bom_column(names, [w]) for w in MPN_COLUMNS)
+                         if c and c != value_column]
+    columns = field_columns + ([value_column] if value_column else [])
+    if not columns:
+        raise LensError(f"{path}: no MPN column; give the column of the MPN with {column_option} "
+                        f"({', '.join(names)})")
+    ref_column, dnp = _bom_column(names, REFERENCE_COLUMNS), _bom_column(names, DNP_COLUMNS)
+    datasheet = _bom_column(names, DATASHEET_COLUMNS)
+    cad = []
+    for row in rows:
+        if dnp and (row.get(dnp) or "").strip().lower() not in ("", "0", "no", "false"):
+            continue  # not fitted
+        # The MPN fields, and the Value field: it also holds values of passive
+        # parts and alternatives (see cad_mpns).
+        mpns, conflict = cad_mpns([(c, row.get(c) or "") for c in field_columns],
+                                  row.get(value_column) or "" if value_column else "")
+        if not mpns:
+            continue
+        cad.append({"mpns": mpns, "conflict": conflict,
+                    "datasheet": (row.get(datasheet) or "").strip() if datasheet else "",
+                    "reference": (row.get(ref_column) or "").strip() if ref_column else ""})
+    summary = (f"{path}: MPN from {', '.join(columns)}" + (f"; references from {ref_column}" if ref_column else "")
+               + ("; read as cp1252" if encoding == "cp1252" else "") + f"; {len(cad)} lines with an MPN")
+    return BomParts(cad, summary)
+
+
 def format_check(result: dict, cli: bool = False) -> list[str]:
     """The result of check_parts as lines, with the next step for each part: the
     MCP tool calls, or the CLI commands if cli is true."""

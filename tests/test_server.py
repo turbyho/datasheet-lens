@@ -226,3 +226,67 @@ def test_part_links():
     assert "Findchips: https://www.findchips.com/search/MAX20361BEWC%2B" in out
     assert "symbol, footprint, 3D model:" in out and "componentsearchengine.com/search?term=MAX20361BEWC%2B" in out
     assert "the MPN is empty" in tool_error("part_links", mpn=" ")
+
+
+def test_project_check_reads_a_bom_file(store_home, tmp_path):
+    """project_check with bom reads the CSV file of kicad-cli (the default fields of
+    export_bom of kicad-workbench), with the reader of the CLI command check."""
+    from datasheet_lens import project as prj
+    from datasheet_lens.store import Store
+
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "OPA2134PA")
+        prj.add_part(project, store, "LM358")
+    bom = tmp_path / "bom.csv"
+    bom.write_text(
+        '"Reference","Value","Footprint","Datasheet","QUANTITY","DNP","Description","MPN"\n'
+        '"C1","100nF","C_0603","","1","","",""\n'
+        '"U1","OPA2134","SOIC-8","https://example.com/opa.pdf","1","","","OPA2134PA"\n'
+        '"U2","TLV755P","SOT-23-5","","1","","","TLV75533PDBVR"\n'
+        '"U3","LM358N","DIP-8","","1","DNP","","LM358P"\n', encoding="utf-8")
+    out = text_of(call("project_check", bom=str(bom), path=str(project.root)))
+    assert f"{bom}: MPN from MPN, Value; references from Reference; 2 lines with an MPN" in out
+    assert "the same in the CAD project and in the project file: 1 parts" in out
+    assert "missing: TLV75533PDBVR (U2)" in out and "extra: LM358" in out
+    out = text_of(call("project_check", bom=str(bom), bom_column="Value", path=str(project.root)))
+    assert "MPN from Value;" in out and "missing: TLV755P (U2)" in out
+
+    assert "not the two" in tool_error("project_check", path=str(project.root))
+    assert "not the two" in tool_error("project_check", parts=[], bom=str(bom), path=str(project.root))
+    assert "bom_column needs a BOM file" in tool_error("project_check", parts=[], bom_column="MPN",
+                                                      path=str(project.root))
+    assert "cannot read the BOM file" in tool_error("project_check", bom=str(tmp_path / "no.csv"),
+                                                    path=str(project.root))
+    assert "no column 'Nope'" in tool_error("project_check", bom=str(bom), bom_column="Nope",
+                                            path=str(project.root))
+
+
+def test_project_check_bom_errors(store_home, tmp_path):
+    """A relative BOM path is relative to the project folder. A BOM with no data
+    lines, a line with more values than the header, a file that is not CSV text
+    and a broken CSV file give a tool error or a result, never an exception."""
+    from datasheet_lens import project as prj
+    from datasheet_lens.store import Store
+
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "OPA2134PA")
+    root = str(project.root)
+    (project.root / "bom.csv").write_text("Reference,Value,MPN\n", encoding="utf-8")
+    out = text_of(call("project_check", bom="bom.csv", path=root))
+    assert "bom.csv: MPN from MPN, Value; references from Reference; 0 lines with an MPN" in out
+    assert "extra: OPA2134PA" in out
+    (project.root / "bom.csv").write_text("Reference,Value,MPN\nC1,10uF, 25V,GRM188\nU1,OPA,OPA2134PA\n",
+                                          encoding="utf-8")
+    out = text_of(call("project_check", bom="bom.csv", path=root))
+    assert "the same in the CAD project and in the project file: 1 parts" in out
+    (project.root / ".env").write_text("API_KEY=secret\n", encoding="utf-8")
+    error = tool_error("project_check", bom=".env", path=root)
+    assert "must be CSV text" in error and "secret" not in error
+    (project.root / "big.csv").write_text('MPN\n"' + "x" * 200000 + "\n", encoding="utf-8")
+    assert "not a valid CSV file" in tool_error("project_check", bom="big.csv", path=root)
+    (project.root / "u16.txt").write_bytes(b"\xff\xfeM\x00P\x00N\x00\n")
+    assert "not valid UTF-16 text" in tool_error("project_check", bom="u16.txt", path=root)
+    (project.root / "x.csv").write_text("Name,Qty\nA,1\n", encoding="utf-8")
+    assert "give the column of the MPN with bom_column" in tool_error("project_check", bom="x.csv", path=root)

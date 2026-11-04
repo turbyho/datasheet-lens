@@ -36,16 +36,17 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
 - Before you read a value, look for it with find_facts. Save a value that the
   work uses with save_fact, with its page and element.
 - `datasheet-lens.toml` must hold the same parts as the CAD project (schematic
-  and BOM). This consistency is critical. Get the parts from the CAD tool (its
-  MCP server or its BOM export) and compare them: project_check (CLI
-  `datasheet-lens check BOM.csv`). It gives the missing, extra and different
-  parts with the next step. project_status (CLI `datasheet-lens ls`) gives the
-  parts and documents of the file. If you cannot get a datasheet, tell the
-  user, with the search links of part_links (CLI `datasheet-lens links MPN`;
-  also for symbols, footprints and 3D models). Tell the user about each different or extra part, and when the MPN of
-  the CAD project and the datasheet do not agree. Remove a part only when the
-  user agrees: project_remove_part (CLI `datasheet-lens rm MPN`). The MCP server
-  instructions give the full procedure.
+  and BOM). This consistency is critical. Get the parts from the CAD tool (a BOM
+  file, CSV, or its MCP server) and compare them: project_check with bom or
+  parts (CLI `datasheet-lens check BOM.csv`). It gives the missing, extra and
+  different parts with the next step. project_status (CLI `datasheet-lens ls`)
+  gives the parts and documents of the file. If you cannot get a datasheet, tell
+  the user, with the search links of part_links (CLI `datasheet-lens links MPN`;
+  also for symbols, footprints and 3D models). Tell the user about each
+  different or extra part, and when the MPN of the CAD project and the datasheet
+  do not agree. Remove a part only when the user agrees: project_remove_part
+  (CLI `datasheet-lens rm MPN`). The MCP server instructions give the full
+  procedure.
 - To add a datasheet: add_document with a file or a URL and the base part of the
   datasheet (for example TLV755P). Then project_add_part with the concrete
   orderable MPN of the BOM (for example TLV75533PDBVR; get_ordering_codes, CLI

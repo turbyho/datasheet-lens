@@ -321,12 +321,15 @@ list of the datasheets of the design.
 
 ### With the MCP tools
 
-1. The agent gets the parts of the CAD project from the CAD tool, for example from its
-   MCP server or its BOM export: for each symbol, the MPN field, the Value field, the
-   Datasheet field and the reference, as they are.
-2. It calls `project_check(parts)` with all parts. The tool finds the MPNs (see "MPN
-   and Value fields" below). Each part with an MPN needs its datasheet, also a
-   passive part with an MPN in its Value.
+1. The agent gets the parts of the CAD project from the CAD tool: for each symbol, the
+   MPN field, the Value field, the Datasheet field and the reference, as they are.
+   The best source is a BOM file (CSV) with one line for each symbol, for example
+   from the tool `export_bom` of the MCP server kicad-workbench (with `output_path`).
+   The agent then gives only the path, not the values. A list of parts from the MCP
+   server of the CAD tool is the other source.
+2. It calls `project_check(bom=<CSV file>)` or `project_check(parts)` with all parts.
+   The tool finds the MPNs (see "MPN and Value fields" below). Each part with an MPN
+   needs its datasheet, also a passive part with an MPN in its Value.
 3. The result gives one line for each conflict in the CAD project, the number of the
    same parts, and one line for each part that is:
    - `different`: probably one part with two MPNs (for example the base part in the
@@ -375,19 +378,26 @@ uses these rules (the MCP tool and the CLI command are the same):
   digits in it (`TLV755P` and `TLV75533PDBVR`): a symbol name in the Value and the
   orderable code in the MPN field are normal.
 
-### With the CLI and a BOM file
+### A BOM file
 
 Export a BOM as CSV from the CAD tool, then compare it:
 
 ```sh
-kicad-cli sch export bom --fields "Reference,Value,MPN,Datasheet,DNP" \
-    --labels "Reference,Value,MPN,Datasheet,DNP" --output bom.csv design.kicad_sch
+kicad-cli sch export bom --fields 'Reference,Value,MPN,Datasheet,${DNP}' \
+    --output bom.csv design.kicad_sch
 datasheet-lens check bom.csv
 ```
 
-Replace `MPN` with the name of the MPN field of your symbols.
+Replace `MPN` with the name of the MPN field of your symbols. Write `${DNP}` in single
+quotes: kicad-cli of KiCad 8 and 9 reads `DNP` with no `${}` as a field of the
+symbols, and that column is empty. Export one line for each symbol (no
+`--group-by`): in a line of a group, KiCad writes DNP when only some symbols of the
+line have DNP.
 
-The command has a generic CSV reader. It finds the columns by their names.
+The MCP tool `project_check` reads the same file with `bom` (and `bom_column` in
+place of `--column`). A relative path of `bom` is relative to the project folder
+(`path`). The CLI command `check` and the MCP tool have the same generic
+CSV reader. It finds the columns by their names.
 
 **Tested only with BOM exports of KiCad and Eagle.** A BOM of a different CAD tool
 can work when its column names are in the lists below, but nobody has tested it.
@@ -398,22 +408,23 @@ can work when its column names are in the lists below, but nobody has tested it.
 | Eagle | Tested with a real BOM export (semicolon, the attributes `MP` and `MANUFACTURER_PART_NUMBER` of different libraries, `Parts`, `Value`). |
 | Fusion, Altium and other tools | Not tested. The column names of Altium (`Designator`, `Manufacturer Part Number 1`) are in the lists. |
 
-The command reads the BOM with these rules:
+The reader uses these rules:
 
-- The file is CSV. The command finds the column separator: a comma, a semicolon or a
-  tab. It does not read XLSX files: export the BOM as CSV.
+- The file is CSV text with the extension `.csv`, `.tsv` or `.txt`. The reader finds
+  the column separator: a comma, a semicolon or a tab. It does not read XLSX files:
+  export the BOM as CSV.
 - The file must be UTF-8 text, or UTF-16 with its byte order mark (Excel "Unicode
-  text"). When it is not UTF-8, the command reads it as cp1252 (a BOM file from
+  text"). When it is not UTF-8, the reader reads it as cp1252 (a BOM file from
   Windows), and the first line of the result says `read as cp1252`.
-- The command compares the column names with no regard to case, spaces, `_`, `.` and
+- The reader compares the column names with no regard to case, spaces, `_`, `.` and
   `-`. Thus `Manufacturer_Part_Number` is the same as `Manufacturer Part Number`.
-- The MPN fields are the option `--column`, or else each column that the file has
+- The MPN fields are the option `--column` (MCP: `bom_column`), or else each column that the file has
   of: `MPN`, `Manufacturer Part Number`, `Manufacturer Part Number 1`, `MPN 1`, `MP`,
   `Mfr Part Number`, `Mfr PN`, `Manufacturer PN`. For each line, the first filled MPN
   field gives the MPN: in Eagle, each library puts the MPN into a different
   attribute (`MP` or `MANUFACTURER_PART_NUMBER`). A column `Part Number` is not
   used: it often holds a part number of the company.
-- The command always reads the `Value` column, also with `--column`: it gives the
+- The reader always reads the `Value` column, also with `--column`: it gives the
   MPN when no MPN field has one, the alternatives and the conflicts (see "MPN and
   Value fields").
 - The reference column is the first of: `Reference`, `References`, `Refs`,
@@ -421,16 +432,15 @@ The command reads the BOM with these rules:
 - The Datasheet column is the first of: `Datasheet`, `Datasheet URL`,
   `Datasheet Link`.
 - The DNP column is the first of: `DNP`, `Do not populate`, `Do not place`,
-  `Not fitted`. A line with a value in this column is not fitted, and the command
+  `Not fitted`. A line with a value in this column is not fitted, and the reader
   ignores it. The values empty, `0`, `no` and `false` mean "fitted".
 
 The first line of the result gives the MPN columns, the reference column and the
-number of lines with an MPN. The other lines are the same as the lines of
-`project_check`, with CLI commands as the next steps.
+number of lines with an MPN. The other lines are the lines of `project_check`. The
+CLI command gives CLI commands as the next steps.
 
-The MCP tool `project_check` does not read a file. It takes a list of parts from any
-source: the MCP server of a CAD tool, a BOM export, or a different tool. Thus it does
-not depend on one CAD tool.
+The reader does not depend on one CAD tool. `project_check` also takes a list of parts
+(`parts`) from any source, for example the MCP server of a CAD tool.
 
 ## Team workflow
 
