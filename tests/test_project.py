@@ -556,9 +556,10 @@ def test_check_reads_bom_files_of_other_cad_tools(store_home, text_pdf, tmp_path
     assert ("MPN from MANUFACTURER_PART_NUMBER, MP; Value from Value; references from Parts; no column "
             "Value_Confirmed") in out
     assert "CAD lines with a part: 2" in out and "missing: LM358DR/NOPB (U2)" in out
-    # The MPN is only in the field MPN: the tool completes Value by the convention.
+    # The MPN is only in the field MPN: the tool completes Value by the convention. The write
+    # goes into the attribute of the MPN of the line (MP).
     assert ("complete the fields: U1: the MPN is not in Value (the convention: the MPNs in parentheses in Value). "
-            "The parts do not change. Write Value = 'OPA2134 (OPA2134PA)' and MPN = 'OPA2134PA' into the "
+            "The parts do not change. Write Value = 'OPA2134 (OPA2134PA)' and MP = 'OPA2134PA' into the "
             "symbol.") in out
     assert "no part selected (a general value and no MPN): R1 R2, D3." in out
 
@@ -883,6 +884,80 @@ def test_check_tells_about_changes(store_home, tmp_path, capsys):
     assert main(["check", str(bom), "-p", str(project.root)]) == 0
     assert "or use an unused custom column of the BOM and give its name with --confirmed-column" in \
         capsys.readouterr().out
+
+
+def test_write_field_names(store_home, tmp_path):
+    """A confirmation writes into each column of the MPN of the line and into the column of
+    Value_Confirmed, also a column of an other name. With no MPN in the line and more names
+    of MPN columns, the field is not known: the message names the choices (the same rules
+    as check_symbol_fields of kicad-workbench)."""
+    bom = tmp_path / "altium.csv"
+    bom.write_text("Designator,Value,Manufacturer Part Number,Custom 3\n"
+                   "U1,LM358,LM358DR,\nU2,LM358 (LM358DT),,\n", encoding="utf-8")
+    symbols = prj.bom_parts(str(bom), confirmed_column="Custom 3").cad
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        result = prj.check_parts(project, store, symbols)
+    out = "\n".join(prj.format_check(result))
+    assert ("Write Value = 'LM358 (LM358DR)', Manufacturer Part Number = 'LM358DR' and Custom 3 = "
+            "'LM358 (LM358DR)' into the symbol.") in out
+    assert "Write Manufacturer Part Number = 'LM358DT' and Custom 3 = 'LM358 (LM358DT)'" in out
+    # Eagle: each library has its own attribute. Two filled columns: the write goes into the
+    # two. No MPN in the line: the user selects the attribute of the symbol.
+    bom.write_text("Parts,Value,MP,MANUFACTURER_PART_NUMBER\nU1,X,A,A\nU2,X (B),,\nR1,10k,,\n",
+                   encoding="utf-8")
+    u1, u2, r1 = prj.bom_parts(str(bom)).cad
+    assert (u1.mpn_fields, u1.mpn_known) == (["MANUFACTURER_PART_NUMBER", "MP"], True)
+    assert (u2.mpn_fields, u2.mpn_known) == (["MANUFACTURER_PART_NUMBER", "MP"], False)
+    assert (u1.confirmed_fields, u1.confirmed_known) == (["Value_Confirmed"], True)
+    with Store() as store:
+        out = "\n".join(prj.format_check(prj.check_parts(project, store, [u1, u2, r1])))
+    assert "Write Value = 'X (A)', MANUFACTURER_PART_NUMBER = 'A' and MP = 'A' into the symbol." in out
+    assert ("Write the MPN field = 'B' (the BOM has the columns MANUFACTURER_PART_NUMBER, MP: ask the user "
+            "which one the symbol uses) into the symbol.") in out
+    assert "into the MPN field of the symbol, and the new Value into its field Value_Confirmed" in out
+    # The parts of the parameter parts: the names of the CAD tool, else the default names.
+    with Store() as store:
+        out = "\n".join(prj.format_check(prj.check_parts(project, store, [
+            {"reference": "U1", "value": "LM358", "mpn": "LM358DR", "value_confirmed": "",
+             "mpn_fields": [" Manufacturer Part Number ", " "], "confirmed_field": "VC"},
+            {"reference": "U2", "value": "LM358 (LM358DT)", "value_confirmed": ""}])))
+    assert "Manufacturer Part Number = 'LM358DR' and VC = 'LM358 (LM358DR)'" in out
+    assert "Write MPN = 'LM358DT' and Value_Confirmed = 'LM358 (LM358DT)'" in out
+
+
+def test_write_fields_of_the_roles(tmp_path):
+    """The rules of _write_fields: a "no part" mark, no MPN column, two names of
+    Value_Confirmed, and a line of more symbols."""
+    rows = "Reference,Value,MP,Value_Confirmed,Value Confirmed\nTP1,TP,-,,\nU1,X (A),,,\nR1 R2,10k,A,,\n"
+
+    def read(text):
+        bom = tmp_path / "bom.csv"
+        bom.write_text(text, encoding="utf-8")
+        return prj.bom_parts(str(bom)).cad
+
+    tp1, u1, r12 = read(rows)
+    assert (tp1.mpn_fields, tp1.mpn_known) == (["MP"], True)  # the column of the mark
+    assert (u1.confirmed_fields, u1.confirmed_known) == (["Value_Confirmed", "Value Confirmed"], False)
+    assert (r12.mpn_fields, r12.mpn_known) == (["MP"], True)  # one name in a line of more symbols
+    (u1,) = read("Reference,Value,Manufacturer Part Number\nU1,X (A),\n")
+    assert (u1.mpn_fields, u1.mpn_known) == (["Manufacturer Part Number"], True)
+    (u1,) = read("Reference,Value,Value_Confirmed\nU1,X (A),\n")  # no MPN column: the default name
+    assert (u1.mpn_fields, u1.mpn_known) == (["MPN"], True)
+    # Two names in a line of more symbols: the names can come from different symbols.
+    (r12,) = read("Parts,Value,MP,MANUFACTURER_PART_NUMBER\nR1 R2,10k,A,A\n")
+    assert (r12.mpn_fields, r12.mpn_known) == (["MANUFACTURER_PART_NUMBER", "MP"], False)
+
+
+def test_write_targets_of_a_variant(store_home, tmp_path):
+    """A variant line that writes into other fields than the default line gives its own
+    message."""
+    with Store() as store:
+        result = prj.check_parts(prj.init_project(tmp_path / "board"), store, [
+            prj.CadSymbol(reference="U1", value="LM358", mpn="LM358DR", value_confirmed=""),
+            prj.CadSymbol(reference="U1", value="LM358", mpn="LM358DR", value_confirmed="", variant="b",
+                          mpn_fields=["Manufacturer Part Number"])])
+    assert [c["mpn_fields"] for c in result["complete"]] == [["MPN"], ["Manufacturer Part Number"]]
 
 
 def test_bom_formats(tmp_path):

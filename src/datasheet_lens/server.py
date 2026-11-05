@@ -91,11 +91,11 @@ User project: the project file datasheet-lens.toml must hold the same parts as
 the CAD project (schematic, BOM). This is critical: the team uses the file as
 the list of the datasheets of the design. At the start of the work, and after
 each change of the CAD project, do these steps:
-1. Get the parts of the CAD project (MPN, Value, Value_Confirmed, Datasheet)
-   from the CAD tool: a BOM file (CSV, one line for each symbol, for example
-   export_bom of the MCP server kicad-workbench) or a list from its MCP
-   server. A general value with no MPN (10k) has no selected part. MPN = '-'
-   tells that the symbol needs no part (a test point).
+1. Get the parts of the CAD project (MPN, Value, Value_Confirmed, Datasheet,
+   the field names) from the CAD tool: a BOM file (CSV, one line for each
+   symbol, for example export_bom of the MCP server kicad-workbench) or a list
+   from its MCP server. A general value with no MPN (10k) has no selected
+   part. MPN = '-' tells that the symbol needs no part (a test point).
 2. project_check(bom=<CSV file>) or project_check(parts) with all parts: it
    gives the parts that are missing, extra or different, with the next call.
    Give path when the working folder of the server is not in the project.
@@ -923,6 +923,12 @@ class CadPart(BaseModel):
     variant: str = Field("", description=(
         "The name of an other variant of the product (KiCad 10) when the fields are the fields of this variant. "
         "Empty for the default variant: give it first."))
+    mpn_fields: list[str] = Field(default_factory=list, description=(
+        "The names of the fields of the symbol that hold its MPN in the CAD tool, for example "
+        "['Manufacturer Part Number']. The messages name them as the fields to write. Empty: MPN."))
+    confirmed_field: str = Field("", description=(
+        "The name of the field Value_Confirmed in the CAD tool, when it has an other name. Empty: "
+        "Value_Confirmed."))
 
 
 @tool
@@ -974,7 +980,11 @@ def project_check(
       each part that is different (one part with two MPNs), missing (with the
       documents of the store or the Datasheet field, and the next call) or
       extra.
-    A message of an other variant names it. It changes nothing."""
+    A message of an other variant names it. A message names the fields to
+    write by the columns of the BOM (the BOM must name its columns as the
+    fields of the symbols: export_bom of kicad-workbench does), or by
+    mpn_fields of the parts; when the field is not known, it names the choices
+    and tells you to ask the user. It changes nothing."""
     from .project import bom_files, check_parts, format_check, load
     from .version_check import version_notes
 
