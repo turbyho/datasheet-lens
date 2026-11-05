@@ -197,9 +197,9 @@ def _is_caps_heading(text: str) -> bool:
 
 def _element(page: int, type_: str, code: str, lines: list[Line]) -> dict:
     return {"page": page, "type": type_, "code": code,
-            "text": re.sub(r"\s+", " ", " ".join(l.text for l in lines)).strip(),
-            "bbox": [round(min(l.x0 for l in lines), 1), round(min(l.y0 for l in lines), 1),
-                     round(max(l.x1 for l in lines), 1), round(max(l.y1 for l in lines), 1)]}
+            "text": re.sub(r"\s+", " ", " ".join(line.text for line in lines)).strip(),
+            "bbox": [round(min(line.x0 for line in lines), 1), round(min(line.y0 for line in lines), 1),
+                     round(max(line.x1 for line in lines), 1), round(max(line.y1 for line in lines), 1)]}
 
 
 def page_map(store: Store, doc_id: int, page: int, everything: bool = False) -> list[str]:

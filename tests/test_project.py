@@ -59,8 +59,8 @@ def test_copies_and_new_files(setup):
         assert item["parts"] == ["RV-3149-C3 (Micro Crystal)"]
         lines = prj.format_report(report, True, ("add {part}{base} {sha}", " -b {base}"))
         sha = item["sha256"][:12]
-        assert any("proposal: RV-3149-C3" in l and f"add RV-3149-C3 {sha}" in l and f"add <MPN> -b RV-3149-C3 {sha}" in l
-                   for l in lines), lines
+        assert any("proposal: RV-3149-C3" in line and f"add RV-3149-C3 {sha}" in line
+                   and f"add <MPN> -b RV-3149-C3 {sha}" in line for line in lines), lines
 
         # The assignment uses the file that is in the folder: no second copy.
         part = prj.add_part(project, store, "RV-3149-C3", document=item["sha256"][:12], role="datasheet")
@@ -404,14 +404,13 @@ def test_shared_document_on_a_new_machine(store_home, text_pdf, tmp_path, monkey
 def test_key_order(store_home, text_pdf, tmp_path):
     """A new key goes to its place, and sync puts the keys of a file in their
     sequence; a comment at the end of a line moves with its key."""
-    with Store() as store:
-        project = prj.init_project(tmp_path / "board", layout="")
-        project.path.write_text(
-            'folder = "datasheets"\n\n[[part]]\nbase = "TLV755P"\nmpn = "TLV75533PDBVR"  # LDO 3.3 V\n'
-            'note = "keep"\n', encoding="utf-8")
-        loaded = prj.load(project.root)
-        loaded.parts[0]["manufacturer"] = "TI"
-        prj.save(loaded)
+    project = prj.init_project(tmp_path / "board", layout="")
+    project.path.write_text(
+        'folder = "datasheets"\n\n[[part]]\nbase = "TLV755P"\nmpn = "TLV75533PDBVR"  # LDO 3.3 V\n'
+        'note = "keep"\n', encoding="utf-8")
+    loaded = prj.load(project.root)
+    loaded.parts[0]["manufacturer"] = "TI"
+    prj.save(loaded)
     text = project.path.read_text(encoding="utf-8")
     assert ('mpn = "TLV75533PDBVR"  # LDO 3.3 V\nmanufacturer = "TI"\nbase = "TLV755P"\nnote = "keep"' in text), text
 

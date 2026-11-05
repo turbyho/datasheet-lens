@@ -31,10 +31,9 @@ def test_manufacturer_from_the_mpn_prefix(store_home):
     """A name only in the logo: the prefix of the MPN tells the manufacturer. A
     manufacturer name is not an MPN."""
     from datasheet_lens.identify import _manufacturer
-    with Store() as store:
-        assert _manufacturer(["Product Specification v1.4"], "nRF52805") == "Nordic Semiconductor"
-        assert _manufacturer(["Product Specification"], "ABC123") == ""
-        assert _manufacturer(["www.cototechnology.com"], "RR123") == "Coto Technology"
+    assert _manufacturer(["Product Specification v1.4"], "nRF52805") == "Nordic Semiconductor"
+    assert _manufacturer(["Product Specification"], "ABC123") == ""
+    assert _manufacturer(["www.cototechnology.com"], "RR123") == "Coto Technology"
 
 
 def test_manufacturer_is_not_an_mpn(store_home, text_pdf):
