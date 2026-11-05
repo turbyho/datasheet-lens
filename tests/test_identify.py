@@ -27,6 +27,22 @@ def test_more_tokens_that_are_not_mpns():
         assert _is_mpn(token), token
 
 
+def test_package_names_are_not_mpns(store_home, text_pdf):
+    """The JEDEC packages of diodes and transistors (SOD, DO, TO, MO), also with a letter
+    suffix and a pin count. With no hyphen, DO and TO start real MPNs (DO1608C is an
+    inductor of Coilcraft)."""
+    for token in ("SOD-123", "SOD123F", "SOD-323F", "SOD-123FL", "DO-41", "DO-214AC", "DO-201AD",
+                  "TO-220AB", "TO-247-3", "TO-263AB", "TO-277A", "SC-70-5", "MO-229"):
+        assert not _is_mpn(token), token
+    for token in ("DO1608C-472", "SMBJ100A", "1N4148W", "BAS16W", "MMSZ5231B"):
+        assert _is_mpn(token), token
+    with Store() as store:
+        page = [(50, 60, 14, "1N4148W Small Signal Fast Switching Diode SOD-123"),
+                (50, 90, 10, "Package SOD-123F and DO-214AC, case TO-220AB")]
+        p = propose(store.add_document(text_pdf("1n4148w.pdf", [page])))
+    assert p.mpn == "1N4148W" and not {"SOD-123", "SOD-123F", "DO-214AC", "TO-220AB"} & set(p.candidates), p
+
+
 def test_manufacturer_from_the_mpn_prefix(store_home):
     """A name only in the logo: the prefix of the MPN tells the manufacturer. A
     manufacturer name is not an MPN."""

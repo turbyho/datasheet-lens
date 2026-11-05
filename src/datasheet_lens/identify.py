@@ -30,9 +30,12 @@ from .store import Document, Store
 
 # No "/" in a token: "AD8605/AD8606/AD8608" is a list of three MPNs.
 TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-+.#]*[A-Za-z0-9+#]")
-# A package: SOT23-5, X2SON, LGA-4, DSBGA, WLCSP, MFF2 (the SIM package).
+# A package: SOT23-5, X2SON, LGA-4, DSBGA, WLCSP, MFF2 (the SIM package). The JEDEC
+# outlines of diodes and transistors, also with a letter suffix and a pin count:
+# SOD-123F, DO-214AC, TO-220AB, TO-247-3, SC-70, MO-229. DO, TO, SC and MO need the
+# hyphen: SC4215 and DO1608C (an inductor of Coilcraft) are MPNs.
 PACKAGE = (r"[a-z]{0,2}\d?(son|qfn|dfn|bga|lga|csp|sop|ssop|soic|qfp|sot|dip|mff)-?\d*(-\d+)?"
-           r"|(to|sc)-\d+(-\d+)?")  # TO-92 and SC-70, but SC4215 is an MPN
+           r"|sod-?\d+[a-z]{0,2}|(to|sc|do|mo)-\d+[a-z]{0,2}(-\d+)?")
 # Tokens that look like an MPN but are not one: revisions and versions (v1.4),
 # TI literature numbers (SLAS123A), values with units (12-Bit, 1.65V-3.6V,
 # 98.01mm2), sizes (10x10mm), numbered text (1.This), packages, standards and
