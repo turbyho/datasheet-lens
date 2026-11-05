@@ -50,9 +50,23 @@ def test_key_in_the_key_store(monkeypatch, capsys):
     assert keys.set_key("mouser", " k1 ") == "the key store of the system"
     assert ring.data == {("datasheet-lens", "mouser"): "k1"} and keys._read_file() == {}
     assert keys.get_key("mouser") == "k1"
-    assert keys.key_sources() == {"mouser": "the key store of the system"}
+    assert keys.key_sources() == {"mouser": "the key store of the system", "team": "not set"}
     keys.delete_key("mouser")
-    assert keys.get_key("mouser") == "" and keys.key_sources() == {"mouser": "not set"}
+    assert keys.get_key("mouser") == "" and keys.key_sources() == {"mouser": "not set", "team": "not set"}
+
+
+def test_token_of_the_team_server(monkeypatch, capsys):
+    """The token of the team server is a key as the others: key store, file, or
+    the environment variable for CI."""
+    ring = FakeRing()
+    monkeypatch.setattr(keys, "_keyring", lambda: ring)
+    token = "dsl_" + "ab" * 32
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO(token + "\n"))
+    assert main(["key", "team"]) == 0
+    assert "team: saved in the key store of the system" in capsys.readouterr().out
+    assert ring.data == {("datasheet-lens", "team"): token} and keys.get_key("team") == token
+    monkeypatch.setenv("DATASHEET_LENS_TEAM_TOKEN", "dsl_ci")
+    assert keys.get_key("team") == "dsl_ci"
 
 
 def test_key_errors():

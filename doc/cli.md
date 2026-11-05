@@ -134,8 +134,8 @@ have the same documents (for example `TI` and `Texas Instruments`).
 
 When the registry cannot tell if two names are one manufacturer, a command that adds
 a part stops with an error. Record the relation, then do the command again. After
-`alias`, the parts with the same MPN of the two names merge into one part. The part
-keeps its manufacturer name.
+`alias`, the parts with the same MPN of the two names merge into the oldest part. That
+part keeps its manufacturer name.
 
 ### docs
 
@@ -485,18 +485,34 @@ show the enabled distributors and the state of their keys.
 | `NAME` | The distributors, for example `mouser`. They become the global setting. |
 | `--local` | Set the names in the project file. With no `NAME`, remove the setting from the project file: the project then uses the global setting. |
 
+### server
+
+```text
+datasheet-lens server [connect URL | sync | status | disconnect]
+```
+
+Connect the store to a team server, synchronize it, show the state, or disconnect it.
+With no action: `status`. See [team-server.md](team-server.md).
+
+| Action | Effect |
+|---|---|
+| `connect URL` | Connect the store to the server at URL (`https://...`), and do the first sync. The token comes from `datasheet-lens key team`. |
+| `sync` | Send the local changes, then get the changes of the server. |
+| `status` | The server, the last sync, the local changes that wait, the last error and the notes. |
+| `disconnect` | Stop the synchronization. The local rows stay. |
+
 ### key
 
 ```text
 datasheet-lens key [--delete] [NAME]
 ```
 
-Save the API key of a distributor. The command asks for the key and does not show it.
-With no `NAME`, show where each key is (no values).
+Save the API key of a distributor, or the token of the team server. The command asks
+for the key and does not show it. With no `NAME`, show where each key is (no values).
 
 | Argument or option | Effect |
 |---|---|
-| `NAME` | The distributor: `mouser`. |
+| `NAME` | `mouser` (the distributor), or `team` (the token of the team server, see [team-server.md](team-server.md)). |
 | `--delete` | Remove the saved key from the key store and from the key file. |
 
 For Mouser, use the key of the Search API, not the key of the Cart API. See

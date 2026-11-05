@@ -100,7 +100,7 @@ def page_image(store: Store, doc_id: int, page: int, bbox=None, max_px: int = MA
     pdf = None
     size = _page_size(store, doc, page)  # from the index; no PDF open for a cache hit
     if size is None:
-        pdf = pdfium.PdfDocument(str(doc.path))
+        pdf = pdfium.PdfDocument(str(store.local_file(doc)))
         _box, w, h = view_transform(pdf[page - 1])
         size = (w, h)
     width, height = size
@@ -120,7 +120,7 @@ def page_image(store: Store, doc_id: int, page: int, bbox=None, max_px: int = MA
             w_px, h_px = _png_size(out)
         else:
             if pdf is None:
-                pdf = pdfium.PdfDocument(str(doc.path))
+                pdf = pdfium.PdfDocument(str(store.local_file(doc)))
             # pdfium crop: the amount to cut from the left, bottom, right and top edge.
             crop = (0, 0, 0, 0) if bbox is None else (bbox[0], height - bbox[3], width - bbox[2], bbox[1])
             bitmap = pdf[page - 1].render(scale=dpi / 72, crop=crop, rev_byteorder=True)
@@ -159,7 +159,7 @@ def pdf_pages(store: Store, doc_id: int, spec: str) -> tuple[Path, list[int]]:
     digest = hashlib.sha256(",".join(map(str, pages)).encode()).hexdigest()[:16]
     out = store.home / "render" / doc.sha256[:16] / f"pages-{pages[0]}-{len(pages)}p-{digest}.pdf"
     if not out.exists():
-        src = pdfium.PdfDocument(str(doc.path))
+        src = pdfium.PdfDocument(str(store.local_file(doc)))
         dst = pdfium.PdfDocument.new()
         tmp = temp_path(out)
         try:

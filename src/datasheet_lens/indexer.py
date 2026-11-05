@@ -87,7 +87,7 @@ def build_index(store: Store, doc_id: int, force: bool = False) -> dict:
                                            (doc.id,)).fetchone()[0]
         return {"pages": count("pages"), "outline": count("outline"), "captions": count("captions"),
                 "skipped": True}
-    pages, quality, outline = _read_pages(str(doc.path))
+    pages, quality, outline = _read_pages(str(store.local_file(doc)))
     captions = _captions(pages)
 
     db = store.db
@@ -276,7 +276,7 @@ def hit_regions(store: Store, doc_id: int, hits: dict[int, list[str]]) -> dict[t
         return re.sub(r"\s+", " ", text).strip().lower()
 
     out: dict[tuple[int, str], str] = {}
-    for number, page in _pages_text(str(store.document(doc_id).path), sorted(hits)).items():
+    for number, page in _pages_text(str(store.local_file(store.document(doc_id))), sorted(hits)).items():
         texts = [(norm(line.text), line) for line in page.lines]
         elements = store.db.execute(
             "SELECT element_id, x0, y0, x1, y1 FROM elements WHERE document_id = ? AND page = ?"

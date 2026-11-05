@@ -1,4 +1,5 @@
-"""The personal API keys of the distributors.
+"""The personal keys: the API keys of the distributors, and the token of the
+team server (see doc/team-server.md).
 
 The order of the sources of a key:
 1. The environment variable (for example DATASHEET_LENS_MOUSER_KEY): for CI
@@ -27,7 +28,7 @@ from .errors import LensError
 
 SERVICE = "datasheet-lens"
 # The name of a key -> its environment variable.
-KEYS = {"mouser": "DATASHEET_LENS_MOUSER_KEY"}
+KEYS = {"mouser": "DATASHEET_LENS_MOUSER_KEY", "team": "DATASHEET_LENS_TEAM_TOKEN"}
 FILE = "keys.toml"
 
 

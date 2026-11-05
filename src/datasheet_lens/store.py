@@ -14,8 +14,10 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import itertools
+import secrets
 import shutil
 import sqlite3
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,11 +28,16 @@ from .errors import LensError
 from .pdflock import PDFIUM
 from .fileutil import temp_path
 
-SCHEMA_VERSION = 2  # the manufacturer registry needs no change: see _update_registry
+# 3: the gids, the outbox and the relations of manufacturer names for a team
+# server. An older version of datasheet-lens cannot open the store after this
+# change: it would not record the relations and the merges as shared decisions.
+# (An update of the manufacturer registry needs no schema change: see
+# _update_registry.)
+SCHEMA_VERSION = 4  # 4: the state of the client of the team server (teamsync.py)
 # A build records the version of its format (indexer.INDEX_FORMAT,
 # elements.ELEMENTS_FORMAT), not the version of the package. The builds of the
 # development versions recorded the package version 0.1.0.dev0: format 1. No
-# schema change for this: a server of the old version must still open the store.
+# schema change was made for this (at schema version 2).
 LEGACY_FORMATS = {"1": ("0.1.0",)}
 
 SCHEMA = """
@@ -38,6 +45,8 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+-- gid: the global ID of a shared row (a UUID; a document has its sha256).
+-- version: the version of the row on the team server (0: not on a server).
 CREATE TABLE IF NOT EXISTS parts (
     id           INTEGER PRIMARY KEY,
     mpn          TEXT NOT NULL COLLATE NOCASE,
@@ -45,6 +54,8 @@ CREATE TABLE IF NOT EXISTS parts (
     family       TEXT NOT NULL DEFAULT '',
     created      TEXT NOT NULL,
     base_id      INTEGER REFERENCES parts(id) ON DELETE SET NULL,
+    gid          TEXT,
+    version      INTEGER NOT NULL DEFAULT 0,
     UNIQUE (mpn, manufacturer)
 );
 CREATE TABLE IF NOT EXISTS part_aliases (
@@ -70,6 +81,17 @@ CREATE TABLE IF NOT EXISTS manufacturer_distinct (
     b INTEGER NOT NULL REFERENCES manufacturers(id) ON DELETE CASCADE,
     PRIMARY KEY (a, b)
 );
+-- The relations of two manufacturer names that the users recorded, in sequence.
+-- The team server shares these decisions. The registry tables above stay local:
+-- each store makes them from the built-in names and these relations.
+CREATE TABLE IF NOT EXISTS maker_relations (
+    id       INTEGER PRIMARY KEY,
+    relation TEXT NOT NULL CHECK (relation IN ('alias', 'distinct')),
+    name     TEXT NOT NULL,
+    other    TEXT NOT NULL,
+    created  TEXT NOT NULL,
+    gid      TEXT
+);
 CREATE TABLE IF NOT EXISTS documents (
     id           INTEGER PRIMARY KEY,
     sha256       TEXT NOT NULL UNIQUE,
@@ -86,7 +108,8 @@ CREATE TABLE IF NOT EXISTS documents (
     revision_date TEXT NOT NULL DEFAULT '',
     supersedes_id INTEGER REFERENCES documents(id) ON DELETE SET NULL,
     source_url   TEXT NOT NULL DEFAULT '',
-    added        TEXT NOT NULL
+    added        TEXT NOT NULL,
+    version      INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS part_documents (
     part_id     INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
@@ -173,10 +196,213 @@ CREATE TABLE IF NOT EXISTS knowledge (
     author        TEXT NOT NULL DEFAULT '',
     created       TEXT NOT NULL,
     status        TEXT NOT NULL DEFAULT 'unchecked'
-                  CHECK (status IN ('unchecked', 'checked', 'disputed'))
+                  CHECK (status IN ('unchecked', 'checked', 'disputed')),
+    gid           TEXT,
+    version       INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS knowledge_subject ON knowledge (subject);
+-- The state of the team server (one row; see the shared tables below). Its row
+-- comes with the schema version 3 (Store._prepare, _migrate_sync).
+CREATE TABLE IF NOT EXISTS sync_state (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    recording   INTEGER NOT NULL DEFAULT 0,
+    gid_ms      INTEGER NOT NULL DEFAULT 0,
+    gid_counter INTEGER NOT NULL DEFAULT 0,
+    server      TEXT,              -- the URL of the team server (teamsync.py)
+    cursor      INTEGER,           -- the cursor of the last complete pull
+    last_sync   TEXT,              -- the time of the last complete sync
+    last_error  TEXT,              -- the error of the last sync, or NULL
+    lease_until REAL NOT NULL DEFAULT 0, -- a sync that runs: one process at a time
+    lease_owner TEXT                     -- the process that has the lease
+);
+CREATE TABLE IF NOT EXISTS outbox (
+    seq          INTEGER PRIMARY KEY,
+    tbl          TEXT NOT NULL,
+    op           TEXT NOT NULL CHECK (op IN ('insert', 'update', 'delete')),
+    key          TEXT NOT NULL,
+    base_version INTEGER,
+    data         TEXT,
+    created      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    attempts     INTEGER NOT NULL DEFAULT 0  -- pushes that the server answered with "send again"
+);
+-- The multipart uploads of files to the team server that did not end.
+CREATE TABLE IF NOT EXISTS sync_uploads (
+    sha256    TEXT PRIMARY KEY,
+    upload_id TEXT NOT NULL
+);
+-- The notes of the synchronization for the user (conflicts, refused changes).
+CREATE TABLE IF NOT EXISTS sync_notes (
+    id      INTEGER PRIMARY KEY,
+    created TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    text    TEXT NOT NULL,
+    shown   INTEGER NOT NULL DEFAULT 0  -- 1: a tool gave it to the model
+);
 """
+
+# The gid of a new row: a UUID of version 7 (RFC 9562). The time in milliseconds
+# comes first, then a counter of three decimal digits (the 12 bits of rand_a, as
+# hexadecimal digits 000 to 999), then random bits. sync_state keeps the time and
+# the counter of the last gid of the store, as integers. A new gid continues after
+# it: the text order of the gids of a store is the order of their creation, also
+# when the clock goes back and for more than 1000 rows in one millisecond. The gids
+# from a different store do not change this order. From built-in SQL only: a
+# trigger must not need a function of the Python connection (the sqlite3 shell can
+# also write).
+_NOW_MS = "CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER)"  # one value in a statement
+_NEXT_GID_STATE = (
+    f"UPDATE sync_state SET"
+    f" gid_ms = CASE WHEN {_NOW_MS} > gid_ms THEN {_NOW_MS} WHEN gid_counter >= 999 THEN gid_ms + 1"
+    f" ELSE gid_ms END,"
+    f" gid_counter = CASE WHEN {_NOW_MS} > gid_ms OR gid_counter >= 999 THEN 0 ELSE gid_counter + 1 END")
+_GID_FROM_STATE = (
+    "(SELECT substr(h, 1, 8) || '-' || substr(h, 9, 4) || '-7' || printf('%03d', gid_counter)"
+    " || '-' || substr('89ab', 1 + abs(random()) % 4, 1) || lower(substr(hex(randomblob(2)), 2))"
+    " || '-' || lower(hex(randomblob(6))) FROM (SELECT printf('%012x', gid_ms) AS h, gid_counter FROM sync_state))")
+
+
+def _next_gid_state(state: tuple[int, int], ms: int) -> tuple[int, int]:
+    """The (time, counter) of the gid after the gid of state, for the time ms: the
+    rule of _NEXT_GID_STATE."""
+    last_ms, counter = state
+    if ms > last_ms:
+        return ms, 0
+    return (last_ms + 1, 0) if counter >= 999 else (last_ms, counter + 1)
+
+
+def uuid7(ms: int, counter: int = 0) -> str:
+    """The gid for the time ms (milliseconds since 1970) and a counter (0 to 999),
+    in the layout of _GID_FROM_STATE: the text order of the IDs is the order of
+    (ms, counter)."""
+    if not 0 <= counter <= 999:
+        raise ValueError(f"counter {counter} is not 0 to 999")
+    value = ((ms & (1 << 48) - 1) << 80 | 0x7 << 76 | int(f"{counter:03d}", 16) << 64
+             | 0b10 << 62 | secrets.randbits(62))
+    return str(uuid.UUID(int=value))
+
+
+def _created_ms(text: str) -> int:
+    """The time of a created column in milliseconds (UTC), or 0."""
+    try:
+        moment = datetime.fromisoformat(text)
+    except (TypeError, ValueError):
+        return 0
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return int(moment.timestamp() * 1000)
+
+
+# The shared tables: each row gets a gid, and each local change of a row goes into
+# the outbox for the team server (see plans of the team server). The tables of the
+# derived data (pages, elements, ...) and of the manufacturer registry are not
+# shared.
+#
+# sync_state.recording: 1 when the store is connected to a team server. Then the
+# triggers write each local change into the outbox, in the same transaction. A row
+# that comes from the server, and a change that a decision causes (a merge of
+# parts), use not_recorded: no outbox row.
+#
+# An outbox row has the global key of the row, and the row as JSON with global
+# keys (part gid, document sha256) in place of the local IDs. base_version is the
+# version of the server that the change starts from (a conflict check).
+
+
+def _part_gid(col: str) -> str:
+    return f"(SELECT gid FROM parts WHERE id = {col})"
+
+
+def _doc_sha(col: str) -> str:
+    return f"(SELECT sha256 FROM documents WHERE id = {col})"
+
+
+def _json(row: str, cols: tuple[str, ...], refs: dict[str, str]) -> str:
+    """json_object of the columns of a row (NEW, OLD or a table alias), and of
+    references as global keys."""
+    items = [f"'{c}', {row}.{c}" for c in cols] + [f"'{k}', {v}" for k, v in refs.items()]
+    return f"json_object({', '.join(items)})"
+
+
+_ROW_JSON = {
+    "parts": lambda r: _json(r, ("mpn", "manufacturer", "family", "created"),
+                             {"base": _part_gid(f"{r}.base_id")}),
+    "documents": lambda r: _json(r, ("filename", "media_type", "size", "pages", "title", "manufacturer",
+                                     "doc_number", "revision", "revision_date", "source_url", "added"),
+                                 {"supersedes": _doc_sha(f"{r}.supersedes_id")}),
+    "knowledge": lambda r: _json(r, ("page", "element_id", "bbox", "subject", "value", "unit", "conditions",
+                                     "column_name", "note", "source_kind", "model", "prompt_version", "author",
+                                     "created", "status"),
+                                 {"part": _part_gid(f"{r}.part_id"), "document": _doc_sha(f"{r}.document_id")}),
+    "maker_relations": lambda r: _json(r, ("relation", "name", "other", "created"), {}),
+    "part_documents": lambda r: _json(r, ("role",), {}),
+}
+_KEY = {
+    "parts": lambda r: f"{r}.gid",
+    "knowledge": lambda r: f"{r}.gid",
+    "maker_relations": lambda r: f"{r}.gid",
+    "documents": lambda r: f"{r}.sha256",
+    "part_documents": lambda r: f"json_array({_part_gid(r + '.part_id')}, {_doc_sha(r + '.document_id')})",
+    "part_aliases": lambda r: f"json_array({_part_gid(r + '.part_id')}, {r}.alias)",
+}
+# A child row that the FK cascade (ON DELETE CASCADE) of a deleted parent removes:
+# no outbox row. The server does the same cascade. A reference with ON DELETE SET
+# NULL needs no rule: the old and the new JSON of the row are the same then (the
+# global key of the deleted parent is NULL in the two), thus no update row.
+_PARENTS = {
+    "part_documents": ("EXISTS (SELECT 1 FROM parts WHERE id = OLD.part_id)",
+                       "EXISTS (SELECT 1 FROM documents WHERE id = OLD.document_id)"),
+    "part_aliases": ("EXISTS (SELECT 1 FROM parts WHERE id = OLD.part_id)",),
+    "knowledge": ("EXISTS (SELECT 1 FROM documents WHERE id = OLD.document_id)",),
+}
+_GID_TABLES = ("parts", "knowledge", "maker_relations")
+_VERSION_TABLES = ("parts", "documents", "knowledge")
+RECORDING = "(SELECT recording FROM sync_state)"
+
+
+# The order of the tables for the team server: a row after the rows that it refers to.
+SYNC_ORDER = ("documents", "maker_relations", "parts", "part_documents", "part_aliases", "knowledge")
+
+
+def record_all(db: sqlite3.Connection) -> int:
+    """Put each shared row into the outbox as an insert, in SYNC_ORDER (the base
+    parts first): the first push of a store to a team server. Give the number."""
+    before = db.execute("SELECT count(*) FROM outbox").fetchone()[0]
+    for table in SYNC_ORDER:
+        data = _ROW_JSON[table]("t") if table in _ROW_JSON else "NULL"
+        order = "t.base_id IS NOT NULL, t.id" if table == "parts" else "t.rowid"
+        db.execute(f"INSERT INTO outbox (tbl, op, key, data) SELECT '{table}', 'insert', {_KEY[table]('t')}, {data}"
+                   f" FROM {table} t ORDER BY {order}")
+    return db.execute("SELECT count(*) FROM outbox").fetchone()[0] - before
+
+
+def _triggers(table: str) -> list[str]:
+    key, data = _KEY[table], _ROW_JSON.get(table)
+    version = "OLD.version" if table in _VERSION_TABLES else "NULL"
+    # One insert trigger: first the gid, then the outbox row (the order of two
+    # triggers of one event is not defined).
+    gid = (f"{_NEXT_GID_STATE} WHERE NEW.gid IS NULL;"
+           f" UPDATE {table} SET gid = {_GID_FROM_STATE} WHERE id = NEW.id AND gid IS NULL;"
+           if table in _GID_TABLES else "")
+    sql = [f"CREATE TRIGGER {table}_ins AFTER INSERT ON {table} BEGIN {gid}"
+           f" INSERT INTO outbox (tbl, op, key, data) SELECT '{table}', 'insert', {key('t')},"
+           f" {data('t') if data else 'NULL'} FROM {table} t WHERE t.rowid = NEW.rowid AND {RECORDING}; END"]
+    if data:
+        sql.append(f"CREATE TRIGGER {table}_upd AFTER UPDATE ON {table}"
+                   f" WHEN {RECORDING} AND {data('OLD')} IS NOT {data('NEW')} BEGIN"
+                   f" INSERT INTO outbox (tbl, op, key, base_version, data) VALUES ('{table}', 'update',"
+                   f" {key('NEW')}, {version}, {data('NEW')}); END")
+    when = " AND ".join((RECORDING, *_PARENTS.get(table, ())))
+    sql.append(f"CREATE TRIGGER {table}_del AFTER DELETE ON {table} WHEN {when} BEGIN"
+               f" INSERT INTO outbox (tbl, op, key, base_version) VALUES ('{table}', 'delete', {key('OLD')},"
+               f" {version}); END")
+    return sql
+
+
+# The indexes and triggers of the shared tables, after SCHEMA and the migrations
+# (the gid columns exist then). meta SYNC_KEY keeps a hash of these statements: a
+# store with a different hash gets them again (see Store._install_triggers).
+SYNC_STATEMENTS = ([f"CREATE UNIQUE INDEX IF NOT EXISTS {t}_gid ON {t} (gid)" for t in _GID_TABLES]
+                   + [s for t in _KEY for s in _triggers(t)])
+SYNC_KEY = "sync_triggers"
+SYNC_VERSION = hashlib.sha256("\n".join(SYNC_STATEMENTS).encode()).hexdigest()[:12]
 
 MEDIA_TYPES = {".pdf": "application/pdf"}
 ROLES = ("datasheet", "manual", "errata", "appnote", "other")
@@ -246,17 +472,20 @@ def _merge_part(db: sqlite3.Connection, keep: int, dup: int) -> None:
 
 
 def _by_mpn(db: sqlite3.Connection) -> list[list[sqlite3.Row]]:
-    """The parts, in groups of the same MPN (case is ignored), each by ID."""
+    """The parts, in groups of the same MPN (case is ignored), each from the
+    oldest: by created, then by gid. Not by the local ID: each store and the team
+    server must find the same order."""
     groups: dict[str, list[sqlite3.Row]] = {}
-    for row in db.execute("SELECT id, mpn, manufacturer FROM parts ORDER BY id").fetchall():
+    for row in db.execute("SELECT id, mpn, manufacturer FROM parts ORDER BY created, gid").fetchall():
         groups.setdefault(row["mpn"].lower(), []).append(row)
     return list(groups.values())
 
 
 def merge_duplicates(db: sqlite3.Connection) -> list[str]:
     """Merge the parts with the same MPN and the same manufacturer in the
-    registry (see makers.same) into the part with the lowest ID. It keeps its
-    manufacturer name. Give one line for each merge. No commit."""
+    registry (see makers.same) into the oldest part (see _by_mpn). It keeps its
+    manufacturer name. Give one line for each merge. No commit. A merge is a
+    result of the registry: call it in not_recorded."""
     merged = []
     for parts in _by_mpn(db):
         groups: dict[tuple, list[sqlite3.Row]] = {}
@@ -287,6 +516,69 @@ def _update_registry(db: sqlite3.Connection) -> None:
     merge_duplicates(db)
 
 
+@contextlib.contextmanager
+def not_recorded(db: sqlite3.Connection):
+    """Changes with no outbox rows, in the transaction of the caller: the rows
+    that come from the team server, and the changes that a shared decision
+    causes (a merge of parts after a relation of manufacturer names). Each
+    store and the server make these changes themselves."""
+    recording = db.execute("SELECT recording FROM sync_state").fetchone()[0]
+    if recording:
+        db.execute("UPDATE sync_state SET recording = 0")
+    try:
+        yield
+    finally:
+        if recording:
+            db.execute("UPDATE sync_state SET recording = ?", (recording,))
+
+
+def _fill_gids(db: sqlite3.Connection, table: str, state: tuple[int, int]) -> tuple[int, int]:
+    """Give a gid to each row of the table that has none, in the order of its
+    creation (created, then ID), after the gid of state (see _NEXT_GID_STATE).
+    Give the state of the last gid."""
+    for row_id, created in db.execute(f"SELECT id, created FROM {table} WHERE gid IS NULL"
+                                      " ORDER BY created, id").fetchall():
+        state = _next_gid_state(state, _created_ms(created))
+        db.execute(f"UPDATE {table} SET gid = ? WHERE id = ?", (uuid7(*state), row_id))
+    return state
+
+
+def _add_columns(db: sqlite3.Connection, columns: dict[str, tuple[str, ...]]) -> None:
+    """Add each column that a table does not have (SCHEMA makes a table that an old
+    store does not have with all its columns)."""
+    for table, defs in columns.items():
+        have = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
+        for column in defs:
+            if column.split()[0] not in have:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
+
+
+CLIENT_COLUMNS = {
+    "sync_state": ("server TEXT", "cursor INTEGER", "last_sync TEXT", "last_error TEXT",
+                   "lease_until REAL NOT NULL DEFAULT 0", "lease_owner TEXT"),
+    "outbox": ("attempts INTEGER NOT NULL DEFAULT 0",),
+    "sync_notes": ("shown INTEGER NOT NULL DEFAULT 0",),
+}
+
+
+def _migrate_sync(db: sqlite3.Connection) -> None:
+    """Version 3: the gids and the versions of the team server, and the relations
+    of manufacturer names that the registry has (makers.decisions). The gids of
+    the rows continue in one sequence; sync_state gets its end."""
+    _add_columns(db, {"parts": ("gid TEXT", "version INTEGER NOT NULL DEFAULT 0"),
+                      "knowledge": ("gid TEXT", "version INTEGER NOT NULL DEFAULT 0"),
+                      "documents": ("version INTEGER NOT NULL DEFAULT 0",)})
+    state = (0, 0)
+    for table in ("parts", "knowledge"):
+        state = _fill_gids(db, table, state)
+    for relation, name, other in makers.decisions(db):
+        db.execute("INSERT INTO maker_relations (relation, name, other, created) VALUES (?, ?, ?, ?)",
+                   (relation, name, other, now()))
+    state = _fill_gids(db, "maker_relations", state)
+    db.execute("INSERT OR IGNORE INTO sync_state (id) VALUES (1)")
+    db.execute("UPDATE sync_state SET gid_ms = ?, gid_counter = ?", state)
+
+
 def alias_candidates(db: sqlite3.Connection) -> list[str]:
     """The pairs of manufacturer names that are probably one manufacturer: two
     parts with the same MPN and these names have a document in common, and the
@@ -310,6 +602,11 @@ MIGRATIONS = {
     # A concrete orderable part (TLV75533PDBVR) refers to the base part of its
     # datasheet (TLV755P).
     2: "ALTER TABLE parts ADD COLUMN base_id INTEGER REFERENCES parts(id) ON DELETE SET NULL",
+    # The global IDs for the team server (a function: more steps).
+    3: _migrate_sync,
+    # The state of the client of the team server (a store of an early version 3
+    # has the tables without these columns).
+    4: lambda db: _add_columns(db, CLIENT_COLUMNS),
 }
 
 
@@ -339,14 +636,36 @@ class Store:
         row = self.db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
         if row is None:
             self.db.execute("INSERT INTO meta VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+            self.db.execute("INSERT OR IGNORE INTO sync_state (id) VALUES (1)")
             self.db.commit()
         elif int(row["value"]) > SCHEMA_VERSION:
             raise RuntimeError(f"store schema version {row['value']} is not supported "
                                f"(this version of datasheet-lens knows {SCHEMA_VERSION}: install a newer one)")
         elif int(row["value"]) < SCHEMA_VERSION:
             self._in_transaction(self._migrate)
+        if not self._triggers_current():
+            self._in_transaction(lambda: self._triggers_current() or self._install_triggers())
         if not makers.seed_current(self.db):
-            self._in_transaction(lambda: makers.seed_current(self.db) or _update_registry(self.db))
+            self._in_transaction(lambda: makers.seed_current(self.db) or self._update_registry())
+
+    def _triggers_current(self) -> bool:
+        row = self.db.execute("SELECT value FROM meta WHERE key = ?", (SYNC_KEY,)).fetchone()
+        return row is not None and row[0] == SYNC_VERSION
+
+    def _install_triggers(self) -> None:
+        """Make the triggers of SYNC_STATEMENTS again: a trigger of an older
+        version must not stay. The store has no other triggers."""
+        for (name,) in self.db.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'").fetchall():
+            self.db.execute(f'DROP TRIGGER "{name}"')
+        for statement in SYNC_STATEMENTS:
+            self.db.execute(statement)
+        self.db.execute("INSERT INTO meta VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                        (SYNC_KEY, SYNC_VERSION))
+
+    def _update_registry(self) -> None:
+        """_update_registry: a result of the built-in names, which each store has."""
+        with not_recorded(self.db):
+            _update_registry(self.db)
 
     def _in_transaction(self, func) -> None:
         """Run func in one write transaction (BEGIN IMMEDIATE): a second process
@@ -366,7 +685,8 @@ class Store:
         """The changes of MIGRATIONS from the version of the store."""
         version = int(self.db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0])
         for target in range(version + 1, SCHEMA_VERSION + 1):
-            self.db.execute(MIGRATIONS[target])
+            step = MIGRATIONS[target]
+            step(self.db) if callable(step) else self.db.execute(step)
             self.db.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'", (str(target),))
 
     def close(self) -> None:
@@ -399,6 +719,15 @@ class Store:
     def blob_path(self, sha: str, suffix: str) -> Path:
         """The path of the file of a document in the store (from its SHA-256)."""
         return self.home / "blobs" / sha[:2] / f"{sha}{suffix}"
+
+    def local_file(self, doc: Document) -> Path:
+        """The file of a document. A document from the team server can have no
+        local file yet: it comes from the server now (teamsync.download)."""
+        if doc.path.is_file():
+            return doc.path
+        from .teamsync import download
+
+        return download(self, doc)
 
     # Documents
 
@@ -532,7 +861,16 @@ class Store:
         for each merge."""
         try:
             makers.relate(self.db, relation, name, other)
-            merged = merge_duplicates(self.db) if relation != "distinct" else []
+            # The decision is shared (maker_relations), its merges are not. A
+            # decision that the store has already is not a new decision.
+            pair = {makers.key(name), makers.key(other)}
+            if len(pair) == 2 and not any(
+                    {makers.key(r["name"]), makers.key(r["other"])} == pair for r in self.db.execute(
+                        "SELECT name, other FROM maker_relations WHERE relation = ?", (relation,))):
+                self.db.execute("INSERT INTO maker_relations (relation, name, other, created) VALUES (?, ?, ?, ?)",
+                                (relation, name.strip(), other.strip(), now()))
+            with not_recorded(self.db):
+                merged = merge_duplicates(self.db) if relation != "distinct" else []
             self.db.commit()
         except BaseException:
             self.db.rollback()

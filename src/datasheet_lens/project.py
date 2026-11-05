@@ -2243,7 +2243,7 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
                     target = project.file_path(rel)
                     tmp = temp_path(target)
                     try:
-                        shutil.copyfile(doc.path, tmp)
+                        shutil.copyfile(store.local_file(doc), tmp)
                         tmp.replace(target)
                     finally:
                         tmp.unlink(missing_ok=True)

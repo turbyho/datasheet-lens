@@ -18,6 +18,9 @@ The installation gives two commands:
 | `datasheet-lens` | The command line interface (CLI). See [cli.md](cli.md). |
 | `datasheet-lens-mcp` | The MCP server (stdio). See [mcp-server.md](mcp-server.md). |
 
+The extra `server` (`datasheet-lens[server]`) gives two more commands for a team
+server: `dslens-server` and `dslens-admin`. See [team-server.md](team-server.md).
+
 ## Install the tool
 
 1. Install the package from PyPI:

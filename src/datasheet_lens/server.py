@@ -695,14 +695,17 @@ def project_status(path: ProjectPath = "") -> str:
     changes nothing. Gives one line for each part (MPN, manufacturer, base part,
     variants) and one line for each document (reference, role, file). A first
     line can tell about a newer release or a necessary restart of the LLM
-    client: tell the user."""
+    client, or about the team server (a failed sync, a conflict): tell the user."""
     from .project import format_parts, format_report, load, sync
     from .version_check import version_notes
+
+    from .teamsync import model_notes
 
     project = load(path or None)
     with Store() as store:
         report = sync(project, store, apply=False)
-    return "\n".join(version_notes() + format_parts(project) + format_report(report, False, PROJECT_ADD_HINT))
+        team = model_notes(store)
+    return "\n".join(version_notes() + team + format_parts(project) + format_report(report, False, PROJECT_ADD_HINT))
 
 
 @tool
@@ -985,7 +988,10 @@ def project_check(
     fields of the symbols: export_bom of kicad-workbench does), or by
     mpn_fields of the parts; when the field is not known, it names the choices
     and tells you to ask the user. In KiCad, write the fields with
-    set_symbol_fields of the MCP server kicad-workbench. It changes nothing."""
+    set_symbol_fields of the MCP server kicad-workbench. When the store is
+    connected to a team server, it gets the rows of the server first: a
+    datasheet that a different person added is not missing. It changes
+    nothing in the project."""
     from .project import bom_files, check_parts, format_check, load
     from .version_check import version_notes
 
@@ -1004,9 +1010,15 @@ def project_check(
     reads = bom_files(files, bom_column, bom_delimiter, bom_quote, options, bom_confirmed_column,
                       base=str(project.root)) if parts is None else []
     cad = [s for r in reads for s in r.cad] if reads else [p.model_dump() for p in parts or []]
+    from .teamsync import model_notes, sync_before_answer
+
     with Store() as store:
+        # The rows of the team server first: a datasheet that a different person
+        # added is then not missing (decision 20 of the team server).
+        team = sync_before_answer(store)
         result = check_parts(project, store, cad)
-    return "\n".join(version_notes() + [r.summary for r in reads] + format_check(result))
+        team += model_notes(store)
+    return "\n".join(version_notes() + team + [r.summary for r in reads] + format_check(result))
 
 
 @tool
@@ -1097,11 +1109,18 @@ def project_remove_document(
 
 def main() -> None:
     """Run the MCP server on stdin and stdout. A background thread asks PyPI for
-    a newer release (see version_check)."""
+    a newer release (see version_check). A store that is connected to a team
+    server syncs at the start and each teamsync.SYNC_INTERVAL seconds."""
+    from .teamsync import background
     from .version_check import start_update_check
 
     start_update_check()
-    mcp.run("stdio")
+    stop = threading.Event()
+    threading.Thread(target=background, args=(stop, Store), name="team-sync", daemon=True).start()
+    try:
+        mcp.run("stdio")
+    finally:
+        stop.set()
 
 
 __all__ = ["mcp", "main", "__version__"]

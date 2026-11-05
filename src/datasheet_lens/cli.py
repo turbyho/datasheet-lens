@@ -511,7 +511,8 @@ def _base_note(store: Store, part: dict) -> str:
 
 
 def cmd_key(args: argparse.Namespace) -> int:
-    """The command key: save, remove or show the API keys of the distributors."""
+    """The command key: save, remove or show the API keys of the distributors and
+    the token of the team server."""
     import getpass
 
     from .keys import KEYS, delete_key, key_source, key_sources, set_key
@@ -530,11 +531,43 @@ def cmd_key(args: argparse.Namespace) -> int:
             print(f"{args.name}: a key is still in {where}")
         return 0
     # Not on the screen and not in the shell history.
-    value = getpass.getpass(f"{args.name} API key: ") if sys.stdin.isatty() else sys.stdin.readline()
+    label = "token" if args.name.lower() == "team" else "API key"
+    value = getpass.getpass(f"{args.name} {label}: ") if sys.stdin.isatty() else sys.stdin.readline()
     print(f"{args.name}: saved in {set_key(args.name, value)}")
     env = KEYS[args.name.lower()]
     if key_source(args.name).startswith("environment"):
         print(f"{args.name}: the environment variable {env} comes first: remove it, else the saved key is not used")
+    return 0
+
+
+def cmd_server(args: argparse.Namespace) -> int:
+    """The command server: connect the store to a team server, sync, show the
+    state, or disconnect (see doc/team-server.md)."""
+    from . import teamsync
+
+    with Store() as store:
+        if args.action == "connect":
+            if not args.url:
+                raise LensError("give the URL of the team server, for example: datasheet-lens server connect "
+                                "https://dslens.example.com")
+            for line in teamsync.connect(store, args.url):
+                print(line)
+        elif args.action == "sync":
+            print(teamsync.sync(store).line())
+        elif args.action == "disconnect":
+            print(f"disconnected; {teamsync.disconnect(store)} local changes that the server did not get are not "
+                  "sent (the local rows stay)")
+        else:
+            s = teamsync.state(store)
+            if not s["server"]:
+                print("not connected to a team server (datasheet-lens server connect URL)")
+                return 0
+            print(f"team server: {s['server']}")
+            print(f"last complete sync: {s['last_sync'] or 'never'}; local changes that wait: {s['waiting']}")
+            if s["last_error"]:
+                print(f"the last sync failed: {s['last_error']}")
+            for line in teamsync.notes(store):
+                print(f"note: {line}")
     return 0
 
 
@@ -730,8 +763,15 @@ def build_parser() -> argparse.ArgumentParser:
     ds.add_argument("-p", "--path", "--project", dest="path", help="the project folder (default: the current folder or a parent "
                                                       "folder)")
     ds.set_defaults(func=cmd_dist)
-    ky = sub.add_parser("key", help="save the API key of a distributor (asks for it), or show where the keys are")
-    ky.add_argument("name", nargs="?", metavar="NAME", help="the distributor: mouser. Empty: show the keys")
+    sv = sub.add_parser("server", help="the team server: connect the store, sync, show the state, or disconnect")
+    sv.add_argument("action", nargs="?", default="status", choices=("connect", "sync", "status", "disconnect"),
+                    help="default: status")
+    sv.add_argument("url", nargs="?", help="connect: the URL of the team server (https://...)")
+    sv.set_defaults(func=cmd_server)
+    ky = sub.add_parser("key", help="save the API key of a distributor or the token of the team server (asks for "
+                                     "it), or show where the keys are")
+    ky.add_argument("name", nargs="?", metavar="NAME", help="mouser (a distributor) or team (the token of the team "
+                                                             "server). Empty: show the keys")
     ky.add_argument("--delete", action="store_true", help="remove the saved key")
     ky.set_defaults(func=cmd_key)
     mk = sub.add_parser("maker", help="show the manufacturer registry, or record a relation of two manufacturer "

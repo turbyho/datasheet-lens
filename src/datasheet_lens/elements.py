@@ -54,9 +54,9 @@ def build_elements(store: Store, doc_id: int, backend: str = "auto", chunk: int 
     if backend == "docling":
         if not docling_available():
             raise LensError("the docling backend is not installed (run: datasheet-lens init)")
-        raw = _docling_elements(str(doc.path), doc.pages or 0, chunk)
+        raw = _docling_elements(str(store.local_file(doc)), doc.pages or 0, chunk)
     elif backend == "text":
-        raw = _text_elements(str(doc.path))
+        raw = _text_elements(str(store.local_file(doc)))
     else:
         raise LensError(f"unknown element backend: {backend}")
     rows = _number(raw)

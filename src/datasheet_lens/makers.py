@@ -210,14 +210,53 @@ def listing(db: sqlite3.Connection) -> list[str]:
     return lines
 
 
-def _seed_version() -> str:
-    return hashlib.sha256(json.dumps([MANUFACTURERS, SHORT_NAMES], sort_keys=True).encode()).hexdigest()[:12]
+# The version of the built-in names (a hash): the registry of a store and of the
+# team server must come from the same version.
+SEED_VERSION = hashlib.sha256(json.dumps([MANUFACTURERS, SHORT_NAMES], sort_keys=True).encode()).hexdigest()[:12]
+
+
+def _seed_groups() -> dict[str, int]:
+    """The key of each name of MANUFACTURERS and SHORT_NAMES, with the number of
+    its manufacturer: the manufacturers that seed makes in an empty registry."""
+    groups: dict[str, int] = {}
+    for number, (name, long_names) in enumerate(MANUFACTURERS.items()):
+        keys = [key(n) for n in (name, *long_names, *SHORT_NAMES.get(name, ()))]
+        known = next((groups[k] for k in keys if k in groups), number)
+        for k in keys:
+            groups.setdefault(k, known)  # as seed: a key that the registry has stays
+    return groups
+
+
+def decisions(db: sqlite3.Connection) -> list[tuple[str, str, str]]:
+    """The relations (relation, name, other) that make the registry of db again
+    when relate records them, in sequence, in a registry with only the names of
+    seed: the decisions of the users in a registry that has no record of them
+    (a store of an older version). The registry is compared with the names of
+    this version: MANUFACTURERS and SHORT_NAMES did not change since the first
+    version with a registry (only additions are permitted, see seed), thus a
+    difference is a decision of a user."""
+    seed = _seed_groups()
+    names: dict[int, str] = {}
+    found = []
+    for mid, name in db.execute("SELECT id, name FROM manufacturers ORDER BY id").fetchall():
+        names[mid] = name
+        # One name for each part of the manufacturer that seed does not join:
+        # a manufacturer of seed, or a name that seed does not have.
+        parts: dict[object, str] = {}
+        for (alias,) in db.execute("SELECT name FROM manufacturer_aliases WHERE manufacturer_id = ?"
+                                   " ORDER BY created, key", (mid,)).fetchall():
+            parts.setdefault(seed.get(key(alias), key(alias)), alias)
+        own = seed.get(key(name), key(name))
+        found += [("alias", alias, name) for group, alias in parts.items() if group != own]
+    found += [("distinct", names[a], names[b])
+              for a, b in db.execute("SELECT a, b FROM manufacturer_distinct ORDER BY a, b").fetchall()]
+    return found
 
 
 def seed_current(db: sqlite3.Connection) -> bool:
     """True if the registry has the names of this version of MANUFACTURERS."""
     row = db.execute("SELECT value FROM meta WHERE key = ?", (SEED_KEY,)).fetchone()
-    return row is not None and row[0] == _seed_version()
+    return row is not None and row[0] == SEED_VERSION
 
 
 def seed(db: sqlite3.Connection) -> None:
@@ -232,4 +271,4 @@ def seed(db: sqlite3.Connection) -> None:
         for n in (name, *aliases):
             _add_alias(db, n, mid, "builtin")
     db.execute("INSERT INTO meta VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-               (SEED_KEY, _seed_version()))
+               (SEED_KEY, SEED_VERSION))

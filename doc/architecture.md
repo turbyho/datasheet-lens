@@ -77,6 +77,25 @@ The database tables:
 | `pages`, `outline`, `captions` | The index. |
 | `elements` | The element map. |
 | `knowledge` | The facts. |
+| `maker_relations` | The relations of two manufacturer names (`alias`, `distinct`) that the users recorded, in sequence. |
+| `manufacturers`, `manufacturer_aliases`, `manufacturer_distinct` | The manufacturer registry. Each store makes it from the built-in names and `maker_relations`. |
+| `sync_state`, `outbox` | The local changes for a team server (see below). |
+
+The tables `parts`, `part_aliases`, `documents`, `part_documents`, `knowledge` and
+`maker_relations` are shared tables. Each row has a global ID: the SHA-256 for a
+document, a gid for the other rows. A gid is a UUID of version 7. Its text order is
+the order of the creation of the rows. The column `version` keeps the version of the
+row on a team server (0: not on a server).
+
+When a store is connected to a team server (`sync_state.recording`), triggers write
+each local change of a shared table into `outbox`, in the same transaction. A row
+from the server, and a change that a shared decision causes (the merge of two parts
+after a relation of manufacturer names), write no outbox row: each store and the
+server make these changes themselves (`store.not_recorded`). A merge keeps the
+oldest part: by `created`, then by gid. Thus each store keeps the same part.
+
+The key `sync_triggers` in `meta` keeps the version of the triggers. When a new
+release changes them, the first start makes them again in one write transaction.
 
 A new version of the store schema has a migration in `MIGRATIONS`. The first start of
 a new version runs the migrations in one write transaction. A store with a newer
@@ -190,8 +209,9 @@ start of the MPN). It uses only the standard library (`urllib`). It keeps each a
 for one hour. An HTTP error never shows the request URL, because the URL holds the
 key. `links.py` gives the search links of `part_links`.
 
-`keys.py` reads a key from the environment variable, the key store of the system
-(the package keyring) or the file `keys.toml`. A key never goes into a message, a log
+`keys.py` reads a key (the API key of a distributor, or the token of the team server)
+from the environment variable, the key store of the system (the package keyring) or
+the file `keys.toml`. A key never goes into a message, a log
 or the database.
 
 ## Module map

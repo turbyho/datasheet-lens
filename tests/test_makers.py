@@ -7,7 +7,7 @@ from datasheet_lens import project as prj
 from datasheet_lens.cli import main
 from datasheet_lens.distributors import Offer, _of_maker
 from datasheet_lens.errors import LensError
-from datasheet_lens.store import Store
+from datasheet_lens.store import SCHEMA_VERSION, Store
 
 
 def test_key():
@@ -130,11 +130,12 @@ def test_registry_update_of_an_old_store(store_home, make_pdf):
     built-in tables merge (TI and Texas Instruments, Microchip and Microchip
     Technology Inc.), with their links, aliases, facts and concrete parts. The
     base part gets a manufacturer. An unknown pair (Burr-Brown and TI) is only a
-    proposal. The schema version stays: an older version opens the store."""
+    proposal. The update of the registry does not change the schema version."""
     tmp = _old_store(make_pdf)
     with Store() as store:
         db = store.db
-        assert db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == "2"
+        assert db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(
+            SCHEMA_VERSION)
         parts = {r["id"]: r for r in db.execute("SELECT * FROM parts")}
         assert sorted(parts) == [9, 10, 15, 43, 55, 70, 71]
         assert parts[10]["manufacturer"] == "Microchip"
