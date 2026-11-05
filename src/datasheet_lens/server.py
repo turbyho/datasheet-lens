@@ -913,7 +913,8 @@ class CadPart(BaseModel):
     value: str = Field("", description=(
         "The Value field of the symbol, as it is: a general value, and the MPNs in parentheses, the fitted "
         "part first and then the alternatives (\"2N7002 (2N7002LT1G, BSS138LT1G)\", \"100nF 10V "
-        "(GRM155R71A104KA01D)\"; separators , and ;). Only the text in parentheses gives MPNs."))
+        "(GRM155R71A104KA01D)\"; separators , and ;). Only the text in parentheses gives MPNs. An MPN with "
+        ", ; or a parenthesis is in quotes, as in CSV: '2N7002 (\"BC847B,215\", BSS138LT1G)'."))
     value_confirmed: str | None = Field(None, description=(
         "The hidden field Value_Confirmed of the symbol, as it is: a copy of the Value of the last "
         "confirmation. Null when the symbol has no such field."))

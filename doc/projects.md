@@ -363,12 +363,23 @@ The convention of the parentheses:
   datasheet-lens for the check. Thus the check is the same with and without
   datasheet-lens.
 - The separators of the MPNs are `,` and `;`, in the parentheses and in `MPN`. A
-  comma with no space before three digits is part of the MPN: the packing code of
-  NXP and Nexperia (`BC847B,215`). A slash is not a separator: it is part of many
-  MPNs (`LM358DR/NOPB`). `~` is an empty field (KiCad).
-- One text in parentheses holds all MPNs. More texts in parentheses, or a
-  parenthesis that is not closed, is a conflict: the user corrects `Value`. An MPN
-  cannot have a parenthesis.
+  slash is not a separator: it is part of many MPNs (`LM358DR/NOPB`). A space needs
+  no quotes (`(ABC 123)`). `~` is an empty field (KiCad).
+- An MPN with `,`, `;` or a parenthesis is in quotes, as in CSV (`""` is a quote):
+  `2N7002 ("BC847B,215", BSS138LT1G)`. A quote has this function only at the start
+  of an MPN: `ICL7660"CPA` is one MPN. In `MPN`, a parenthesis needs no quotes. The
+  tool writes quotes only where they are necessary, and the quotes that are not
+  necessary do not count in a comparison. The quotes do not change the meaning of a
+  word: `"-"` and `"TBD"` are the same as `-` and `TBD`. The spaces around an MPN do
+  not count, also in quotes.
+- A comma with no space before three digits (`BC847B,215`, the packing code of NXP
+  and Nexperia) in a list with no quotes: when each separator of the list is such a
+  comma, the list is one MPN. Thus `MPN = BC847B,215` stays clean for the
+  distributors. Else it is a conflict: write the MPN in quotes. The tool does not
+  guess the items of such a list: the full text is one item.
+- One text in parentheses holds all MPNs. More texts in parentheses, a parenthesis
+  that is not closed, or a parenthesis in an MPN with no quotes, is a conflict: the
+  user corrects `Value`.
 - Each text in parentheses is a list of MPNs: `10k (1%)` gives the MPN `1%`. Write
   such a text in an other form (`10k 1%`).
 - An alternative is an other orderable code of the part, a part of an other
@@ -448,8 +459,10 @@ reference with an other MPN in an other variant is not a conflict. The Datasheet
 field of a variant line that is equal to the field of the default variant is
 inherited: it is not the datasheet of the other part of the variant.
 
-datasheet-lens does not write the fields into the schematic. The user writes them in
-KiCad. (The MCP server kicad-workbench will write them, phase 4 of its roadmap.)
+datasheet-lens does not write the fields into the schematic, and it does not call
+an other tool. The agent writes the fields that the result gives, after the
+confirmation of the user: in KiCad, or with the MCP server kicad-workbench (phase 4
+of its roadmap).
 
 ### A BOM file
 

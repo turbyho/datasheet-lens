@@ -566,13 +566,14 @@ def test_check_reads_bom_files_of_other_cad_tools(store_home, text_pdf, tmp_path
 def test_symbol_state_sixth_review_cases(store_home, tmp_path):
     """A "no part" text in a BOM file; the packing code of NXP after a comma; an MPN
     with a digit first and a slash; Value_Confirmed of the BOM files of variants."""
-    from datasheet_lens.project import CadSymbol, field_items, symbol_state
+    from datasheet_lens.project import CadSymbol, field_items, field_list, symbol_state
 
     bom = tmp_path / "tp.csv"
     bom.write_text("Reference,Value,MPN\nTP1,TestPoint,-\n", encoding="utf-8")
     (symbol,) = prj.bom_parts(str(bom)).cad
     assert (symbol.mpn, symbol_state(symbol).no_mpn) == ("-", False)
-    assert field_items("BC847B,215, BC857B,215") == ["BC847B,215", "BC857B,215"]
+    assert field_list('"BC847B,215", "BC857B,215"') == (["BC847B,215", "BC857B,215"], "")
+    assert field_items("BC847B,215") == ["BC847B,215"]  # one MPN with a packing code
     assert field_items("100nF, 100") == ["100nF", "100"]  # no comma in the code: a space
     s = symbol_state(CadSymbol(value="74HC595D (74HC595D,118)", mpn="74HC595D,118",
                                value_confirmed="74HC595D (74HC595D,118)"))
@@ -674,24 +675,48 @@ def test_review_cases_of_2026_11_05(store_home, tmp_path):
 def test_split_value():
     """The convention of the parentheses: the MPNs are the text in parentheses, the
     other text is the general value."""
-    from datasheet_lens.project import ValueParts, _value_key, field_items, split_value
+    from datasheet_lens.project import ValueParts, _value_key, field_items, field_list, format_mpns, split_value
 
     assert split_value("2N7002 (2N7002LT1G, BSS138LT1G)") == ValueParts("2N7002", ["2N7002LT1G", "BSS138LT1G"])
     assert split_value("100nF  10V (GRM155R71A104KA01D) X7R") == ValueParts("100nF 10V X7R", ["GRM155R71A104KA01D"])
-    assert split_value("(BC847B,215; BC857B,215)") == ValueParts("", ["BC847B,215", "BC857B,215"])
+    assert split_value('("BC847B,215"; BC857B)') == ValueParts("", ["BC847B,215", "BC857B"])
+    assert split_value("Q (BC847B,215)") == ValueParts("Q", ["BC847B,215"])  # one MPN with a packing code
+    # Quotes: each character in an MPN, "" is a quote; a quote only at the start of an item.
+    assert split_value('J ("A(1)", "B;2", "5"" LCD")').mpns == ["A(1)", "B;2", '5" LCD']
+    assert split_value('5" LCD (ICL7660"CPA)') == ValueParts('5" LCD', ['ICL7660"CPA'])
+    assert split_value("U (ABC 123)").mpns == ["ABC 123"]  # a space needs no quotes
     assert split_value("4,7k 10V") == ValueParts("4,7k 10V", None)  # no parentheses: no MPN
     assert split_value("10k (1%)").mpns == ["1%"]  # each text in parentheses is a list of MPNs
     assert split_value("10k ()") == ValueParts("10k", [])
     assert split_value("~") == ValueParts("", None)
-    for text in ("a (b) (c)", "a (b", "a ) b (", "a (b))"):
+    for text, error in (("a (b) (c)", "more than one text in parentheses"), ("a (b", "not closed"),
+                        ("a ) b (", "not opened"), ("a (b))", "not opened"), ("a (b(1))", "a parenthesis in an MPN"),
+                        ('a ("b)', "a quote that is not closed"), ('a ("b" c)', "a text after a quote")):
         parts = split_value(text)
-        assert parts.mpns is None and "write the MPNs in one text in parentheses" in parts.error
+        assert parts.mpns is None and error in parts.error and "Write the MPNs in one text" in parts.error
+    # A list that is not clear: an error, and one item, the full text (no MPN is lost).
+    parts = split_value("Q (BC847B,215, BSS138) X")
+    assert (parts.general, parts.mpns) == ("Q X", ["BC847B,215, BSS138"])
+    assert "a comma before three digits can be a separator" in parts.error
+    # The spaces around an item do not count, also in quotes; an item of spaces is empty.
+    assert split_value('Q (" A ", " ", B)').mpns == ["A", "B"]
+    assert field_list("A,100), B") == (["A", "100)", "B"], "")  # in the field MPN, ")" is text
     # The comparison: the words of the general value and the list of the MPNs.
-    assert _value_key("2N7002 (A; B)") == _value_key("2N7002  (A,B)")
+    assert _value_key("2N7002 (A; B)") == _value_key('2N7002  ("A",B)')  # the quotes that are not necessary
     assert _value_key("10 k") != _value_key("10k") and _value_key("4m7") != _value_key("4M7")
     assert _value_key("10k") != _value_key("10k (A)") != _value_key("10k (B)")
-    assert field_items("2N7002,2N7000; BC847B,215") == ["2N7002", "2N7000", "BC847B,215"]
+    assert field_items('2N7002,2N7000; "BC847B,215"') == ["2N7002", "2N7000", "BC847B,215"]
     assert field_items("A|B or C") == ["A|B or C"]  # the separators are , and ;
+    assert field_items("ABC(1)") == ["ABC(1)"]  # a parenthesis needs no quotes in the field MPN
+    # A list that is not clear: one item, the full text (no MPN is lost), and an error.
+    items, error = field_list("BC847B,215, BSS138")
+    assert items == ["BC847B,215, BSS138"] and "write an MPN with , ; or a parenthesis in quotes" in error
+    # Quotes only where they are necessary.
+    assert format_mpns(["BC847B,215"]) == "BC847B,215" and format_mpns(["A", "B"]) == "A, B"
+    assert format_mpns(["BC847B,215", "BSS138"]) == '"BC847B,215", BSS138'
+    assert format_mpns(["A(1)", 'B"C']) == 'A(1), B"C' and format_mpns(["A(1)"], value=True) == '"A(1)"'
+    assert format_mpns(['"A', "B;C"]) == '"""A", "B;C"'
+    assert format_mpns(["~"]) == '"~"' and field_list('"~"') == (["~"], "")  # the text gives the items again
 
 
 def test_symbol_state():
@@ -746,7 +771,24 @@ def test_symbol_state():
     # Conflicts: a Value that does not follow the convention, a no-part text and an
     # MPN in one list.
     s = state("10k (A) (B)", "A", "10k (A)")
-    assert s.conflicts[0].startswith("Value '10k (A) (B)': write the MPNs") and not s.change and s.parts == ["A"]
+    assert s.conflicts[0].startswith("Value '10k (A) (B)': more than one text in parentheses") and not s.change
+    assert s.parts == ["A"]
+    assert "a comma before three digits" in state("Q (X)", "BC847B,215, BSS138").conflicts[0]
+    s = state("Q (BC847B,215, BSS138)", "", "")
+    assert (s.parts, s.unconfirmed) == (["BC847B,215, BSS138"], False) and "a comma before" in s.conflicts[0]
+    s = state('Q ("BC847B,215", BSS138)', '"BC847B,215", BSS138', other_mpns=[("MP", "BC847B,215, BSS138")])
+    assert "MP 'BC847B,215, BSS138': a comma before three digits" in s.conflicts[0]
+    s = state("Q (X)", "X", other_values=["Q (BC847B,215, BSS138)"])
+    assert s.extra == ["BC847B,215, BSS138"]  # the MPNs of an other Value column are not lost
+    # Quotes: the fields are equal also with quotes that are not necessary; a
+    # completion writes quotes only where they are necessary.
+    assert not state('Q ("A", B)', "A, B", "Q (A, B)").change
+    s = state("Q", '"BC847B,215", BSS138')
+    assert (s.complete, s.write_mpn) == ('Q ("BC847B,215", BSS138)', '"BC847B,215", BSS138')
+    assert state("Q", "BC847B,215").complete == "Q (BC847B,215)"
+    s = state("J", "A(1)")
+    assert (s.complete, s.write_mpn) == ('J ("A(1)")', "A(1)")
+    assert not state('J ("A(1)")', "A(1)", 'J ("A(1)")').change
     assert state("Q (GRM1, -)", "GRM1, -").conflicts == [
         "MPN GRM1, -: - tells that the symbol needs no part", "Value GRM1, -: - tells that the symbol needs no part"]
     # More columns: a conflict, and the MPNs of the other column are parts too.

@@ -883,21 +883,118 @@ def _unique(items: list[str]) -> list[str]:
     return [i for i in items if not (_norm(i) in seen or seen.add(_norm(i)))]
 
 
-# The separators of a list of MPNs, in the parentheses of Value and in the field MPN
-# (plans/confirmed-mpns.md, decisions 13 and 14). KiCad 9 and 10 join the different
-# values of a field of the units of one symbol with "," (fields_data_model.cpp). Not
-# a slash: it is part of many MPNs (LM358DR/NOPB).
-MPN_SEPARATORS = re.compile(r"\s*[,;]\s*")
-# The packing code of NXP and Nexperia after a comma with no space (BC847B,215,
-# 74HC595D,118): part of the MPN, not a separator.
-PACKING_CODE = re.compile(r"(?<=[A-Za-z0-9]),(?=\d{3}(?:\s*[,;]|\s*$))")
+# A list of MPNs, in the parentheses of Value and in the field MPN
+# (plans/confirmed-mpns.md, decisions 13, 14 and 23). The separators are "," and ";":
+# KiCad 9 and 10 join the different values of a field of the units of one symbol
+# with "," (fields_data_model.cpp). Not a slash: it is part of many MPNs
+# (LM358DR/NOPB). An item in quotes can have each character ("" is a quote, as in
+# CSV); a quote has this function only at the start of an item.
+MPN_SEPARATORS = ",;"
+# A comma with no space before three digits can be a separator or a part of the MPN:
+# the packing code of NXP and Nexperia (BC847B,215, 74HC595D,118). After the digits:
+# a separator, the end of the list, or the closing parenthesis of Value.
+PACKING_CODE = r"(?<=[A-Za-z0-9]),\d{{3}}\s*(?:[,;{closing}]|$)"
+LIST_QUOTE_HINT = "write an MPN with , ; or a parenthesis in quotes, for example \"BC847B,215\""
+NOT_CLEAR = "a comma before three digits can be a separator or part of the MPN: " + LIST_QUOTE_HINT
+
+
+def _list_items(text: str, start: int = 0, closing: str = "") -> tuple[list[str], int, str]:
+    """The items of a list of MPNs in text, from start. closing: ")" for the
+    parentheses of Value (the list ends at it; a parenthesis in an MPN needs quotes),
+    empty for the field MPN (the list ends at the end of the text). Give the items,
+    the index after the list, and an error text (empty: no error).
+
+    A comma of a packing code (PACKING_CODE) in a text with no quotes: when each
+    separator of the list is such a comma, the list is one MPN (BC847B,215).
+    Else the list is not clear (NOT_CLEAR): the item is the full text of the list
+    (no MPN is lost, and the tool does not guess), and the user writes the MPN in
+    quotes. The spaces around an item do not count, also in quotes."""
+    stops = MPN_SEPARATORS + (closing + "(" if closing else "")
+    packing = re.compile(PACKING_CODE.format(closing=re.escape(closing)))
+    items: list[str] = []
+    separators: list[bool] = []  # for each separator: a comma of a packing code
+    quoted = False
+    i, n = start, len(text)
+    while True:
+        while i < n and text[i].isspace():
+            i += 1
+        if i < n and text[i] == '"':
+            quoted, out, i = True, [], i + 1
+            while True:
+                if i >= n:
+                    return items, i, "a quote that is not closed"
+                if text[i] == '"' and text[i + 1:i + 2] == '"':
+                    out.append('"')
+                    i += 2
+                elif text[i] == '"':
+                    i += 1
+                    break
+                else:
+                    out.append(text[i])
+                    i += 1
+            while i < n and text[i].isspace():
+                i += 1
+            if i < n and text[i] not in MPN_SEPARATORS + closing:
+                return items, i, "a text after a quote: the quotes must be around the full MPN"
+            items.append("".join(out).strip())
+        else:
+            j = i
+            while j < n and text[j] not in stops:
+                j += 1
+            if closing and j < n and text[j] == "(":
+                return items, j, "a parenthesis in an MPN: " + LIST_QUOTE_HINT
+            items.append(_filled(text[i:j]))
+            i = j
+        if i >= n:
+            if closing:
+                return items, i, "a parenthesis that is not closed"
+            break
+        if text[i] == closing:
+            i += 1
+            break
+        separators.append(text[i] == "," and bool(packing.match(text, i)))
+        i += 1
+    if any(separators):
+        body = [_filled(text[start:i - 1 if closing else i])]
+        if all(separators) and not quoted:  # one MPN with a packing code: BC847B,215
+            return body, i, ""
+        return body, i, NOT_CLEAR
+    return [item for item in items if item], i, ""
+
+
+def field_list(text: str) -> tuple[list[str], str]:
+    """The items of the field MPN, in their order, and an error text (see
+    _list_items). "~" is an empty field (KiCad). A list that is not clear is one
+    item, the full text: no MPN is lost, and the tool does not guess the items."""
+    items, _, error = _list_items(_filled(text))
+    return ([_filled(text)] if error else items), error
 
 
 def field_items(text: str) -> list[str]:
-    """The items of a list of MPNs (the field MPN, or the parentheses of Value), in
-    their order. "~" is an empty field (KiCad)."""
-    protected = "".join("\0" if c == "," and PACKING_CODE.match(text, i) else c for i, c in enumerate(text))
-    return [item.replace("\0", ",") for item in (_filled(i) for i in MPN_SEPARATORS.split(protected)) if item]
+    """The items of the field MPN (see field_list), also when the list is not clear."""
+    return field_list(text)[0]
+
+
+def format_mpns(items: list[str], value: bool = False) -> str:
+    """The text of a list of MPNs, with quotes only where they are necessary (see
+    _list_items). value: for the parentheses of Value, where a parenthesis in an
+    MPN needs quotes too. The text must give the items again: else the tool writes
+    quotes around each item (also "~", which is an empty field with no quotes)."""
+    def reads_as(text: str) -> bool:
+        if value:
+            parts = split_value(f"({text})")
+            return parts.mpns == items and not parts.error
+        return field_list(text) == (items, "")
+
+    def quoted(item: str) -> str:
+        return '"' + item.replace('"', '""') + '"'
+
+    special = MPN_SEPARATORS + ("()" if value else "")
+    for text in (", ".join(items),
+                 ", ".join(quoted(i) if any(c in i for c in special) or i.startswith('"') else i for i in items)):
+        if reads_as(text):
+            return text
+    return ", ".join(quoted(i) for i in items)
 
 
 # The texts of a list of MPNs that mean "no part": the symbol needs no datasheet (a
@@ -918,35 +1015,50 @@ class ValueParts:
     """A Value by the convention of the parentheses (plans/confirmed-mpns.md,
     decision 13)."""
     general: str  # the text out of the parentheses, with one space between words
-    mpns: list[str] | None  # the items in the parentheses (field_items, no TBD); None: no parentheses
+    mpns: list[str] | None  # the items in the parentheses (no TBD); None: no parentheses
     error: str = ""  # the text does not follow the convention: a conflict
 
 
 def split_value(text: str) -> ValueParts:
     """The general value and the MPNs of a Value: "2N7002 (2N7002LT1G, BSS138LT1G)"
     or "100nF 10V (GRM155R71A104KA01D)". One text in parentheses holds the MPNs, the
-    fitted part first. More texts in parentheses, or a parenthesis that is not
-    closed, is an error: then the full text is the general value."""
+    fitted part first; an MPN in quotes can have each character. More texts in
+    parentheses, a parenthesis that is not closed, or a list that is not clear is
+    an error. A list that is not clear is one item, the full text of the
+    parentheses (no MPN is lost); after an other error, the full text is the
+    general value."""
     text = _filled(text)
-    opens, closes = text.count("("), text.count(")")
-    if not opens and not closes:
+    start = text.find("(")
+    if start < 0 and ")" not in text:
         return ValueParts(" ".join(text.split()), None)
-    start, end = text.find("("), text.find(")")
-    if opens == closes == 1 and start < end:
-        items = [i for i in field_items(text[start + 1:end]) if i.lower() not in NOT_SELECTED]  # TBD: empty
-        return ValueParts(" ".join((text[:start] + " " + text[end + 1:]).split()), items)
-    return ValueParts(" ".join(text.split()), None,
-                      f"Value {text!r}: write the MPNs in one text in parentheses, for example "
-                      "'2N7002 (2N7002LT1G, BSS138LT1G)'")
+    error, items, end = "", None, 0
+    if ")" in text[:max(start, 0)] or start < 0:
+        error = "a parenthesis that is not opened"
+    else:
+        items, end, error = _list_items(text, start + 1, ")")
+        if not error and "(" in text[end:]:
+            error = "more than one text in parentheses"
+        elif not error and ")" in text[end:]:
+            error = "a parenthesis that is not opened"
+        if error and error != NOT_CLEAR:
+            items = None  # the MPNs are not known
+    message = (f"Value {text!r}: {error}. Write the MPNs in one text in parentheses, for example "
+               "'2N7002 (2N7002LT1G, BSS138LT1G)'") if error else ""
+    if items is None:
+        return ValueParts(" ".join(text.split()), None, message)
+    items = [i for i in items if i.lower() not in NOT_SELECTED]  # TBD: an empty field
+    # A list that is not clear (NOT_CLEAR) is one item, the full text: no MPN is lost.
+    return ValueParts(" ".join((text[:start] + " " + text[end:]).split()), items, message)
 
 
-def _value_key(text: str) -> str:
+def _value_key(text: str) -> tuple[str, tuple[str, ...] | None]:
     """A Value for a comparison (two Value columns, Value and Value_Confirmed): the
     words of the general value and the list of the MPNs (decision 15). The spaces
-    between words and the separators of the list do not count. The words and the
-    case count: 10 k is not 10k, and 4m7 (milliohm) is not 4M7 (megaohm)."""
+    between words, the separators of the list and the quotes that are not necessary
+    do not count. The words and the case count: 10 k is not 10k, and 4m7 (milliohm)
+    is not 4M7 (megaohm)."""
     parts = split_value(text)
-    return parts.general + ("" if parts.mpns is None else " (" + ", ".join(parts.mpns) + ")")
+    return parts.general, None if parts.mpns is None else tuple(parts.mpns)
 
 
 def _mpns(items: list[str]) -> list[str]:
@@ -1027,11 +1139,14 @@ def symbol_state(symbol: CadSymbol) -> SymbolState:
     """
     value = _filled(symbol.value)
     split = split_value(value)
-    f_items = [i for i in field_items(symbol.mpn) if i.lower() not in NOT_SELECTED]  # TBD: an empty field
+    f_items, f_error = field_list(symbol.mpn)
+    f_items = [i for i in f_items if i.lower() not in NOT_SELECTED]  # TBD: an empty field
     mpns = _unique(_mpns(f_items))
     v_items = split.mpns
     v_mpns = _unique(_mpns(v_items or []))
     conflicts = [split.error] if split.error else []
+    if f_error:
+        conflicts.append(f"MPN {_filled(symbol.mpn)!r}: {f_error}")
     for name, items in (("MPN", f_items), ("Value", v_items or [])):
         words = [i for i in items if not _is_field_mpn(i)]
         if words:
@@ -1044,6 +1159,9 @@ def symbol_state(symbol: CadSymbol) -> SymbolState:
     # other column is lost or replaces a confirmed MPN).
     other_mpns: list[str] = []
     for name, text in symbol.other_mpns:
+        other_error = field_list(text)[1]
+        if other_error:
+            conflicts.append(f"{name} {_filled(text)!r}: {other_error}")
         other = mpn_items(text)
         if [_norm(i) for i in other] != [_norm(i) for i in mpn_items(symbol.mpn)]:
             conflicts.append(f"MPN {_filled(symbol.mpn) or '(empty)'}, {name} {_filled(text)}")
@@ -1063,7 +1181,7 @@ def symbol_state(symbol: CadSymbol) -> SymbolState:
         state.parts = list(mpns) or list(v_mpns)
     elif has_field and confirmed and _value_key(value) != _value_key(confirmed):
         if v_items is not None:
-            state.write_mpn = ", ".join(v_items)
+            state.write_mpn = format_mpns(v_items)
             state.new = [m for m in v_mpns if m not in mpns]
             state.removed = [m for m in mpns if m not in v_mpns]
         elif state.no_part:
@@ -1076,7 +1194,7 @@ def symbol_state(symbol: CadSymbol) -> SymbolState:
                if state.no_part else "no MPN is confirmed")
         state.change = f"Value {value!r}, Value_Confirmed {confirmed!r}: {now}"
     elif v_items is not None:
-        state.write_mpn = ", ".join(v_items)
+        state.write_mpn = format_mpns(v_items)
         state.new = [m for m in v_mpns if m not in mpns]
         state.removed = [m for m in mpns if m not in v_mpns]
         if v_items == f_items:
@@ -1089,8 +1207,8 @@ def symbol_state(symbol: CadSymbol) -> SymbolState:
     elif value and mpns and _mpns(f_items) == f_items:
         # Only MPNs in the field: no conflict to copy into Value. An empty Value can be
         # a BOM with no Value column (Altium: Comment): the tool does not know it.
-        state.write_mpn = ", ".join(mpns)  # each MPN one time
-        state.complete = f"{value} ({state.write_mpn})"
+        state.write_mpn = format_mpns(mpns)  # each MPN one time
+        state.complete = f"{value} ({format_mpns(mpns, value=True)})"
     state.extra = [m for m in _unique(other_mpns + other_values) if not any(_norm(m) == _norm(p) for p in state.parts)]
     state.parts = _unique(state.parts + state.extra)
     state.no_mpn = (not state.parts and not state.no_part and bool(value) and not state.change
