@@ -25,7 +25,6 @@ import hashlib
 import importlib.metadata
 import json
 import sqlite3
-from pathlib import Path
 
 from .errors import LensError
 from .fileutil import temp_path

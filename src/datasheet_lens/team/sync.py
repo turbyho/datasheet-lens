@@ -22,7 +22,7 @@ import sqlite3
 from typing import Any
 
 from .. import makers
-from ..bundles import BACKEND_RANK, BUNDLE_BACKENDS, canonical_key
+from ..bundles import BUNDLE_BACKENDS, canonical_key
 from ..store import _VERSION_TABLES as VERSIONED
 
 # The tables in the order of a pull: a row comes after the rows that it refers to.

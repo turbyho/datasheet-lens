@@ -27,6 +27,7 @@ from starlette.concurrency import run_in_threadpool
 from .auth import AuthMiddleware, require
 from .blobs import BlobError, BlobStore, WrongContent, blob_key, staging_key
 from .config import Settings
+from ..bundles import BACKEND_RANK
 from ..makers import SEED_VERSION
 from . import sync
 from .db import Database
@@ -114,8 +115,8 @@ class Bundle(BaseModel):
     @field_validator("backend")
     @classmethod
     def _check_backend(cls, v: str) -> str:
-        if v not in sync.BACKEND_RANK:  # the kind and its backends: register_bundle
-            raise ValueError(f"backend must be one of {', '.join(sync.BACKEND_RANK)}")
+        if v not in BACKEND_RANK:  # the kind and its backends: register_bundle
+            raise ValueError(f"backend must be one of {', '.join(BACKEND_RANK)}")
         return v
 
 
