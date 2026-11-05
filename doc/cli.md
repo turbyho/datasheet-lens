@@ -410,20 +410,26 @@ Give `MPN`, `-d DOC`, or the two.
 ### check
 
 ```text
-datasheet-lens check [--column COLUMN] [--delimiter D] [--quote Q] [-p PATH] BOM.csv
+datasheet-lens check [--column COLUMN] [--delimiter D] [--quote Q] [--confirmed-column NAME] [-p PATH] BOM.csv [BOM.csv ...]
 ```
 
-Compare the project with a BOM file (CSV) of the CAD project. Show the conflicts in
-the CAD project (an MPN field and the Value field that name different parts, or two
-columns of one role, for example two DNP columns, that are different), and the
-same, different, missing and extra parts, with the next command for each one.
+Compare the project with a BOM file (CSV) of the CAD project. Show these items, with
+the next command for each one:
+
+- The conflicts in the CAD project: the fields or the columns of one symbol do not
+  agree, for example two DNP columns with different values.
+- The changes of the fields `Value` and `MPN` that the user must confirm.
+- The symbols with no confirmed fields, the symbols with an MPN that is not in
+  Value (the fields to complete), and the symbols with no part.
+- The same, different, missing and extra parts.
 
 | Argument or option | Effect |
 |---|---|
-| `BOM.csv` | The BOM as a CSV file, for example from `kicad-cli sch export bom`. |
+| `BOM.csv` | The BOM as a CSV file, for example from `kicad-cli sch export bom`. More files: one for each variant of the product, the default variant first. The parts of all files count, and each file gets the check of the confirmed fields. |
 | `--column COLUMN` | The MPN field. Default: each column that the file has of `MPN`, `Manufacturer Part Number`, `Manufacturer Part Number 1`, `MPN 1`, `MP`, `Mfr Part Number`, `Mfr PN`, `Manufacturer PN`; for each line, the first filled one. The `Value` column is always read too. |
 | `--delimiter D` | The delimiter of the values: a text (a preset of KiCad can have more characters) or `tab`. Default: the one of `,` `;` tab `\|` that splits the header line. When more of them split it, or none (and the header is not one known column name), the command asks for this option. |
 | `--quote Q` | The quote: `"` (default: CSV, Excel, kicad-cli), `'` (the Semicolons preset of KiCad), `none` (the TSV preset of KiCad), or an other text of a preset. |
+| `--confirmed-column NAME` | The column of the field `Value_Confirmed`, for example an unused custom column of the BOM of an other CAD tool (default: `Value_Confirmed`). |
 
 The command reads a CSV file (RFC 4180) with the delimiter and the quote of the
 options (see [projects.md](projects.md#a-bom-file) for the rules). It reads UTF-8,
@@ -431,8 +437,9 @@ UTF-16 with its byte order mark, or cp1252 when the file is not UTF-8. It does n
 read XLSX files. It
 compares the column names with no regard to case, spaces, `_`, `.` and `-`. It finds
 the reference, Datasheet and DNP columns by their names, and ignores the lines that
-are not fitted. In the Value column it finds the MPNs: a value and an MPN, or more
-MPNs (alternatives) with any separator. **It is tested only with BOM exports of
+are not fitted. The Value column holds a general value and the MPNs in parentheses,
+the fitted part first and then the alternatives, with the separators `,` and `;`
+(see [projects.md](projects.md#mpn-and-value-fields)). **It is tested only with BOM exports of
 KiCad and Eagle.** A BOM of a different CAD tool (for example Altium) can work when
 its column names are in the lists, but nobody has tested it. See [projects.md](projects.md#with-the-cli-and-a-bom-file) for the full
 rules.

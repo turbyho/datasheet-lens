@@ -619,13 +619,15 @@ def cmd_codes(args: argparse.Namespace) -> int:
 def cmd_check(args: argparse.Namespace) -> int:
     """The command check: compare the project with a BOM file (CSV) of the CAD
     project, for example from "kicad-cli sch export bom"."""
-    from .project import bom_parts, check_parts, format_check, load
+    from .project import bom_files, check_parts, format_check, load
 
-    bom = bom_parts(args.bom, args.column or "", args.delimiter, args.quote,
-                    {"column": "--column", "delimiter": "--delimiter", "quote": "--quote"})
+    reads = bom_files(args.bom, args.column or "", args.delimiter, args.quote,
+                      {"column": "--column", "delimiter": "--delimiter", "quote": "--quote",
+                       "confirmed": "--confirmed-column"}, args.confirmed_column or "")
     with Store() as store:
-        result = check_parts(load(args.path), store, bom.cad)
-    print(bom.summary)
+        result = check_parts(load(args.path), store, [s for r in reads for s in r.cad])
+    for read in reads:
+        print(read.summary)
     print("\n".join(format_check(result, cli=True)))
     return 0
 
@@ -695,14 +697,19 @@ def build_parser() -> argparse.ArgumentParser:
                                                          "with the MPN")
     st.set_defaults(func=cmd_set)
     ck = sub.add_parser("check", help="compare the project with a BOM file (CSV) of the CAD project")
-    ck.add_argument("bom", metavar="BOM.csv", help="the BOM, for example from kicad-cli sch export bom")
-    ck.add_argument("--column", help="the column of the MPN (default: MPN, Manufacturer Part Number (1) ... "
-                                     "or Value)")
+    ck.add_argument("bom", metavar="BOM.csv", nargs="+",
+                    help="the BOM, for example from kicad-cli sch export bom; more files: one for each variant of "
+                         "the product, the default variant first (the parts of all files)")
+    ck.add_argument("--column", help="the column of the MPN (default: MPN, Manufacturer Part Number (1) ...); "
+                                     "the tool always reads the column Value too")
     ck.add_argument("--delimiter", default="", metavar="D", help="the delimiter of the values: a text or 'tab' (default: the "
                                         "one of , ; tab | that splits the header line)")
     ck.add_argument("--quote", default="", metavar="Q",
                     help="the quote: \" (default, also when empty), ' (the Semicolons preset of KiCad), none (its "
                          "TSV preset), or an other text of a preset")
+    ck.add_argument("--confirmed-column", metavar="NAME",
+                    help="the column of the field Value_Confirmed, for example an unused custom column of the BOM "
+                         "of an other CAD tool (default: Value_Confirmed)")
     ck.set_defaults(func=cmd_check)
     cd = sub.add_parser("codes", help="show the orderable codes of a datasheet")
     cd.add_argument("document", metavar="DOC", help="document ID or SHA-256 prefix")

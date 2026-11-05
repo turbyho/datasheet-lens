@@ -45,26 +45,31 @@ project file must hold the same parts as the CAD project.
 
 1. Get the parts of the CAD project: a BOM export as CSV with one line for each
    symbol (`kicad-cli sch export bom`, or `export_bom` of the MCP server
-   kicad-workbench), or a list from the MCP server of the CAD tool. Give the MPN and
-   Value fields as they are: each part with an MPN needs its datasheet, also a
-   capacitor with `390uF (EEU-FS1H391L)` in its Value.
+   kicad-workbench), or a list from the MCP server of the CAD tool. Give the fields
+   `MPN`, `Value` and `Value_Confirmed` as they are: each part with an MPN needs its
+   datasheet, also an alternative in `Value`.
 2. Compare them with the project file: `project_check(bom=<CSV file>)` or
    `project_check(parts)` (CLI: `datasheet-lens check bom.csv`). The CSV reader is
    tested only with BOM exports of KiCad and Eagle.
-3. For each `conflict`: tell the user. The MPN field and the Value field of one
-   symbol name different parts, for example a new Value and the attributes of the
-   old library part. One of the fields is wrong.
-4. For each `missing` part: add its datasheet and the part (`add_document`,
+3. For each `conflict`: tell the user. The fields or the columns of one symbol do
+   not agree, for example two MPN columns with different MPNs. One of them is wrong.
+4. For each `change in the CAD project`: tell the user. The MPNs in the
+   parentheses of `Value` are not the field `MPN`, or `Value` is not equal to
+   `Value_Confirmed`, for example a new MPN or a new general value. Write the fields
+   of the line only when the user confirms the change. For each `complete the
+   fields` line, write the given fields: the MPN goes into `Value` in parentheses
+   (`10k (RC0603FR-0710KL)`), and the parts do not change.
+5. For each `missing` part: add its datasheet and the part (`add_document`,
    `project_add_part`). The line of the result gives the next call. An alternative
    of a part (`[alternative of MPN]`) needs its datasheet too.
-5. For each `different` part: find the correct MPN, then change the project part in
+6. For each `different` part: find the correct MPN, then change the project part in
    place with `project_update_part` (CLI: `datasheet-lens set`), or tell the user
    to change the CAD project.
-6. For each `extra` part: tell the user. Remove it only when the user agrees
+7. For each `extra` part: tell the user. Remove it only when the user agrees
    (`project_remove_part`, CLI: `datasheet-lens rm`).
-7. Run `project_sync`, then `project_check` again.
+8. Run `project_sync`, then `project_check` again.
 
-**Result.** The check gives no conflict and no missing, extra or different part. A `different` line
+**Result.** The check gives no conflict, no change and no missing, extra or different part. A `different` line
 finds one part with two MPNs: the base part in one place and the concrete MPN in the
 other, or a variant of the same datasheet. A CAD MPN with placeholders at its end
 (`nRF9151-LAXX`, `STM32F103C8Tx`) also gives a `different` line for the project part

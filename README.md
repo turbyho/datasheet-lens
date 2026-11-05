@@ -115,7 +115,7 @@ only the files that exist: make one of them first if you want the block.
 |---|---|
 | `add PATH\|URL` | Add a document to the store and to the project |
 | `ls`, `sync` | Show the project, or synchronize its copies |
-| `check BOM.csv` | Compare the project with a BOM (CSV) of the CAD project, and find conflicts between the MPN and Value fields (tested only with BOM exports of KiCad and Eagle) |
+| `check BOM.csv` | Compare the project with a BOM (CSV) of the CAD project, and find the changes and conflicts of the fields MPN, Value and Value_Confirmed (tested only with BOM exports of KiCad and Eagle) |
 | `set MPN -m NEW` | Change the MPN, base part, category or manufacturer of a project part |
 | `rm MPN` | Remove a part (or `-d DOC`, a document) from the project |
 | `search TEXT --part MPN` | Find a text in the documents of a part |

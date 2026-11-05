@@ -91,10 +91,11 @@ User project: the project file datasheet-lens.toml must hold the same parts as
 the CAD project (schematic, BOM). This is critical: the team uses the file as
 the list of the datasheets of the design. At the start of the work, and after
 each change of the CAD project, do these steps:
-1. Get the parts of the CAD project (MPN, Datasheet field) from the CAD tool:
-   a BOM file (CSV, one line for each symbol, for example export_bom of the
-   MCP server kicad-workbench) or a list from its MCP server. A part with no
-   MPN (a generic resistor, a test point) needs no datasheet.
+1. Get the parts of the CAD project (MPN, Value, Value_Confirmed, Datasheet)
+   from the CAD tool: a BOM file (CSV, one line for each symbol, for example
+   export_bom of the MCP server kicad-workbench) or a list from its MCP
+   server. A general value with no MPN (10k) has no selected part. MPN = '-'
+   tells that the symbol needs no part (a test point).
 2. project_check(bom=<CSV file>) or project_check(parts) with all parts: it
    gives the parts that are missing, extra or different, with the next call.
    Give path when the working folder of the server is not in the project.
@@ -104,8 +105,10 @@ each change of the CAD project, do these steps:
    orderable MPN of the BOM (TLV75533PDBVR, get_ordering_codes gives them), base
    is the part of the datasheet (TLV755P). If you cannot get the datasheet, tell
    the user the MPN, the reason and the search links of part_links(mpn).
-4. Tell the user about each different or extra part, and when a CAD MPN and its
-   datasheet do not agree (value, package, variant). Change a part with
+4. Tell the user about each change, different or extra part, and when a CAD MPN
+   and its datasheet do not agree (value, package, variant). A change is valid
+   only when the user confirms it. The convention: Value holds the MPNs in
+   parentheses, "2N7002 (2N7002LT1G, BSS138LT1G)". Change a part with
    project_update_part, and remove one only when the user agrees.
 5. project_sync: it copies the documents into the project folder. Then
    project_check again: it must give no missing, extra or different part.
@@ -903,13 +906,22 @@ def get_ordering_codes(document: DocRef) -> str:
 
 class CadPart(BaseModel):
     """One part of the CAD project (a symbol or a BOM line)."""
-    mpn: str = Field("", description="The MPN field of the symbol, as it is (empty if there is none).")
+    mpn: str = Field("", description=(
+        "The field MPN of the symbol, as it is: the confirmed copy of the MPNs in the parentheses of Value "
+        "(\"2N7002LT1G, BSS138LT1G\"). Empty if there is none; '-' or N/A when the symbol needs no part "
+        "(a test point)."))
     value: str = Field("", description=(
-        "The Value field of the symbol, as it is: it can hold a value (100nF), an MPN, a value and an MPN "
-        "(\"390uF (EEU-FS1H391L)\") or alternatives (\"AP2205-33YR-13 / AP7370-33Y-13\"). The tool finds the "
-        "MPNs in it."))
+        "The Value field of the symbol, as it is: a general value, and the MPNs in parentheses, the fitted "
+        "part first and then the alternatives (\"2N7002 (2N7002LT1G, BSS138LT1G)\", \"100nF 10V "
+        "(GRM155R71A104KA01D)\"; separators , and ;). Only the text in parentheses gives MPNs."))
+    value_confirmed: str | None = Field(None, description=(
+        "The hidden field Value_Confirmed of the symbol, as it is: a copy of the Value of the last "
+        "confirmation. Null when the symbol has no such field."))
     datasheet: str = Field("", description="The Datasheet field: a URL or a path. Empty if there is none.")
     reference: str = Field("", description="The reference of the symbol, for example U3.")
+    variant: str = Field("", description=(
+        "The name of an other variant of the product (KiCad 10) when the fields are the fields of this variant. "
+        "Empty for the default variant: give it first."))
 
 
 @tool
@@ -917,13 +929,16 @@ def project_check(
         parts: Annotated[list[CadPart] | None, Field(description=(
             "The parts of the CAD project, from the CAD tool (for example its MCP server). One item for each "
             "symbol or BOM line, with its MPN and Value fields as they are; give each part, not only the new "
-            "ones. A part with no MPN in the two fields needs no datasheet. Give parts or bom, not the two."))]
+            "ones. A general value with no MPN has no selected part. Give parts or bom, not the two."))]
         = None,
-        bom: Annotated[str, Field(description=(
-            "The path of a BOM file (CSV) of the full CAD project, with one line for each symbol: for example "
+        bom: Annotated[str | list[str], Field(description=(
+            "The path of a BOM file (CSV) of the full CAD project, or a list of paths: one BOM file for each "
+            "variant of the product, the default variant first (the tool takes the parts of all files, and checks "
+            "the confirmed fields in each file; a message of an other variant names its file). One line for each "
+            "symbol: for example "
             "the CSV file of 'kicad-cli sch export bom' (the MCP server kicad-workbench writes it with "
             "export_bom and output_path). A .csv, .tsv or .txt file: an absolute path, or a path relative to "
-            "the project folder (path). The tool finds the columns by their names (MPN, Value, Reference, "
+            "the project folder (the folder of datasheet-lens.toml). The tool finds the columns by their names (MPN, Value, Reference, "
             "Datasheet, DNP); a line with DNP is not fitted. Give parts or bom, not the two."))] = "",
         bom_column: Annotated[str, Field(description=(
             "The column of the MPN in the BOM file. Empty: each column with a usual MPN name (MPN, "
@@ -934,37 +949,52 @@ def project_check(
         bom_quote: Annotated[str, Field(description=(
             "The quote character of the BOM file: '\"' (CSV, Excel, kicad-cli and export_bom), \"'\" (the "
             "Semicolons preset of KiCad) or 'none' (the TSV preset of KiCad). Empty: '\"'."))] = "",
+        bom_confirmed_column: Annotated[str, Field(description=(
+            "The column of the field Value_Confirmed in the BOM file, for example an unused custom column of "
+            "the BOM of an other CAD tool. Empty: Value_Confirmed."))] = "",
         path: ProjectPath = "") -> str:
     """Compare the project file with the parts of the CAD project, so that the
-    two hold the same parts. Each part with an MPN needs its datasheet, also a
-    passive part with an MPN in its Value. Gives one line for each symbol whose
-    MPN and Value fields name different parts, or whose columns of one role in
-    a BOM file are different (a conflict in the CAD project),
-    the number of the same parts, and one line for each part that is different
-    (one part with two MPNs), missing (with the documents of the store or the
-    Datasheet field, and the next call; an alternative of a part is missing
-    too) or extra. With bom, one line before the result gives the columns
-    that the tool read. It changes nothing."""
-    from pathlib import Path
-
-    from .project import bom_parts, check_parts, format_check, load
+    two hold the same parts. Each part with an MPN needs its datasheet, also an
+    alternative in Value. The convention: Value holds a general value and the
+    MPNs in parentheses ("2N7002 (2N7002LT1G, BSS138LT1G)"), the field MPN the
+    confirmed copy of these MPNs, and the hidden field Value_Confirmed a copy of
+    the confirmed Value. The confirmation of the user is the truth. With bom, one
+    line for each BOM file gives the columns that the tool read. Then the result
+    gives these lines:
+    - conflict: the fields or the columns of one symbol do not agree.
+    - change in the CAD project: the MPNs of Value are not the field MPN, or
+      Value is not Value_Confirmed. Tell the user; write the given fields only
+      when the user confirms it.
+    - not confirmed: the fields are not confirmed yet.
+    - complete the fields: the MPN is only in the field MPN. Write the given
+      Value (the MPN in parentheses) and fields; the parts do not change.
+    - no field Value_Confirmed, no part selected (a general value and no MPN).
+    - CAD lines with a part, the number of the same parts, and one line for
+      each part that is different (one part with two MPNs), missing (with the
+      documents of the store or the Datasheet field, and the next call) or
+      extra.
+    A message of an other variant names it. It changes nothing."""
+    from .project import bom_files, check_parts, format_check, load
     from .version_check import version_notes
 
     if (parts is None) == (not bom):
         raise LensError("give the parts of the CAD project in parts or in a BOM file (bom), not the two")
-    if (bom_column or bom_delimiter or bom_quote) and not bom:
-        raise LensError("bom_column, bom_delimiter and bom_quote need a BOM file (bom)")
-    # A relative path is relative to the project folder, as the other paths of a project.
-    bom_path = str(Path(path or ".").expanduser() / Path(bom).expanduser()) if bom else ""
-    read = None
-    if bom:
-        read = bom_parts(bom_path, bom_column, bom_delimiter, bom_quote,
-                         {"column": "bom_column", "delimiter": "bom_delimiter", "quote": "bom_quote"})
-    cad = read.cad if read else [p.model_dump() for p in parts or []]
+    if (bom_column or bom_delimiter or bom_quote or bom_confirmed_column) and not bom:
+        raise LensError("bom_column, bom_delimiter, bom_quote and bom_confirmed_column need a BOM file (bom)")
+    files = [bom] if isinstance(bom, str) else list(bom)
+    if parts is None and not all(f.strip() for f in files):
+        raise LensError("an item of bom is empty: give the path of each BOM file")
+    project = load(path or None)
+    options = {"column": "bom_column", "delimiter": "bom_delimiter", "quote": "bom_quote",
+               "confirmed": "bom_confirmed_column"}
+    # A relative path is relative to the project folder (the folder of the project
+    # file), as the other paths of a project: not to the working folder of the server.
+    reads = bom_files(files, bom_column, bom_delimiter, bom_quote, options, bom_confirmed_column,
+                      base=str(project.root)) if parts is None else []
+    cad = [s for r in reads for s in r.cad] if reads else [p.model_dump() for p in parts or []]
     with Store() as store:
-        project = load(path or None)
         result = check_parts(project, store, cad)
-    return "\n".join(version_notes() + ([read.summary] if read else []) + format_check(result))
+    return "\n".join(version_notes() + [r.summary for r in reads] + format_check(result))
 
 
 @tool

@@ -246,11 +246,13 @@ def test_project_check_reads_a_bom_file(store_home, tmp_path):
         '"U2","TLV755P","SOT-23-5","","1","","","TLV75533PDBVR"\n'
         '"U3","LM358N","DIP-8","","1","DNP","","LM358P"\n', encoding="utf-8")
     out = text_of(call("project_check", bom=str(bom), path=str(project.root)))
-    assert f"{bom}: MPN from MPN, Value; references from Reference; 2 lines with an MPN" in out
+    assert f"{bom}: MPN from MPN; Value from Value; references from Reference; no column Value_Confirmed" in out
+    assert "CAD lines with a part: 2" in out
     assert "the same in the CAD project and in the project file: 1 parts" in out
     assert "missing: TLV75533PDBVR (U2)" in out and "extra: LM358" in out
-    out = text_of(call("project_check", bom=str(bom), bom_column="Value", path=str(project.root)))
-    assert "MPN from Value;" in out and "missing: TLV755P (U2)" in out
+    # Value is always Value, not the column of the MPN.
+    assert "is the column Value, which the tool always reads as Value" in tool_error(
+        "project_check", bom=str(bom), bom_column="Value", path=str(project.root))
 
     assert "not the two" in tool_error("project_check", path=str(project.root))
     assert "not the two" in tool_error("project_check", parts=[], bom=str(bom), path=str(project.root))
@@ -275,7 +277,8 @@ def test_project_check_bom_errors(store_home, tmp_path):
     root = str(project.root)
     (project.root / "bom.csv").write_text("Reference,Value,MPN\n", encoding="utf-8")
     out = text_of(call("project_check", bom="bom.csv", path=root))
-    assert "bom.csv: MPN from MPN, Value; references from Reference; 0 lines with an MPN" in out
+    assert "bom.csv: MPN from MPN; Value from Value; references from Reference; no column Value_Confirmed" in out
+    assert "CAD lines with a part: 0" in out
     assert "extra: OPA2134PA" in out
     # A comma in a value with no quotes: the columns of the line are not known.
     (project.root / "bom.csv").write_text("Reference,Value,MPN\nC1,10uF, 25V,GRM188\nU1,OPA,OPA2134PA\n",
@@ -284,17 +287,18 @@ def test_project_check_bom_errors(store_home, tmp_path):
     (project.root / ".env").write_text("API_KEY=secret\n", encoding="utf-8")
     error = tool_error("project_check", bom=".env", path=root)
     assert "must be CSV text" in error and "secret" not in error
-    (project.root / "open.csv").write_text('"Reference","MPN"\n"U1","abc\n"U2","X9"\n', encoding="utf-8")
+    (project.root / "open.csv").write_text('"Reference","MPN"\n"U1","abc\n"U2","XQ1001"\n', encoding="utf-8")
     assert "is not valid CSV" in tool_error("project_check", bom="open.csv", path=root)
     (project.root / "u16.txt").write_bytes(b"\xff\xfeM\x00P\x00N\x00\n")
     assert "not valid UTF-16 text" in tool_error("project_check", bom="u16.txt", path=root)
-    (project.root / "semi.csv").write_text("'Reference';'MPN'\n'U1';'X9'\n", encoding="utf-8")
+    (project.root / "semi.csv").write_text("'Reference';'MPN'\n'U1';'XQ1001'\n", encoding="utf-8")
     assert "give the quote ' with bom_quote" in tool_error("project_check", bom="semi.csv", path=root)
     out = text_of(call("project_check", bom="semi.csv", bom_quote="'", path=root))
-    assert "MPN from MPN; references from Reference; 1 lines with an MPN" in out
-    (project.root / "tab.txt").write_text('Reference\tMPN\nU1\t"X9" Y9\n', encoding="utf-8")
+    assert "MPN from MPN; references from Reference; no column Value_Confirmed" in out
+    assert "CAD lines with a part: 1" in out
+    (project.root / "tab.txt").write_text('Reference\tMPN\nU1\t"XQ1001" YQ2002\n', encoding="utf-8")
     out = text_of(call("project_check", bom="tab.txt", bom_delimiter="tab", bom_quote="none", path=root))
-    assert "1 lines with an MPN" in out
+    assert "CAD lines with a part: 1" in out and 'missing: "XQ1001" YQ2002' in out  # the quotes are text
     assert "must be different (bom_delimiter, bom_quote)" in tool_error(
         "project_check", bom="semi.csv", bom_delimiter="'", bom_quote="'", path=root)
     # "~" is an empty field of KiCad, also in the parts of the MCP server of a CAD tool.
@@ -304,3 +308,55 @@ def test_project_check_bom_errors(store_home, tmp_path):
     assert "extra: OPA2134PA" in out
     (project.root / "x.csv").write_text("Name,Qty\nA,1\n", encoding="utf-8")
     assert "give the column of the MPN with bom_column" in tool_error("project_check", bom="x.csv", path=root)
+
+
+def test_project_check_reads_the_bom_files_of_variants(store_home, tmp_path):
+    """One BOM file for each variant of the product: the parts of all files count, a
+    reference with an other MPN in an other variant is not a conflict, and the same
+    message of two files comes one time."""
+    from datasheet_lens import project as prj
+    from datasheet_lens.store import Store
+
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "2N7002LT1G")
+    root = str(project.root)
+    header = "Reference,Value,MPN,Value_Confirmed\n"
+    (project.root / "a.csv").write_text(header + "Q1,2N7002 (2N7002LT1G),2N7002LT1G,2N7002 (2N7002LT1G)\n"
+                                        "C1,100nF,,\n", encoding="utf-8")
+    (project.root / "b.csv").write_text(header + "Q1,BSS138 (BSS138LT1G),BSS138LT1G,BSS138 (BSS138LT1G)\n"
+                                        "C1,100nF,,\n", encoding="utf-8")
+    out = text_of(call("project_check", bom=["a.csv", "b.csv"], path=root))
+    assert "missing: BSS138LT1G (Q1)" in out and "conflict" not in out and "change in the" not in out
+    assert "complete the fields" not in out
+    # Each line of a BOM file of a variant needs its reference.
+    (project.root / "c.csv").write_text("Value,MPN\n2N7002 (2N7002LT1G),2N7002LT1G\n", encoding="utf-8")
+    assert "variant c.csv: a line with no reference" in tool_error("project_check", bom=["a.csv", "c.csv"],
+                                                                   path=root)
+    assert out.count("no part selected") == 1 and "C1." in out
+
+
+def test_project_check_bom_path_is_relative_to_the_project(store_home, tmp_path):
+    """A relative BOM path is relative to the folder of the project file, also when
+    path is a subfolder of the project."""
+    from datasheet_lens import project as prj
+
+    project = prj.init_project(tmp_path / "board")
+    (project.root / "hw").mkdir()
+    (project.root / "bom.csv").write_text("Reference,MPN\nU1,XQ1001\n", encoding="utf-8")
+    out = text_of(call("project_check", bom="bom.csv", path=str(project.root / "hw")))
+    assert "missing: XQ1001 (U1)" in out
+
+
+def test_project_check_parts_with_no_value_confirmed(store_home, tmp_path):
+    """The parts of an MCP server with no value_confirmed: the message tells the agent
+    to give it; with value_confirmed, the message does not come."""
+    from datasheet_lens import project as prj
+
+    root = str(prj.init_project(tmp_path / "board").root)
+    out = text_of(call("project_check", parts=[{"mpn": "2N7002LT1G", "value": "2N7002", "reference": "Q1"}],
+                       path=root))
+    assert "no field Value_Confirmed: 1 CAD parts" in out and "With parts: give value_confirmed of each part." in out
+    out = text_of(call("project_check", parts=[{"mpn": "2N7002LT1G", "value": "2N7002", "reference": "Q1",
+                                                "value_confirmed": '["2N7002"]'}], path=root))
+    assert "no field Value_Confirmed" not in out and "missing: 2N7002LT1G (Q1)" in out

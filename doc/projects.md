@@ -322,16 +322,18 @@ list of the datasheets of the design.
 ### With the MCP tools
 
 1. The agent gets the parts of the CAD project from the CAD tool: for each symbol, the
-   MPN field, the Value field, the Datasheet field and the reference, as they are.
+   fields MPN, Value, Value_Confirmed and Datasheet and the reference, as they are.
    The best source is a BOM file (CSV) with one line for each symbol, for example
    from the tool `export_bom` of the MCP server kicad-workbench (with `output_path`).
    The agent then gives only the path, not the values. A list of parts from the MCP
    server of the CAD tool is the other source.
 2. It calls `project_check(bom=<CSV file>)` or `project_check(parts)` with all parts.
-   The tool finds the MPNs (see "MPN and Value fields" below). Each part with an MPN
-   needs its datasheet, also a passive part with an MPN in its Value.
-3. The result gives one line for each conflict in the CAD project, the number of the
-   same parts, and one line for each part that is:
+   The tool finds the parts of each symbol (see "MPN and Value fields" below). Each
+   part with an MPN needs its datasheet, also an alternative in its Value.
+3. The result gives one line for each conflict and each change in the CAD project
+   (see "MPN and Value fields"), one line for each symbol that is not confirmed or
+   that needs the completion of its fields, one line with the symbols that have no
+   selected part, the number of the same parts, and one line for each part that is:
    - `different`: probably one part with two MPNs (for example the base part in the
      project and the concrete MPN in the CAD project). The line gives the
      `project_update_part` call.
@@ -345,45 +347,116 @@ list of the datasheets of the design.
 
 ### MPN and Value fields
 
-The MPN of a symbol can be in an MPN field, in the Value field, or in both. The tool
-uses these rules (the MCP tool and the CLI command are the same):
+Each symbol has three fields for its parts (the model is agreed with the user,
+2026-11-05):
 
-- The first filled MPN field gives the main MPN. With no MPN field, the first MPN in
-  the Value field gives it.
-- The Value field can hold a value (`100nF`), an MPN, a value and an MPN
-  (`390uF (EEU-FS1H391L)`, `10uF/10V (GRM188R61A106KE69D)`) or more MPNs
-  (`AP2205-33YR-13 / AP7370-33Y-13`). The tool finds each MPN in it. A value with a
-  unit (`100nF`, `4.7uF/10V`, `>=120R`) and the name of a generic symbol
-  (`Conn_01x05_Socket`) are not MPNs.
-- Each person can use a different separator between MPNs: `/`, `,`, `;`, `|`, a
-  word, or a different sign. Each character that an MPN does not have (an MPN has
-  letters, digits and `- / . + # =`) separates. A slash with no spaces separates two
-  MPNs only when the part after it is a full MPN with a digit:
-  `AP2205-33YR-13/AP7370-33Y-13` gives two MPNs, but `LM358DR/NOPB` and
-  `MCP1827S-3302E/EB` are one MPN.
-- Words of one part give one MPN, the longest: `OPA2134 (OPA2134PA)` gives
-  `OPA2134PA`. A word with `_` is the name of a generic symbol, not an MPN
-  (`USB_C_Receptacle_GCT_USB4105`).
-- The other MPNs of the Value field are alternatives (a second source). An
-  alternative has 6 or more characters: an ordering suffix such as `N16R8` of
-  `ESP32-S3-WROOM-1 N16R8` is not an alternative. Each alternative needs its own
-  datasheet: the Datasheet field of the symbol belongs to the main part.
-- A conflict: an MPN field and the Value field (or two MPN fields) name different
-  parts, for example `MP BSS138` and `Value 2N7002`. In Eagle, this occurs when a
-  person changes the Value and the attributes of the old library part stay. One of
-  the fields is wrong: the agent tells the user. The check uses the main MPN.
-- Not a conflict: the same part with different signs (`LTC3588EMSE#PBF` and
-  `LTC3588EMSEPBF`), a longer code of the same part (`TMP112D0` and
-  `TMP112D0IDPWR`, `TPS7A02` and `TPS7A0233PYCHR`), or the base part of a code with
-  digits in it (`TLV755P` and `TLV75533PDBVR`): a symbol name in the Value and the
-  orderable code in the MPN field are normal.
+| Field | Content |
+|---|---|
+| `Value` | A general value, and the MPNs in one text in parentheses: the fitted part first, then the alternatives. `2N7002 (2N7002LT1G, BSS138LT1G)`, `100nF 10V (GRM155R71A104KA01D)`. The designer changes it in KiCad. |
+| `MPN` | The confirmed copy of the MPNs in the parentheses (`2N7002LT1G, BSS138LT1G`). The BOM, the distributors and the assembly services read it. |
+| `Value_Confirmed` | A hidden field: a copy of the `Value` of the last confirmation. |
+
+The convention of the parentheses:
+
+- Only the text in parentheses gives MPNs. All other text of `Value` is the general
+  value. The tool does not guess the kind of a word, and it does not use the data of
+  datasheet-lens for the check. Thus the check is the same with and without
+  datasheet-lens.
+- The separators of the MPNs are `,` and `;`, in the parentheses and in `MPN`. A
+  comma with no space before three digits is part of the MPN: the packing code of
+  NXP and Nexperia (`BC847B,215`). A slash is not a separator: it is part of many
+  MPNs (`LM358DR/NOPB`). `~` is an empty field (KiCad).
+- One text in parentheses holds all MPNs. More texts in parentheses, or a
+  parenthesis that is not closed, is a conflict: the user corrects `Value`. An MPN
+  cannot have a parenthesis.
+- Each text in parentheses is a list of MPNs: `10k (1%)` gives the MPN `1%`. Write
+  such a text in an other form (`10k 1%`).
+- An alternative is an other orderable code of the part, a part of an other
+  manufacturer, or the part of a variant of the product. Each one needs its own
+  datasheet. The Datasheet field of the symbol belongs to the fitted part.
+- Each item of `MPN` is an MPN, also with no digit (`PJ-SMD`). The text
+  `-- mixed values --` of KiCad (a BOM line of symbols with different values) gives
+  a conflict. A KiCad in an other language writes a translation of this text: the
+  tool takes it as an MPN.
+- `N/A`, `NA`, `-`, `--` and `none` tell that the symbol needs no part (a test
+  point, a generic resistor): no datasheet, no message. `TBD` (to be determined)
+  tells that no part is selected yet, as with an empty `MPN`, also in the
+  parentheses (`10k (TBD)`).
+- One BOM holds the primary MPN and its alternatives together: the assembly selects
+  the alternative, not the BOM. For the variants of a product in KiCad 10, see
+  below.
+
+The check of each symbol. The confirmation of the user is the truth:
+
+- **Change**: `Value` is not equal to `Value_Confirmed`, or the MPNs in the
+  parentheses are not the items of `MPN` (an other MPN, an other order, an other
+  spelling). The comparison uses the words of the general value (the spaces between
+  words do not count, the words and their case count: `10 k` is not `10k`, `4m7` is
+  milliohm, `4M7` is megaohm) and the list of the MPNs. The tool tells the user,
+  gives the new MPNs and the confirmed MPNs that are not in `Value` now, and the
+  values of `MPN` and `Value_Confirmed` that a confirmation writes. Until the user
+  confirms the change, the check uses the confirmed `MPN`. When the user does not
+  confirm it, the `Value` must change back. For a new general value with no MPN in
+  `Value`, the user selects a new part and writes it into `Value` first.
+- **Confirmed**: the MPNs in the parentheses are the items of `MPN`, and `Value` is
+  equal to `Value_Confirmed`. The parts are the MPNs.
+- **Not confirmed**: `Value` has MPNs in the parentheses, and `Value_Confirmed` is
+  empty or the CAD data has no such field (the first confirmation). When `MPN` is
+  empty, the parts are the MPNs in the parentheses. The tool gives the values to
+  write when the user agrees. An `MPN` that is empty after a confirmation is a
+  change.
+- **Complete the fields**: `Value` has no parentheses, `MPN` has MPNs, and
+  `Value_Confirmed` has no parentheses. The tool gives the fields that complete the
+  symbol by the convention: `Value = 10k (RC0603FR-0710KL)` and the same
+  `Value_Confirmed`. The parts do not change. Not for an empty `Value` (a BOM with
+  no Value column). When `Value_Confirmed` has parentheses and `Value` has none, the
+  user removed the MPNs: a change.
+- A general value with no MPN: no part is selected. The tool gives the references
+  in one line (not the power symbols, `#PWR01`).
+- **No column `Value_Confirmed`** (a BOM of an other CAD tool): the tool compares
+  only the parentheses and `MPN`. The result gives one line: a change of a general
+  value is not found. Each CAD tool can add a column to its BOM: add the field
+  `Value_Confirmed` to the symbols and to the BOM, or use an unused custom column and
+  give its name with `--confirmed-column` (MCP: `bom_confirmed_column`).
+- More MPN columns (`MP` and `MANUFACTURER_PART_NUMBER` of Eagle, `MPN` and `mpn`):
+  the first one with an MPN is the field `MPN` of the line. A column with a "no part"
+  text (`-`) against a column with an MPN is a conflict. An other one with different
+  MPNs is a conflict, and its MPNs are parts too: none is lost, and none replaces a
+  confirmed MPN. The MPNs of more `Value` columns are parts too. The user corrects
+  the columns: a confirmation does not.
+- The MPNs of a conflict of more columns are parts, but not alternatives.
+- A symbol with a conflict gets no change, completion or "not confirmed" line, and
+  no "no part selected": a write of a proposal can hide the conflict. The user
+  corrects the fields first. Its parts are the MPNs of `MPN`, else the MPNs of
+  `Value`.
+- Two spellings of one part in the CAD project (other signs or case:
+  `LTC3588EMSE#PBF`, `LTC3588EMSEPBF`) are one part, with the first spelling. A
+  spelling that is not the spelling of the project file gives a `different` line.
+
+The variants of a product (KiCad 10) are an other way to write alternatives: KiCad
+keeps the fields of each variant. A CAD tool with no variants uses the one BOM with
+the alternatives in `Value` and `MPN`. Give one BOM file for each
+variant, the default variant first (`project_check(bom=[...])`, `datasheet-lens check
+a.csv b.csv`). The parts of all files count. Each file gets the check of the confirmed
+fields: a variant can set an other `Value`, `MPN` or `Value_Confirmed`. With more
+variants, each line needs its reference: the tool finds the line of the default
+variant by it. A message of an other variant names its file (`Q5 (variant b.csv)`),
+and the tool gives it only when the default variant does not give the same message. A
+confirmation of it writes into the fields of the symbol in that variant (KiCad 10
+keeps the fields of each variant), not into the fields of the default variant. A
+reference with an other MPN in an other variant is not a conflict. The Datasheet
+field of a variant line that is equal to the field of the default variant is
+inherited: it is not the datasheet of the other part of the variant.
+
+datasheet-lens does not write the fields into the schematic. The user writes them in
+KiCad. (The MCP server kicad-workbench will write them, phase 4 of its roadmap.)
 
 ### A BOM file
 
 Export a BOM as CSV from the CAD tool, then compare it:
 
 ```sh
-kicad-cli sch export bom --fields 'Reference,Value,MPN,Datasheet,${DNP}' \
+kicad-cli sch export bom --fields 'Reference,Value,MPN,Value_Confirmed,Datasheet,${DNP}' \
     --output bom.csv design.kicad_sch
 datasheet-lens check bom.csv
 ```
@@ -446,8 +519,9 @@ The reader uses these rules:
   different names of one list below (for example `DNP` and `Do not populate`). The
   first filled one gives the value, and each MPN of each Value column counts.
 - A line in which these columns are different gets a conflict, also a line with no
-  MPN. A value is compared with no regard to case and spaces, and two values of one
-  part (`TLV755P` and `TLV75533PDBVR`) are not a conflict. References are compared
+  MPN. A value is compared by the words of its general value and the list of its
+  MPNs (see above), and two codes of one part (`(TLV755P)` and `(TLV75533PDBVR)`)
+  are a conflict too: the user corrects the columns. References are compared
   as a set (`R1 R2`, `R1, R2` and the range `R1-R2` are the same). A datasheet is
   compared as text.
 - A line is not fitted only when each DNP column says so. Thus the line of a DNP
@@ -466,8 +540,8 @@ The reader uses these rules:
   attribute (`MP` or `MANUFACTURER_PART_NUMBER`). A column `Part Number` is not
   used: it often holds a part number of the company.
 - The reader always reads the `Value` column, also with `--column`: it gives the
-  MPN when no MPN field has one, the alternatives and the conflicts (see "MPN and
-  Value fields").
+  general value and the MPNs in parentheses, and the check finds the changes and
+  the conflicts with it (see "MPN and Value fields").
 - The reference column is the first of: `Reference`, `References`, `Refs`,
   `Designator`, `Designators`, `RefDes`, `Parts`.
 - The Datasheet column is the first of: `Datasheet`, `Datasheet URL`,
@@ -476,8 +550,9 @@ The reader uses these rules:
   `Not fitted`. A line with a value in this column is not fitted, and the reader
   ignores it. The values empty, `0`, `no` and `false` mean "fitted".
 
-The first line of the result gives the MPN columns, the reference column and the
-number of lines with an MPN. The other lines are the lines of `project_check`. The
+The first line of the result gives the MPN, Value and reference columns of each BOM
+file. The other lines are the lines of `project_check`, with the number of CAD
+lines with a part. The
 CLI command gives CLI commands as the next steps.
 
 The reader does not depend on one CAD tool. `project_check` also takes a list of parts

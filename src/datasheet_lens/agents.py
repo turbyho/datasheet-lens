@@ -39,14 +39,20 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
   and BOM). This consistency is critical. Get the parts from the CAD tool (a BOM
   file, CSV, or its MCP server) and compare them: project_check with bom or
   parts (CLI `datasheet-lens check BOM.csv`). It gives the missing, extra and
-  different parts with the next step. project_status (CLI `datasheet-lens ls`)
-  gives the parts and documents of the file. If you cannot get a datasheet, tell
-  the user, with the search links of part_links (CLI `datasheet-lens links MPN`;
-  also for symbols, footprints and 3D models). Tell the user about each
-  different or extra part, and when the MPN of the CAD project and the datasheet
-  do not agree. Remove a part only when the user agrees: project_remove_part
-  (CLI `datasheet-lens rm MPN`). The MCP server instructions give the full
-  procedure.
+  different parts with the next step, and the changes in the CAD project. The
+  convention: Value holds a general value and the MPNs in parentheses, the
+  fitted part first (`2N7002 (2N7002LT1G, BSS138LT1G)`). The field MPN holds
+  the confirmed copy of these MPNs, and the hidden field Value_Confirmed a copy
+  of the confirmed Value. The confirmation of the user is the truth. A change is
+  valid only when the user confirms it. Then write the fields that project_check
+  gives.
+  project_status (CLI `datasheet-lens ls`) gives the parts and documents of the
+  file. If you cannot get a datasheet, tell the user, with the search links of
+  part_links (CLI `datasheet-lens links MPN`; also for symbols, footprints and
+  3D models). Tell the user about each change, different or extra part, and when
+  the MPN of the CAD project and the datasheet do not agree. Remove a part only
+  when the user agrees: project_remove_part (CLI `datasheet-lens rm MPN`). The
+  MCP server instructions give the full procedure.
 - To add a datasheet: add_document with a file or a URL and the base part of the
   datasheet (for example TLV755P). Then project_add_part with the concrete
   orderable MPN of the BOM (for example TLV75533PDBVR; get_ordering_codes, CLI
