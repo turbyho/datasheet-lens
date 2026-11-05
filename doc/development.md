@@ -45,9 +45,11 @@ the code of the working tree.
 | `tomlkit` | Writes the project file and keeps the text of the user. |
 | `keyring` | The API keys in the key store of the system. |
 | `docling` (extra `layout`) | The layout model of the element map. |
+| `fastapi`, `uvicorn`, `asyncpg`, `boto3` (extra `server`) | The team server: API, PostgreSQL, S3 object store. |
 | `pytest` (extra `dev`) | The tests. |
 
-The PNG encoder and the HTTP client use only the standard library.
+The PNG encoder and the HTTP client (also the client of the team server) use only the
+standard library.
 
 ## Run the tests
 
@@ -80,6 +82,22 @@ DATASHEET_LENS_SLOW=1 .venv/bin/python -m pytest -q tests/test_regression.py
 
 They read a large reference manual (more than 1000 pages), and build an element map
 with docling (docling must be installed).
+
+### Tests of the team server
+
+The tests of the team server and of its client use a real PostgreSQL and a real S3
+object store (Garage). They run only with these environment variables; else pytest
+skips them:
+
+| Variable | Content |
+|---|---|
+| `DSLENS_TEST_PG` | `postgresql://user@host:port` with no database: each test run makes its own database and removes it. The user needs `CREATEDB`. |
+| `DSLENS_TEST_S3` | The endpoint of the object store, for example `http://127.0.0.1:3900`. |
+| `DSLENS_TEST_S3_KEY_ID`, `DSLENS_TEST_S3_SECRET` | An access key with read, write and owner on the bucket. |
+| `DSLENS_TEST_S3_BUCKET` | The bucket (default `dslens-test`). |
+
+A local Garage for the tests: the Docker image `dxflrs/garage`, one node, and a bucket
+with a key (`garage bucket create`, `garage key create`, `garage bucket allow`).
 
 ## Code style
 
@@ -138,9 +156,17 @@ When you change the database schema of `store.py`:
 
 1. Change `SCHEMA` for a new store.
 2. Increase `SCHEMA_VERSION`.
-3. Add the SQL that changes an older store to `MIGRATIONS`, with the new version as
-   the key.
+3. Add the change of an older store to `MIGRATIONS`, with the new version as the key:
+   one SQL statement, or a function for more steps (`_add_columns` adds the columns
+   that a table does not have).
+4. A new column of a shared table (`parts`, `documents`, `part_documents`,
+   `part_aliases`, `knowledge`, `maker_relations`): add it to `_ROW_JSON` when the
+   team server must have it, and to `team/sync.py` (`SCHEMA`, `VALUES`, `TYPES`). The
+   triggers come from `SYNC_STATEMENTS`: a change of them gives a new `SYNC_VERSION`,
+   and each store makes its triggers again.
 
-When a change of the code changes the index or the element map, the version of the
-tool decides: a different version builds them again (`datasheet-lens index`,
-`datasheet-lens elements`).
+When a change of the code changes the index or the element map, increase its format
+version (`indexer.INDEX_FORMAT`, `elements.ELEMENTS_FORMAT`): a store builds a map of
+an older format again (`datasheet-lens index`, `datasheet-lens elements`), and a team
+server keeps a bundle for each format. A new release with the same format builds
+nothing again.

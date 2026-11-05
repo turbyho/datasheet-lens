@@ -24,7 +24,7 @@ datasheet-lens builds an index to find the content, and gives the original pages
 and regions to the model on demand. The model reads only the parts that the work
 needs, and reads each value from the original.
 
-Status: in development (version 0.2). The tools work and have tests. The
+Status: in development (version 0.3). The tools work and have tests. The
 interfaces can change.
 
 ## Features
@@ -47,6 +47,12 @@ interfaces can change.
 - **Orderable parts.** The ordering codes of a datasheet, and the lifecycle state,
   stock and prices from the official API of a distributor (Mouser now). No
   scraping.
+- **Team server (optional).** One shared store for a team: the documents, parts,
+  facts and the index and element map of each document. Each person keeps a local
+  store that works also with no connection, and that synchronizes with the server.
+  The server (`datasheet-lens[server]`) has accounts with roles and tokens, and a
+  setup wizard installs it with PostgreSQL, the Garage object store, nginx and a
+  Let's Encrypt certificate.
 
 ## Typical uses
 
@@ -123,7 +129,8 @@ only the files that exist: make one of them first if you want the block.
 | `links MPN` | Show search links for a datasheet, stock, a symbol, a footprint, a 3D model |
 | `find MPN` | Find a part at the distributors (lifecycle, stock, prices) |
 | `stock` | Show the lifecycle state and the stock of each project part |
-| `key NAME` | Save the API key of a distributor |
+| `key NAME` | Save the API key of a distributor, or the token of the team server (`key team`) |
+| `server connect URL` | Connect the store to a team server; `server sync`, `server` (state) |
 | `dist NAME ...` | Select the distributors (globally, or `--local` for the project) |
 
 All commands and options are in [doc/cli.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/cli.md).
@@ -144,6 +151,7 @@ Cart API key), then run
 | [doc/projects.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/projects.md) | Project file, layout, sync, team workflow, consistency with the CAD project |
 | [doc/cli.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/cli.md) | Reference of all CLI commands and options |
 | [doc/distributors.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/distributors.md) | Distributor data, API keys, distributor selection, search links |
+| [doc/team-server.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/team-server.md) | Team server: installation, accounts and tokens, connection of a store, synchronization, API |
 | [doc/architecture.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/architecture.md) | For developers: design decisions and module map |
 | [doc/development.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/development.md) | Development setup, tests, code and text style |
 

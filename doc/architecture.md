@@ -197,7 +197,8 @@ the other, or one MPN starts with the other. Placeholders at the end of a CAD MP
 are the title in the PDF metadata, the text of page 1 and the file name. Each MPN
 candidate gets a score: 2 for the title, 1 for page 1, 1 for the file name. Rules
 remove tokens that look like an MPN but are not one: revisions, document numbers,
-values with units, packages and standards. The manufacturer comes from known names
+values with units, packages (also the JEDEC outlines of diodes and transistors, for
+example `SOD-123F`, `DO-214AC`, `TO-220AB`) and standards. The manufacturer comes from known names
 and MPN prefixes. The proposal is a hint only: the user or the model confirms it.
 
 `identify.py` also gives:

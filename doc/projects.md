@@ -328,6 +328,8 @@ list of the datasheets of the design.
    The agent then gives only the path, not the values. A list of parts from the MCP
    server of the CAD tool is the other source.
 2. It calls `project_check(bom=<CSV file>)` or `project_check(parts)` with all parts.
+   A relative path of a BOM file is relative to the project folder (the folder of
+   `datasheet-lens.toml`), not to the working folder of the MCP server.
    The tool finds the parts of each symbol (see "MPN and Value fields" below). Each
    part with an MPN needs its datasheet, also an alternative in its Value.
 3. The result gives one line for each conflict and each change in the CAD project
@@ -611,6 +613,12 @@ Sync imports the copies of the folder into the local store, and links each docum
 to its part and base part from the project file. Then the index and the element map
 are built. The facts are in the local store of each user: the repository does not
 share them.
+
+With a team server (see [team-server.md](team-server.md)), the team also shares the
+store: the documents, the parts, the facts, and the index and element map of each
+document. A new person connects the store (`datasheet-lens server connect URL`),
+clones the repository, and runs `datasheet-lens sync`: it gets the files of the
+documents of the project from the server.
 
 Datasheets are documents of their manufacturers. Before you put the copies into a
 public repository, make sure that the terms of each document let you do that.

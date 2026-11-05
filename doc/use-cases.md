@@ -254,6 +254,12 @@ one document folder through git. Sync imports the copies of the repository into 
 local store, with their parts and base parts. Each person keeps the API keys and the
 facts in the local store.
 
+With a team server, each person also connects the local store to the server
+(`datasheet-lens key team`, then `datasheet-lens server connect URL`). The team then
+shares the facts and the decisions about manufacturer names too, and a datasheet
+that one person added is found by each other person. See
+[team-server.md](team-server.md).
+
 ## 13. A changed or new revision of a datasheet
 
 **Situation.** A person puts a new revision of a datasheet into the document folder,
