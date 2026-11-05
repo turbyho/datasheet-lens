@@ -984,7 +984,8 @@ def project_check(
     write by the columns of the BOM (the BOM must name its columns as the
     fields of the symbols: export_bom of kicad-workbench does), or by
     mpn_fields of the parts; when the field is not known, it names the choices
-    and tells you to ask the user. It changes nothing."""
+    and tells you to ask the user. In KiCad, write the fields with
+    set_symbol_fields of the MCP server kicad-workbench. It changes nothing."""
     from .project import bom_files, check_parts, format_check, load
     from .version_check import version_notes
 

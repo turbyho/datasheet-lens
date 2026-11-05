@@ -45,7 +45,7 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
   the confirmed copy of these MPNs, and the hidden field Value_Confirmed a copy
   of the confirmed Value. The confirmation of the user is the truth. A change is
   valid only when the user confirms it. Then write the fields that project_check
-  gives.
+  gives (KiCad: set_symbol_fields of the MCP server kicad-workbench).
   project_status (CLI `datasheet-lens ls`) gives the parts and documents of the
   file. If you cannot get a datasheet, tell the user, with the search links of
   part_links (CLI `datasheet-lens links MPN`; also for symbols, footprints and

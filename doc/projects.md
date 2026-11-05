@@ -430,7 +430,8 @@ The check of each symbol. The confirmation of the user is the truth:
   `Value_Confirmed` to the symbols and to the BOM, or use an unused custom column and
   give its name with `--confirmed-column` (MCP: `bom_confirmed_column`).
 - More MPN columns (`MP` and `MANUFACTURER_PART_NUMBER` of Eagle, `MPN` and `mpn`):
-  the first one with an MPN is the field `MPN` of the line. A column with a "no part"
+  the first one with an MPN, in the order of the usual MPN names (`MPN` first), is
+  the field `MPN` of the line. A column with a "no part"
   text (`-`) against a column with an MPN is a conflict. An other one with different
   MPNs is a conflict, and its MPNs are parts too: none is lost, and none replaces a
   confirmed MPN. The MPNs of more `Value` columns are parts too. The user corrects
@@ -459,10 +460,24 @@ reference with an other MPN in an other variant is not a conflict. The Datasheet
 field of a variant line that is equal to the field of the default variant is
 inherited: it is not the datasheet of the other part of the variant.
 
+The result names the fields to write by the columns of the BOM, or by `mpn_fields`
+and `confirmed_field` of the parts:
+
+- Each MPN column with the MPN of the line (Eagle: `MP` and
+  `MANUFACTURER_PART_NUMBER`), and the column of `Value_Confirmed` (also the column
+  of `--confirmed-column`).
+- With no MPN in the line: the one MPN column of the BOM, else `MPN`. With more
+  names, or more filled names in a line of more symbols, the result names the
+  choices: the user selects the field of the symbol.
+- The BOM must name its columns as the fields of the symbols. A BOM with labels
+  (kicad-cli `--labels`) gives the labels. `export_bom` of kicad-workbench gives the
+  field names.
+
 datasheet-lens does not write the fields into the schematic, and it does not call
 an other tool. The agent writes the fields that the result gives, after the
-confirmation of the user: in KiCad, or with the MCP server kicad-workbench (phase 4
-of its roadmap).
+confirmation of the user: in KiCad, or with the tool `set_symbol_fields` of the MCP
+server kicad-workbench. Without datasheet-lens, the tool `check_symbol_fields` of
+kicad-workbench does the same check of the fields (no datasheets).
 
 ### A BOM file
 
