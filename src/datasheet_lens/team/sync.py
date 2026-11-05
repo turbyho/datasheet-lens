@@ -22,10 +22,16 @@ import sqlite3
 from typing import Any
 
 from .. import makers
+from ..bundles import BACKEND_RANK, BUNDLE_BACKENDS, canonical_key
 from ..store import _VERSION_TABLES as VERSIONED
 
 # The tables in the order of a pull: a row comes after the rows that it refers to.
-TABLES = ("documents", "maker_relations", "parts", "part_documents", "part_aliases", "knowledge")
+TABLES = ("documents", "bundles", "maker_relations", "parts", "part_documents", "part_aliases", "knowledge")
+# The derived data of a document (index, element map) as a bundle file. A client
+# adds a bundle with POST /v1/bundles (register_bundle), not with a push. For a
+# document, a kind and a format, the canonical bundle comes first in
+# bundles.canonical_key: the same order on the server and the clients.
+BUNDLE_KINDS = tuple(BUNDLE_BACKENDS)
 PAGE = 1000
 MAX_PUSH = 500
 
@@ -51,6 +57,15 @@ SCHEMA = [
         supersedes    TEXT REFERENCES documents(sha256),
         source_url    TEXT NOT NULL DEFAULT '',
         added         TEXT NOT NULL,{_COMMON})""",
+    f"""CREATE TABLE IF NOT EXISTS bundles (
+        document_sha TEXT NOT NULL REFERENCES documents(sha256),
+        kind         TEXT NOT NULL CHECK (kind IN ('index', 'elements')),
+        format       TEXT NOT NULL,
+        backend      TEXT NOT NULL CHECK (backend IN ('pdfium', 'text', 'docling')),
+        blob_sha     TEXT NOT NULL REFERENCES blobs(sha256),
+        versions     TEXT NOT NULL DEFAULT '{{}}',
+        created      TEXT NOT NULL,{_COMMON},
+        PRIMARY KEY (document_sha, kind, format, backend))""",
     f"""CREATE TABLE IF NOT EXISTS maker_relations (
         gid      TEXT PRIMARY KEY,
         relation TEXT NOT NULL CHECK (relation IN ('alias', 'distinct')),
@@ -123,12 +138,14 @@ SCHEMA = [
 # outbox of the client: see store._ROW_JSON) with their column on the server,
 # and the order of a page.
 KEY = {
-    "documents": ("sha256",), "maker_relations": ("gid",), "parts": ("gid",),
+    "documents": ("sha256",), "bundles": ("document_sha", "kind", "format", "backend"),
+    "maker_relations": ("gid",), "parts": ("gid",),
     "part_documents": ("part_gid", "document_sha"), "part_aliases": ("part_gid", "alias"), "knowledge": ("gid",),
 }
 VALUES = {
     "documents": {c: c for c in ("filename", "media_type", "size", "pages", "title", "manufacturer", "doc_number",
                                  "revision", "revision_date", "source_url", "added")} | {"supersedes": "supersedes"},
+    "bundles": {c: c for c in ("blob_sha", "versions", "created")},
     "maker_relations": {c: c for c in ("relation", "name", "other", "created")},
     "parts": {"mpn": "mpn", "manufacturer": "manufacturer", "family": "family", "created": "created",
               "base": "base_gid"},
@@ -163,7 +180,8 @@ CHOICES = {"relation": ("alias", "distinct"), "source_kind": ("model", "person")
            "status": ("unchecked", "checked", "disputed"), "role": ("datasheet", "manual", "errata", "appnote", "other")}
 # The tables with a version in the local store (VERSIONED): an update of a different
 # table has no base version (the last change is kept).
-ROLE_DELETE = {"documents": "admin", "parts": "admin", "knowledge": "admin", "maker_relations": "admin",
+ROLE_DELETE = {"documents": "admin", "bundles": "admin", "parts": "admin", "knowledge": "admin",
+               "maker_relations": "admin",
                "part_documents": "contributor", "part_aliases": "contributor"}
 
 
@@ -387,6 +405,8 @@ class Pusher:
         table, op = change.get("tbl"), change.get("op")
         if table not in TABLES or op not in ("insert", "update", "delete"):
             raise Rejected(f"unknown change {table} {op}")
+        if table == "bundles":
+            raise Rejected("a bundle comes with POST /v1/bundles, not with a push")
         if not isinstance(change.get("key"), str):
             raise Rejected(f"wrong key for {table}")
         if op != "delete":
@@ -629,3 +649,34 @@ async def push(pool, account: dict, changes: list[dict]) -> list[dict]:
                 result = {"result": "rejected", "reason": f"the database refuses the change: {e}", "retry": False}
             results.append({"seq": seq, **result})
     return results
+
+
+# Bundles
+
+async def register_bundle(pool, account: dict, bundle: dict) -> dict:
+    """Record a bundle of a client (its file is on the server). The first bundle
+    of each backend stays; its time is the time of the server. Give the canonical
+    bundle of the document, kind and format, which can be a different one."""
+    from datetime import datetime, timezone
+
+    if bundle["backend"] not in BUNDLE_BACKENDS[bundle["kind"]]:
+        raise Rejected(f"a bundle of the kind {bundle['kind']} has the backend "
+                       f"{' or '.join(BUNDLE_BACKENDS[bundle['kind']])}")
+    created = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    async with pool.acquire() as conn, conn.transaction():
+        if not await conn.fetchval("SELECT 1 FROM documents WHERE sha256 = $1 AND NOT deleted",
+                                   bundle["document_sha"]):
+            raise Rejected("the document of the bundle is not on the server")
+        if not await conn.fetchval("SELECT 1 FROM blobs WHERE sha256 = $1 AND media_type = 'application/gzip'",
+                                   bundle["blob_sha"]):
+            raise Rejected("the server does not have the file of the bundle: upload it first")
+        await conn.execute(
+            "INSERT INTO bundles (document_sha, kind, format, backend, blob_sha, versions, created, changed_by)"
+            " VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (document_sha, kind, format, backend) DO NOTHING",
+            bundle["document_sha"], bundle["kind"], bundle["format"], bundle["backend"], bundle["blob_sha"],
+            json.dumps(bundle["versions"], sort_keys=True), created, account["id"])
+        rows = [dict(r) for r in await conn.fetch(
+            "SELECT document_sha, kind, format, backend, blob_sha, versions, created FROM bundles"
+            " WHERE document_sha = $1 AND kind = $2 AND format = $3 AND NOT deleted",
+            bundle["document_sha"], bundle["kind"], bundle["format"])]
+    return min(rows, key=canonical_key)

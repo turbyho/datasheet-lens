@@ -32,7 +32,7 @@ from . import sync
 from .db import Database
 
 log = logging.getLogger("dslens.server")
-MEDIA_TYPES = ("application/pdf",)
+MEDIA_TYPES = ("application/pdf", "application/gzip")  # a document; a bundle of derived data
 MAX_BODY = 1 << 20       # bytes of a request to the API (the files go to the object store)
 STALE_HOURS = 24         # a multipart upload with no completion after this time is removed
 ORPHAN_HOURS = 1         # an upload or staging file with no row: removed after this time
@@ -89,6 +89,34 @@ class PartUrls(BaseModel):
 
 class Push(BaseModel):
     changes: list[dict] = Field(min_length=1, max_length=sync.MAX_PUSH)
+
+
+class Bundle(BaseModel):
+    document_sha: str
+    kind: str
+    format: str = Field(min_length=1, max_length=20)
+    backend: str
+    blob_sha: str
+    versions: dict[str, str] = Field(default_factory=dict, max_length=20)
+
+    @field_validator("document_sha", "blob_sha")
+    @classmethod
+    def _check_sha(cls, v: str) -> str:
+        return _sha(v)
+
+    @field_validator("kind")
+    @classmethod
+    def _check_kind(cls, v: str) -> str:
+        if v not in sync.BUNDLE_KINDS:
+            raise ValueError(f"kind must be one of {', '.join(sync.BUNDLE_KINDS)}")
+        return v
+
+    @field_validator("backend")
+    @classmethod
+    def _check_backend(cls, v: str) -> str:
+        if v not in sync.BACKEND_RANK:  # the kind and its backends: register_bundle
+            raise ValueError(f"backend must be one of {', '.join(sync.BACKEND_RANK)}")
+        return v
 
 
 async def cleanup_uploads(db: Database, blobs: BlobStore) -> int:
@@ -205,7 +233,7 @@ def create_app(settings: Settings, *, db: Database | None = None, blobs: BlobSto
         # The version of the built-in manufacturer names: the clients compare it
         # with their own (the same registry on the server and the clients).
         return {"name": account["name"], "role": account["role"], "server_version": VERSION,
-                "makers_version": SEED_VERSION}
+                "makers_version": SEED_VERSION, "features": ["sync", "bundles"]}
 
     @app.post("/v1/blobs")
     async def blob_upload(request: Request, info: FileInfo):
@@ -302,6 +330,14 @@ def create_app(settings: Settings, *, db: Database | None = None, blobs: BlobSto
             return await sync.pull(db.pool, int(cursor) if cursor is not None else None, position)
         except (sync.BadPosition, json.JSONDecodeError) as e:
             raise HTTPException(422, f"after must be the value of the page before: {e}") from None
+
+    @app.post("/v1/bundles")
+    async def bundle_register(request: Request, body: Bundle):
+        account = require(request, "contributor")
+        try:
+            return {"canonical": await sync.register_bundle(db.pool, account, body.model_dump())}
+        except sync.Rejected as e:
+            raise HTTPException(422, str(e)) from None
 
     @app.post("/v1/sync/push")
     async def sync_push(request: Request, body: Push):

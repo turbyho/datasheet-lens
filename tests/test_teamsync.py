@@ -408,3 +408,114 @@ def test_connect_sends_the_full_state(server, client, monkeypatch):
     b = client("b", "rita")
     teamsync.connect(b, server["url"])
     assert {mpn, mpn + "B"} <= set(_parts(b))
+
+
+BUNDLE_PAGES = [[(72, 80, 16, "1 Features"), (72, 120, 10, "Output voltage 3.3 V"), (72, 140, 10, "Table 1. Ratings")],
+                [(72, 80, 16, "2 Electrical Characteristics"), (72, 120, 10, "Quiescent current 25 nA")]]
+
+
+def _bundle_doc(store, text_pdf):
+    """A document with an index, a text element map, and a fact on an element."""
+    from datasheet_lens.elements import build_elements
+    from datasheet_lens.indexer import build_index
+
+    doc = store.add_document(text_pdf(f"b{uuid.uuid4().hex[:6]}.pdf",
+                                      BUNDLE_PAGES + [[(72, 80, 10, uuid.uuid4().hex)]]))
+    build_index(store, doc.id)
+    build_elements(store, doc.id, "text")
+    element = store.db.execute("SELECT element_id FROM elements WHERE document_id = ? AND page = 1"
+                               " ORDER BY page_order LIMIT 1", (doc.id,)).fetchone()[0]
+    fact = knowledge.save_fact(store, doc.id, 1, "title", "Features", element_id=element)
+    return doc, fact
+
+
+def test_bundles_go_through_the_server(server, client, text_pdf, monkeypatch):
+    """The first store uploads its index and element map; a second store gets them
+    from the server, with no PDF file and no build, and the same element IDs."""
+    from datasheet_lens.elements import build_elements
+    from datasheet_lens.indexer import build_index
+
+    a = client("a", "alice")
+    doc, fact = _bundle_doc(a, text_pdf)
+    report = teamsync.connect(a, server["url"])
+    assert sum("canonical bundle" in line for line in teamsync.sync(a).bundles) == 0  # done in connect
+    assert all(a.build(doc.id, kind)["bundle"] for kind in ("index", "elements")), report
+    b = client("b", "rita")
+    teamsync.connect(b, server["url"])
+    copy = b.document(doc.sha256)
+    assert build_index(b, copy.id)["bundle"] == a.build(doc.id, "index")["bundle"]
+    assert build_elements(b, copy.id, "text")["bundle"] == a.build(doc.id, "elements")["bundle"]
+    assert not copy.path.exists()  # no PDF: the bundles are enough
+    rows = lambda s, d: s.db.execute("SELECT element_id, page, x0, y0, x1, y1, text FROM elements"  # noqa: E731
+                                     " WHERE document_id = ? ORDER BY element_id", (d,)).fetchall()
+    assert [tuple(r) for r in rows(b, copy.id)] == [tuple(r) for r in rows(a, doc.id)]
+    gid = a.db.execute("SELECT gid FROM knowledge WHERE id = ?", (fact,)).fetchone()[0]
+    assert b.db.execute("SELECT element_id FROM knowledge WHERE gid = ?", (gid,)).fetchone()[0] == \
+        a.db.execute("SELECT element_id FROM knowledge WHERE id = ?", (fact,)).fetchone()[0]
+
+
+def test_better_bundle_replaces_the_build(server, client, text_pdf, monkeypatch):
+    """A docling bundle replaces the text bundle in each store; the facts follow
+    their region to the new element IDs."""
+    from datasheet_lens import bundles
+
+    a = client("a", "alice")
+    doc, fact = _bundle_doc(a, text_pdf)
+    teamsync.connect(a, server["url"])
+    _as(server, monkeypatch, "rita")
+    c = client("c", "rita")
+    teamsync.connect(c, server["url"])
+    copy = c.document(doc.sha256)
+    from datasheet_lens.elements import build_elements
+    build_elements(c, copy.id, "text")  # the text bundle of a
+    # A local docling map of c (here: the same regions with other IDs). The sync of c
+    # uploads it (better than the text bundle), it does not take the text bundle.
+    with c.db:
+        c.db.execute("UPDATE elements SET element_id = 'd' || element_id WHERE document_id = ?", (copy.id,))
+        c.db.execute("UPDATE builds SET backend = 'docling', bundle = NULL WHERE document_id = ? AND kind = 'elements'",
+                     (copy.id,))
+    lines = teamsync.sync(c).bundles
+    assert any("elements" in line and "uploaded as the canonical bundle" in line for line in lines), lines
+    assert c.build(copy.id, "elements")["backend"] == "docling"
+    assert bundles.canonical(c.db, doc.sha256, "elements", "1")["backend"] == "docling"
+    _as(server, monkeypatch, "alice")
+    report = teamsync.sync(a)
+    assert any("(docling) replaces the local build" in line for line in report.bundles)
+    assert a.build(doc.id, "elements")["backend"] == "docling"
+    element = a.db.execute("SELECT element_id FROM knowledge WHERE id = ?", (fact,)).fetchone()[0]
+    assert element.startswith("dp1.")
+    assert teamsync.state(a)["waiting"] == 0  # the relink is not a shared change
+
+
+def test_bundle_registration_rules(server, client, text_pdf, monkeypatch):
+    a = client("a", "alice")
+    doc, _ = _bundle_doc(a, text_pdf)
+    teamsync.connect(a, server["url"])
+    body = {"document_sha": doc.sha256, "kind": "elements", "format": "1", "backend": "text",
+            "blob_sha": "0" * 64, "versions": {}}
+    with pytest.raises(teamsync.LensError, match="upload it first"):
+        teamsync.remote(a).call("POST", "/v1/bundles", body)
+    with pytest.raises(teamsync.LensError, match="the backend pdfium"):
+        teamsync.remote(a).call("POST", "/v1/bundles", {**body, "kind": "index", "backend": "docling"})
+    _as(server, monkeypatch, "rudi")
+    with pytest.raises(teamsync.LensError, match="403"):
+        teamsync.Remote(server["url"], server["tokens"]["rudi"]).call("POST", "/v1/bundles", body)
+
+
+def test_server_with_no_bundles(server, client, text_pdf, monkeypatch):
+    """A server of an older version: no bundles, one note (not one for each build)."""
+    a = client("a", "alice")
+    _bundle_doc(a, text_pdf)
+    original = teamsync.Remote.call
+
+    def old_server(self, method, path, body=None, params=None, timeout=teamsync.TIMEOUT):
+        answer = original(self, method, path, body, params, timeout)
+        if path == "/v1/account":
+            answer.pop("features", None)
+        return answer
+
+    monkeypatch.setattr(teamsync.Remote, "call", old_server)
+    teamsync.connect(a, server["url"])
+    teamsync.sync(a)
+    rows = a.db.execute("SELECT text FROM sync_notes WHERE text LIKE '%no bundles%'").fetchall()
+    assert len(rows) == 1

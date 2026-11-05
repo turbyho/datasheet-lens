@@ -15,6 +15,7 @@ import pypdfium2 as pdfium
 from .errors import LensError
 from .pdflock import pdfium_locked
 from .pdftext import PageText, page_lines, raster_min_dpi
+from .bundles import from_server, tool_versions
 from .store import Store, now
 
 # The version of the format of an index. Change it when an index of the old
@@ -82,11 +83,13 @@ def build_index(store: Store, doc_id: int, force: bool = False) -> dict:
     doc = store.document(doc_id)
     if doc is None:
         raise LensError(f"document not found: {doc_id}")
-    if not force and store.build_current(doc.id, "index", INDEX_FORMAT, "pdfium"):
+    # The canonical bundle of the team server first: no build, also no PDF file.
+    if not force and ((got := from_server(store, doc, "index")) is not None
+                      or store.build_current(doc.id, "index", INDEX_FORMAT, "pdfium")):
         count = lambda t: store.db.execute(f"SELECT count(*) FROM {t} WHERE document_id = ?",  # noqa: E731
                                            (doc.id,)).fetchone()[0]
         return {"pages": count("pages"), "outline": count("outline"), "captions": count("captions"),
-                "skipped": True}
+                "skipped": True, **({"bundle": got["bundle"]} if got else {})}
     pages, quality, outline = _read_pages(str(store.local_file(doc)))
     captions = _captions(pages)
 
@@ -105,8 +108,8 @@ def build_index(store: Store, doc_id: int, force: bool = False) -> dict:
         db.executemany("INSERT INTO captions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                        [(doc.id, n, c["kind"], c["label"], c["caption"], c["page"], c["x"], c["y"],
                          c["order"], c["count"]) for n, c in enumerate(captions)])
-        db.execute("INSERT OR REPLACE INTO builds VALUES (?, 'index', ?, 'pdfium', ?)",
-                   (doc.id, INDEX_FORMAT, now()))
+        db.execute("INSERT OR REPLACE INTO builds (document_id, kind, tool_version, backend, built, versions)"
+                   " VALUES (?, 'index', ?, 'pdfium', ?, ?)", (doc.id, INDEX_FORMAT, now(), tool_versions("pdfium")))
     return {"pages": len(pages), "outline": len(outline), "captions": len(captions), "skipped": False}
 
 

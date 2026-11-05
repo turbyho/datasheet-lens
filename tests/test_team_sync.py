@@ -340,6 +340,6 @@ def test_wrong_page_position(db):
     with pytest.raises(sync.BadPosition):
         sync.check_after([9, [], 1])
     with pytest.raises(sync.BadPosition):
-        sync.check_after([2, ["x"], 1])  # parts: two order values
+        sync.check_after([sync.TABLES.index("parts"), ["x"], 1])  # parts: two order values
     with pytest.raises(sync.BadPosition):
         call(db, sync.pull, None, [0, ["a"], 10 ** 15])  # after the current state

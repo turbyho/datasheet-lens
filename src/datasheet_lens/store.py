@@ -33,7 +33,9 @@ from .fileutil import temp_path
 # change: it would not record the relations and the merges as shared decisions.
 # (An update of the manufacturer registry needs no schema change: see
 # _update_registry.)
-SCHEMA_VERSION = 4  # 4: the state of the client of the team server (teamsync.py)
+# 4: the state of the client of the team server (teamsync.py). 5: the bundles of
+# derived data (bundles.py) and the bbox of each fact with an element.
+SCHEMA_VERSION = 5
 # A build records the version of its format (indexer.INDEX_FORMAT,
 # elements.ELEMENTS_FORMAT), not the version of the package. The builds of the
 # development versions recorded the package version 0.1.0.dev0: format 1. No
@@ -125,7 +127,20 @@ CREATE TABLE IF NOT EXISTS builds (
     tool_version TEXT NOT NULL,
     backend      TEXT NOT NULL,
     built        TEXT NOT NULL,
+    bundle       TEXT,                       -- the SHA-256 of the bundle file of this build on the team server
+    versions     TEXT NOT NULL DEFAULT '{}', -- the versions of the tools of the build (JSON)
     PRIMARY KEY (document_id, kind)
+);
+-- The bundles of derived data on the team server (bundles.py): from a pull.
+CREATE TABLE IF NOT EXISTS bundles (
+    document_sha TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    format       TEXT NOT NULL,
+    backend      TEXT NOT NULL,
+    blob_sha     TEXT NOT NULL,
+    versions     TEXT NOT NULL DEFAULT '{}',
+    created      TEXT NOT NULL,
+    PRIMARY KEY (document_sha, kind, format, backend)
 );
 CREATE TABLE IF NOT EXISTS pages (
     document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -561,6 +576,16 @@ CLIENT_COLUMNS = {
 }
 
 
+def _migrate_bundles(db: sqlite3.Connection) -> None:
+    """Version 5: the columns of the bundles, and the bbox of the facts that have an
+    element and no bbox. The triggers record the bbox (a store that is connected
+    sends it to the team server: the other stores then link the fact again)."""
+    _add_columns(db, {"builds": ("bundle TEXT", "versions TEXT NOT NULL DEFAULT '{}'")})
+    db.execute("UPDATE knowledge SET bbox = json_array(e.x0, e.y0, e.x1, e.y1) FROM elements e"
+               " WHERE knowledge.bbox = '' AND knowledge.element_id != '' AND e.document_id = knowledge.document_id"
+               " AND e.element_id = knowledge.element_id")
+
+
 def _migrate_sync(db: sqlite3.Connection) -> None:
     """Version 3: the gids and the versions of the team server, and the relations
     of manufacturer names that the registry has (makers.decisions). The gids of
@@ -607,6 +632,9 @@ MIGRATIONS = {
     # The state of the client of the team server (a store of an early version 3
     # has the tables without these columns).
     4: lambda db: _add_columns(db, CLIENT_COLUMNS),
+    # The bundles of derived data, and the bbox of each fact with an element: the
+    # bbox is the reference of a fact; the element ID follows the build.
+    5: _migrate_bundles,
 }
 
 

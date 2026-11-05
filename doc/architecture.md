@@ -73,7 +73,8 @@ The database tables:
 | `part_aliases` | More names of a part. |
 | `documents` | SHA-256, file name, size, pages, title, source URL. |
 | `part_documents` | The links between parts and documents, with the role. |
-| `builds` | The format version (`indexer.INDEX_FORMAT`, `elements.ELEMENTS_FORMAT`) and the backend of each index and element map. A new release of the package does not build them again; a new format does. |
+| `builds` | The format version (`indexer.INDEX_FORMAT`, `elements.ELEMENTS_FORMAT`) and the backend of each index and element map, the versions of its tools, and its bundle on a team server. A new release of the package does not build them again; a new format does. |
+| `bundles` | The bundles of derived data of a team server (from a pull). |
 | `pages`, `outline`, `captions` | The index. |
 | `elements` | The element map. |
 | `knowledge` | The facts. |
@@ -93,6 +94,11 @@ from the server, and a change that a shared decision causes (the merge of two pa
 after a relation of manufacturer names), write no outbox row: each store and the
 server make these changes themselves (`store.not_recorded`). A merge keeps the
 oldest part: by `created`, then by gid. Thus each store keeps the same part.
+
+`bundles.py` puts the derived data of a document (index, element map) into a bundle
+for the team server, and takes the canonical bundle of the server before a build. A
+fact keeps the bbox of its element; `bundles.relink` links the facts to a new element
+map by their regions.
 
 The key `sync_triggers` in `meta` keeps the version of the triggers. When a new
 release changes them, the first start makes them again in one write transaction.

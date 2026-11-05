@@ -39,12 +39,14 @@ def save_fact(store: Store, doc_id: int, page: int, subject: str, value: str, *,
         if len(bbox) != 4 or not all(math.isfinite(v) for v in bbox) or bbox[0] >= bbox[2] or bbox[1] >= bbox[3]:
             raise LensError("bbox needs four numbers x0,y0,x1,y1 (pt), with x0 < x1 and y0 < y1")
     if element_id:
-        row = store.db.execute("SELECT page FROM elements WHERE document_id = ? AND element_id = ?",
+        row = store.db.execute("SELECT page, x0, y0, x1, y1 FROM elements WHERE document_id = ? AND element_id = ?",
                                (doc.id, element_id)).fetchone()
         if row is None:
             raise LensError(f"element not found: {element_id}")
         if row["page"] != page:
             raise LensError(f"element {element_id} is on page {row['page']}, not on page {page}")
+        if bbox is None:  # the region is the reference of the fact; the element ID follows the element map
+            bbox = [row["x0"], row["y0"], row["x1"], row["y1"]]
     part_id = store.find_part(part) if part else None
     cur = store.db.execute(
         "INSERT INTO knowledge (part_id, document_id, page, element_id, bbox, subject, value, unit,"

@@ -184,6 +184,22 @@ How the synchronization works:
 - A file that is larger than 32 MiB goes as a multipart upload: after a stop of the
   connection, the next sync continues it.
 
+### Bundles of derived data
+
+The index and the element map of a document go to the server as bundles (gzip JSON).
+Thus one store builds them, and the team has the same element IDs:
+
+- When a tool needs the index or the element map of a document, the store first takes
+  the canonical bundle of the server. It needs no PDF file for this, and no build.
+- A store that builds the derived data itself uploads it at the next sync. The first
+  bundle becomes the canonical bundle.
+- For the element map, a bundle of docling comes before a bundle of the text backend:
+  a docling bundle replaces a text bundle in each store, also when the store uses the
+  text backend.
+- A fact keeps the region (bbox) of its element. After a new element map, each store
+  links its facts again by their regions. A fact whose element is not there any more
+  keeps its page and region, and gets the note "element changed; check again".
+
 ## API
 
 Each request, except `GET /health`, needs the header `Authorization: Bearer <token>`.
@@ -207,6 +223,7 @@ not through the API.
 | `POST /v1/uploads/{id}/complete` | owner | The server completes the upload, compares the SHA-256 of the full file, and records it. |
 | `DELETE /v1/uploads/{id}` | owner | Stop the upload. |
 | `GET /v1/sync/pull?cursor=C&after=P` | `reader` | A page (at most 1000 rows) of the changes after the cursor C, or all rows with no cursor. `more: true`: get the next page with `after`. The last page gives the new cursor. |
+| `POST /v1/bundles` | `contributor` | Body `{document_sha, kind, format, backend, blob_sha, versions, created}`: record a bundle of derived data (its file goes first through `POST /v1/blobs`, media type `application/gzip`). Gives the canonical bundle. |
 | `POST /v1/sync/push` | see below | Body `{changes: [...]}` (at most 500 rows of the outbox of a client). One result for each change: `applied`, `conflict` (with the row of the server), `merged` (with the gid of the kept part) or `rejected` (with the reason). |
 
 The rules of a push:

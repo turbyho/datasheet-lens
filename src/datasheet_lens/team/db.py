@@ -13,7 +13,7 @@ from typing import Any
 from .config import ROLES
 from .sync import SCHEMA as SYNC_SCHEMA
 
-SCHEMA_VERSION = 2  # 2: the shared tables (sync.SCHEMA)
+SCHEMA_VERSION = 3  # 2: the shared tables (sync.SCHEMA); 3: the bundles of derived data
 SCHEMA = [
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     f"""CREATE TABLE IF NOT EXISTS accounts (

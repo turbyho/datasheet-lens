@@ -55,9 +55,11 @@ class Report:
     pushed: int = 0
     pulled: int = 0
     notes: list[str] = field(default_factory=list)
+    bundles: list[str] = field(default_factory=list)
 
     def line(self) -> str:
         return f"pushed {self.pushed} changes, pulled {self.pulled} rows" + (
+            f", {len(self.bundles)} bundles of derived data" if self.bundles else "") + (
             f"; {len(self.notes)} notes (datasheet-lens server status)" if self.notes else "")
 
 
@@ -73,8 +75,13 @@ def connected(store: Store) -> bool:
     return bool(store.db.execute("SELECT server FROM sync_state").fetchone()[0])
 
 
-def _note(db: sqlite3.Connection, text: str) -> str:
-    """Keep a note for the user (the last NOTES_KEPT). Give the text."""
+def note(db: sqlite3.Connection, text: str) -> str:
+    """Keep a note for the user (the last NOTES_KEPT). A note that is there already
+    is not a second note: it comes again to the model, with the new time. Give the
+    text."""
+    if db.execute("UPDATE sync_notes SET created = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), shown = 0"
+                  " WHERE text = ?", (text,)).rowcount:
+        return text
     db.execute("INSERT INTO sync_notes (text) VALUES (?)", (text,))
     db.execute("DELETE FROM sync_notes WHERE id NOT IN (SELECT id FROM sync_notes ORDER BY id DESC LIMIT ?)",
                (NOTES_KEPT,))
@@ -212,6 +219,15 @@ class Remote:
         store.db.execute("DELETE FROM sync_uploads WHERE sha256 = ?", (sha256,))
         store.db.commit()
 
+    def fetch_blob(self, sha256: str) -> bytes:
+        """A file of the server in memory (a bundle). The SHA-256 must agree."""
+        answer = self.call("GET", f"/v1/blobs/{sha256}")
+        with self.transfer("GET", answer["url"], {}) as response:
+            raw = response.read()
+        if hashlib.sha256(raw).hexdigest() != sha256:
+            raise LensError(f"the file {sha256[:12]} from the team server has a different SHA-256")
+        return raw
+
     def download(self, doc: Document) -> Path:
         """Get the file of a document from the server into the store. The SHA-256
         must agree; else no file."""
@@ -341,6 +357,17 @@ def sync(store: Store, wait: float = 0, send: bool = True) -> Report:
             if send:
                 push(store, client, report, lease)
             pull(store, client, report, lease)
+            if send:  # the bundles of derived data: uploads and downloads, not in a tool call
+                from .bundles import reconcile
+
+                features = client.call("GET", "/v1/account").get("features", [])
+                lines = reconcile(store, client, lease) if "bundles" in features else [
+                    "error: the team server has no bundles of derived data: update the server"]
+                for line in lines:
+                    report.bundles.append(line)
+                    if line.startswith("error:"):
+                        with store.db:
+                            report.notes.append(note(store.db, line))
             with store.db:
                 store.db.execute("UPDATE sync_state SET last_sync = ?, last_error = NULL", (now(),))
             return report
@@ -431,10 +458,10 @@ def push(store: Store, client: Remote, report: Report, lease: Lease) -> None:
                     if r["tbl"] in VERSIONED:
                         db.execute("UPDATE outbox SET base_version = ? WHERE tbl = ? AND key = ? AND op != 'insert'",
                                    (result["row"]["version"], r["tbl"], r["key"]))
-                    report.notes.append(_note(db, f"conflict: {r['tbl']} {r['key']}: the server has a newer "
+                    report.notes.append(note(db, f"conflict: {r['tbl']} {r['key']}: the server has a newer "
                                                   "version; it is kept"))
                 elif kind == "rejected":
-                    report.notes.append(_note(db, f"refused by the server: {r['tbl']} {r['op']} {r['key']}: "
+                    report.notes.append(note(db, f"refused by the server: {r['tbl']} {r['op']} {r['key']}: "
                                                   f"{result.get('reason', '')}"))
             _set_supersedes(db, supersedes)
 
@@ -493,6 +520,8 @@ def _apply(db: sqlite3.Connection, rows: list[dict], supersedes: dict[str, str])
         table, key, data = row["tbl"], row["key"], row.get("data") or {}
         if table == "documents":
             _apply_document(db, key, row, data, supersedes)
+        elif table == "bundles":
+            _apply_bundle(db, key, row, data)
         elif table == "maker_relations":
             relations |= _apply_relation(db, key, row, data)
         elif table == "parts":
@@ -523,13 +552,25 @@ def _apply_document(db, sha, row, data, supersedes) -> None:
         db.execute("UPDATE documents SET supersedes_id = NULL WHERE sha256 = ?", (sha,))
 
 
+def _apply_bundle(db, key, row, data) -> None:
+    """A bundle of derived data of the server (bundles.py uses it when a tool needs
+    the derived data, or in reconcile)."""
+    sha, kind, fmt, backend = json.loads(key)
+    if row["deleted"]:
+        db.execute("DELETE FROM bundles WHERE document_sha = ? AND kind = ? AND format = ? AND backend = ?",
+                   (sha, kind, fmt, backend))
+    else:
+        db.execute("INSERT OR REPLACE INTO bundles VALUES (?, ?, ?, ?, ?, ?, ?)",
+                   (sha, kind, fmt, backend, data["blob_sha"], data["versions"], data["created"]))
+
+
 def _apply_relation(db, gid, row, data) -> bool:
     if row["deleted"] or _local_id(db, "maker_relations", gid) is not None:
         return False
     try:
         makers.relate(db, data["relation"], data["name"], data["other"])
     except LensError as e:  # a local decision says the opposite
-        _note(db, f"the relation {data['relation']} {data['name']!r} {data['other']!r} of the team server is "
+        note(db, f"the relation {data['relation']} {data['name']!r} {data['other']!r} of the team server is "
                   f"not in the local registry: {e}")
     db.execute("INSERT INTO maker_relations (relation, name, other, created, gid) VALUES (?, ?, ?, ?, ?)",
                (data["relation"], data["name"], data["other"], data["created"], gid))
@@ -628,11 +669,15 @@ def _apply_fact(db, gid, row, data) -> None:
     part = _local_id(db, "parts", data["part"]) if data.get("part") else None
     values = {"part_id": part, "document_id": doc, **{c: data[c] for c in FACT_COLUMNS}, "version": row["version"]}
     if local is None:
-        db.execute(f"INSERT INTO knowledge ({', '.join(values)}, gid) VALUES ({', '.join('?' * len(values))}, ?)",
-                   (*values.values(), gid))
+        local = db.execute(f"INSERT INTO knowledge ({', '.join(values)}, gid) VALUES ({', '.join('?' * len(values))},"
+                           " ?)", (*values.values(), gid)).lastrowid
     else:
         db.execute(f"UPDATE knowledge SET {', '.join(f'{c} = ?' for c in values)} WHERE id = ?",
                    (*values.values(), local))
+    # The element ID of the fact follows the local element map (bundles.relink).
+    from .bundles import relink
+
+    relink(db, doc, [local])
 
 
 # The background sync of the MCP server

@@ -23,6 +23,7 @@ from .errors import LensError
 from .indexer import CAPS_RE, CAPTION_RE, HEADING_RE, TOC_RE
 from .pdflock import pdfium_locked
 from .pdftext import Line, page_lines
+from .bundles import from_server, relink, tool_versions
 from .store import Store, now
 
 # The version of the format of an element map (see indexer.INDEX_FORMAT).
@@ -48,6 +49,11 @@ def build_elements(store: Store, doc_id: int, backend: str = "auto", chunk: int 
     doc = store.document(doc_id)
     if doc is None:
         raise LensError(f"document not found: {doc_id}")
+    # The canonical bundle of the team server first, for each backend: the team
+    # has one element map of a document (the bundle of docling before text).
+    if not force and (got := from_server(store, doc, "elements", backend)) is not None:
+        count = store.db.execute("SELECT count(*) FROM elements WHERE document_id = ?", (doc.id,)).fetchone()[0]
+        return {"elements": count, "backend": got["backend"], "skipped": True, "bundle": got["bundle"]}
     if not force and store.build_current(doc.id, "elements", ELEMENTS_FORMAT, backend):
         count = store.db.execute("SELECT count(*) FROM elements WHERE document_id = ?", (doc.id,)).fetchone()[0]
         return {"elements": count, "backend": backend, "skipped": True}
@@ -66,8 +72,10 @@ def build_elements(store: Store, doc_id: int, backend: str = "auto", chunk: int 
             "INSERT INTO elements VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [(doc.id, e["id"], e["page"], e["type"], e["code"], e["order"], *e["bbox"], e["text"])
              for e in rows])
-        store.db.execute("INSERT OR REPLACE INTO builds VALUES (?, 'elements', ?, ?, ?)",
-                         (doc.id, ELEMENTS_FORMAT, backend, now()))
+        store.db.execute("INSERT OR REPLACE INTO builds (document_id, kind, tool_version, backend, built, versions)"
+                         " VALUES (?, 'elements', ?, ?, ?, ?)", (doc.id, ELEMENTS_FORMAT, backend, now(),
+                                                                  tool_versions(backend)))
+        relink(store.db, doc.id)
     return {"elements": len(rows), "backend": backend, "skipped": False}
 
 
