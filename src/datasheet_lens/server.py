@@ -837,7 +837,8 @@ def search_distributors(
             "up to 50)."))] = False,
         path: ProjectPath = "") -> str:
     """The orderable parts at the enabled distributors, from their official
-    APIs: lifecycle state, stock, prices, package and datasheet URL. A part that
+    APIs: lifecycle state, stock, prices and datasheet URL (Mouser gives no
+    package: read it in the datasheet). A part that
     is obsolete or discontinued is marked NOT ORDERABLE. Use it to select the
     concrete MPN of the BOM, and to check that it can be ordered. Each result
     names its source (the terms of the distributors ask for it). The enabled

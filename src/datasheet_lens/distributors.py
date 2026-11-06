@@ -12,6 +12,12 @@ MPNs of a base part). The terms of Mouser ask to name Mouser as the source of
 its data, and not to mix it with other data with no distinction: each result
 gives its source.
 
+Mouser gives no package. Its ProductAttributes hold only the packaging options of
+the Mouser part number and the standard pack quantity, with their names in the
+language of the Mouser account ("Balení" for a Czech account). Thus a Mouser
+offer has no package and no packaging (live calls, 2026-11-06). LifecycleStatus
+is English for each language.
+
 Each distributor has its own manufacturer names. A distributor name does not
 change the manufacturer registry (makers.py): only the user changes it.
 """
@@ -136,13 +142,6 @@ def _int(text) -> int | None:
         return None
 
 
-def _attribute(part: dict, *names: str) -> str:
-    for a in part.get("ProductAttributes") or []:
-        if a.get("AttributeName", "").lower() in names:
-            return str(a.get("AttributeValue", "")).strip()
-    return ""
-
-
 # Mouser gives the lead time in the language of the account ("182 Dny", "6 Weeks").
 LEAD_UNITS = {"days": ("day", "days", "den", "dny", "dnů", "tag", "tage", "jour", "jours", "día", "días"),
               "weeks": ("week", "weeks", "týden", "týdny", "týdnů", "woche", "wochen", "semaine", "semaines",
@@ -180,7 +179,6 @@ def _mouser_offer(part: dict) -> Offer:
         multiple=_int(part.get("Mult")),
         prices=[(_int(p.get("Quantity")) or 0, f"{p.get('Price', '')} {p.get('Currency', '')}".strip())
                 for p in part.get("PriceBreaks") or []],
-        package=_attribute(part, "package / case", "package"), packaging=_attribute(part, "packaging"),
         datasheet_url=str(part.get("DataSheetUrl") or "").strip(),
         product_url=str(part.get("ProductDetailUrl") or "").strip(),
         distributor_pn=str(part.get("MouserPartNumber", "")).strip())
@@ -278,7 +276,8 @@ def not_orderable(offer: Offer) -> str:
 
 def format_offer(o: Offer) -> str:
     """One line for an offer: MPN, manufacturer, lifecycle (Mouser gives it only
-    for some parts), stock, prices, package and datasheet URL."""
+    for some parts), stock, prices, the package when the distributor gives it,
+    and the datasheet URL."""
     prices = ", ".join(f"{q}: {p}" for q, p in o.prices[:3])
     warn = not_orderable(o)
     parts = [f"{o.mpn} ({o.manufacturer})"]

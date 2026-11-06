@@ -10,8 +10,10 @@ PART = {"ManufacturerPartNumber": "TPS7A0233PYCHR", "Manufacturer": "Texas Instr
         "Description": "LDO Voltage Regulators", "LifecycleStatus": "New Product", "IsDiscontinued": "false",
         "AvailabilityInStock": "1234", "Availability": "1234 In Stock", "LeadTime": "6 Weeks", "Min": "1",
         "Mult": "1", "PriceBreaks": [{"Quantity": 1, "Price": "0,52 €", "Currency": "EUR"}],
-        "ProductAttributes": [{"AttributeName": "Packaging", "AttributeValue": "Reel"},
-                              {"AttributeName": "Package / Case", "AttributeValue": "DSBGA-4"}],
+        # As the API gives them for a Czech account: the packaging options, no package.
+        "ProductAttributes": [{"AttributeName": "Balení", "AttributeValue": "Reel"},
+                              {"AttributeName": "Balení", "AttributeValue": "Cut Tape"},
+                              {"AttributeName": "Standardní množství balíků", "AttributeValue": "3000"}],
         "DataSheetUrl": "https://www.ti.com/lit/ds/symlink/tps7a02.pdf", "MouserPartNumber": "595-TPS7A0233PYCHR"}
 OLD = dict(PART, ManufacturerPartNumber="TPS7A0218PYCHR", LifecycleStatus="Obsolete", IsDiscontinued="true",
            SuggestedReplacement="TPS7A0218PYCHR2", AvailabilityInStock="0")
@@ -48,7 +50,8 @@ def test_mouser_search(monkeypatch):
     assert [o.mpn for o in offers] == ["TPS7A0233PYCHR", "TPS7A0218PYCHR"]
     assert sent[0][1]["SearchByPartRequest"]["partSearchOptions"] == "None"
     line = distributors.format_offer(offers[0])
-    assert "state: New Product" in line and "stock: 1234" in line and "DSBGA-4 / Reel" in line
+    assert "state: New Product" in line and "stock: 1234" in line
+    assert offers[0].package == offers[0].packaging == "" and "Reel" not in line
     assert "NOT ORDERABLE: Obsolete, replacement TPS7A0218PYCHR2" in distributors.format_offer(offers[1])
     distributors.mouser_search("TPS7A02", exact=False)
     assert len(sent) == 1  # the cache

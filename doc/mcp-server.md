@@ -122,7 +122,7 @@ project folder. The other tools only read.
 
 | Tool | Function | Main parameters | Changes |
 |---|---|---|---|
-| `search_distributors` | Give the orderable parts at the enabled distributors: lifecycle state, stock, prices, package and datasheet URL. | `mpn`, `exact`, `path` | no |
+| `search_distributors` | Give the orderable parts at the enabled distributors: lifecycle state, stock, prices and datasheet URL. Mouser gives no package. | `mpn`, `exact`, `path` | no |
 | `project_availability` | Give the lifecycle state and the stock of each project part, with a warning for each problem. | `path` | no |
 | `distributor_status` | Give the enabled distributors and if each one has an API key (no key values). | `path` | no |
 | `part_links` | Give search links for a part: datasheet, price, stock, symbol, footprint and 3D model. | `mpn` | no |
