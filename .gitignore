@@ -13,3 +13,10 @@ spike/*/verify/convert/*/raw/
 /datasheets/
 # Files that the user gives for a task (for example datasheets to add).
 /tmp/
+# Generated binary outputs of the spikes (images, caches, PDF extracts, element
+# maps). The scripts of the spikes make them again. The text results are in git.
+spike/*/subset/cache*/
+spike/*/subset/llm/*.png
+spike/*/subset/pdf/
+spike/nrf54lm20/lens/elements.json
+spike/*/verify/convert/*/img/

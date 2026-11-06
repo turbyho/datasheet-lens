@@ -34,14 +34,33 @@ from dataclasses import dataclass, field
 from urllib.parse import quote
 
 from . import makers
-from .errors import LensError
-from .keys import KEYS, get_key
+from .errors import LensError, Unavailable
+from .keys import GROUPS, KEYS, get_key
+from .keys import credential as _credential_of
 
 MOUSER_ENV = KEYS["mouser"]
 # The distributors that datasheet-lens can ask: name -> (label, where the user gets a key).
 SUPPORTED = {"mouser": ("Mouser", "https://www.mouser.com/api-hub/ (the key of the Search API, not of the Cart "
-                                   "API; free, with a Mouser account)")}
-PLANNED = ("digikey", "farnell", "tme")  # not supported yet
+                                   "API; free, with a Mouser account)"),
+             "digikey": ("DigiKey", "https://developer.digikey.com (an organization, then a production app with "
+                                    "\"Product Information V4\"; free, with a DigiKey account; the steps are in "
+                                    "doc/distributors.md)")}
+PLANNED = ("farnell", "tme")  # not supported yet
+# What datasheet-lens can get from the API of each distributor, and what not. The
+# agent reads it in distributor_status, to select the distributor for a task.
+SERVICES = {
+    "mouser": (["MPN search (search_distributors, project_availability): stock, prices, lifecycle state, "
+                "suggested replacement of an obsolete part, datasheet URL"],
+               ["parametric search (Mouser gives no electrical parameters)", "package"]),
+    "digikey": (["parametric search (part_parameters, find_parts): parameters, stock, price, lifecycle state, "
+                 "package, datasheet URL",
+                 "MPN search (search_distributors, project_availability): stock, prices, lifecycle state, "
+                 "package, datasheet URL",
+                 "direct links to the CAD models (SnapMagic, Ultra Librarian) and the datasheets (part_links)"],
+                []),
+}
+# With no list of the user: the distributors with a saved key. With no key at all:
+# Mouser, so that the user gets the note with the steps.
 DEFAULT = ["mouser"]
 MOUSER_URL = "https://api.mouser.com/api/v1/search/partnumber?apiKey={key}"
 TIMEOUT = 30.0
@@ -86,12 +105,26 @@ def check_names(names: list[str]) -> list[str]:
     return out
 
 
-def enabled(project=None) -> tuple[list[str], str, list[str]]:
+def lookup_once():
+    """A function that gives (credential, source) of a distributor, with one
+    lookup of each key for each call of a tool: a locked key store waits
+    RING_TIMEOUT seconds for each lookup."""
+    found: dict[str, tuple] = {}
+
+    def get(name: str) -> tuple:
+        if name not in found:
+            found[name] = _credential_of(name)
+        return found[name]
+
+    return get
+
+
+def enabled(project=None, lookup=None) -> tuple[list[str], str, list[str]]:
     """The distributors to ask, where the list comes from (the project file,
     the global configuration or the default), and a note for each name of the
     list that is not supported (for example a list of a newer version): it is
     left out, so the others still work. A user in the USA does not want
-    Farnell, for example."""
+    Farnell, for example. lookup: see lookup_once."""
     from .config import load_config
 
     if project is not None and getattr(project, "distributors", None) is not None:
@@ -99,7 +132,10 @@ def enabled(project=None) -> tuple[list[str], str, list[str]]:
     else:
         names = load_config().get("distributors")
         if not isinstance(names, list):
-            return list(DEFAULT), "the default", []
+            lookup = lookup or lookup_once()
+            with_key = [n for n in SUPPORTED if lookup(n)[0]]
+            return ((with_key, "the default: the distributors with a saved key", []) if with_key
+                    else (list(DEFAULT), "the default", []))
         source = "the global configuration"
     out, skipped = [], []
     for name in (str(n).strip().lower() for n in names):
@@ -115,19 +151,28 @@ def enabled(project=None) -> tuple[list[str], str, list[str]]:
 def no_key_note(name: str, source: str = "") -> str:
     """The note for the user when an enabled distributor has no API key."""
     label, where = SUPPORTED[name]
+    if name in GROUPS:
+        labels = " and the ".join(lbl for _, lbl in GROUPS[name])
+        envs = " and ".join(KEYS[key] for key, _ in GROUPS[name])
+        paste = f"paste the {labels} (the command asks for each one; they go into the key store of the system; " \
+                f"for CI: the environment variables {envs})"
+    else:
+        paste = (f"paste the key (it goes into the key store of the system; for CI: the environment variable "
+                 f"{KEYS[name]})")
     return (f"{label}" + (f" is enabled ({source}) but" if source else "") + " has no API key. Tell the user: "
-            f"get a key at {where}, then run \"datasheet-lens key {name}\" in a terminal and paste the key (it "
-            f"goes into the key store of the system; for CI: the environment variable {KEYS[name]}). Or "
+            f"get a key at {where}, then run \"datasheet-lens key {name}\" in a terminal and {paste}. Or "
             f"disable {label}: \"datasheet-lens dist\" shows the settings.")
 
 
-def keys_of(project=None) -> tuple[dict[str, str], list[str]]:
-    """The keys of the enabled distributors ({name: key}, one lookup each) and
-    the notes for the enabled distributors with no key."""
-    names, source, notes = enabled(project)
-    keys: dict[str, str] = {}
+def keys_of(project=None, lookup=None) -> tuple[dict[str, str | tuple[str, ...]], list[str]]:
+    """The credentials of the enabled distributors ({name: key, or a tuple of
+    keys for DigiKey}, one lookup of each key) and the notes for the enabled
+    distributors with no key."""
+    lookup = lookup or lookup_once()
+    names, source, notes = enabled(project, lookup)
+    keys: dict[str, str | tuple[str, ...]] = {}
     for name in names:
-        key = get_key(name)
+        key = lookup(name)[0]
         if key:
             keys[name] = key
         else:
@@ -162,8 +207,10 @@ def _lead_time(text: str) -> str:
 
 def restricted(offer: Offer) -> bool:
     """True if the distributor does not sell the part now (Mouser: "Restricted
-    Availability"). This is not a lifecycle state of the manufacturer."""
-    return "restricted" in offer.lifecycle.lower()
+    Availability", DigiKey: "Discontinued at Digi-Key"). This is not a lifecycle
+    state of the manufacturer."""
+    state = offer.lifecycle.lower()
+    return "restricted" in state or state == "discontinued at digi-key"
 
 
 def _mouser_offer(part: dict) -> Offer:
@@ -182,11 +229,6 @@ def _mouser_offer(part: dict) -> Offer:
         datasheet_url=str(part.get("DataSheetUrl") or "").strip(),
         product_url=str(part.get("ProductDetailUrl") or "").strip(),
         distributor_pn=str(part.get("MouserPartNumber", "")).strip())
-
-
-class Unavailable(LensError):
-    """The API cannot answer now (no connection, rate limit, server error): the
-    next requests fail too."""
 
 
 MIN_PREFIX = 3  # a shorter start of an MPN gives 50 parts of no use
@@ -257,17 +299,34 @@ def search_lines(mpn: str, exact: bool = False, project=None) -> list[str]:
     if not keys:
         return notes + ["Search links:"] + format_links(mpn)
     lines = []
-    if "mouser" in keys:
-        offers = mouser_search(mpn, exact, keys["mouser"])
-        lines += ([f"Source: Mouser ({len(offers)} parts)"] + [format_offer(o) for o in offers] if offers
-                  else [f"Source: Mouser. No part {'is' if exact else 'starts with'} {mpn.strip()}."])
+    for name, credential in keys.items():
+        label = SUPPORTED[name][0]
+        try:
+            offers = offers_of(name, mpn, exact, credential)
+        except LensError as e:  # the other distributors still answer
+            lines.append(f"Source: {label}. Not checked: {e}")
+            continue
+        lines += ([f"Source: {label} ({len(offers)} parts)"] + [format_offer(o) for o in offers] if offers
+                  else [f"Source: {label}. No part {'is' if exact else 'starts with'} {mpn.strip()}."])
     return lines + notes
+
+
+def offers_of(name: str, mpn: str, exact: bool, credential) -> list[Offer]:
+    """The offers of one distributor for an MPN."""
+    if name == "mouser":
+        return mouser_search(mpn, exact, credential)
+    from . import digikey
+
+    return digikey.offers(mpn, exact, credential)
 
 
 def not_orderable(offer: Offer) -> str:
     """The reason why an offer cannot be ordered, or "": obsolete, discontinued,
-    end of life."""
+    end of life. A part that only the distributor does not sell now (restricted)
+    is not in this group."""
     state = offer.lifecycle.lower()
+    if restricted(offer) and not offer.discontinued:
+        return ""
     if offer.discontinued or any(w in state for w in ("obsolete", "discontinued", "end of life", "eol")):
         return f"{offer.lifecycle or 'discontinued'}" + (f", replacement {offer.replacement}" if offer.replacement
                                                           else "")
@@ -317,12 +376,21 @@ def availability(project, store=None) -> list[str]:
     the user. store: its manufacturer registry selects the offers of the
     manufacturer of the part."""
     keys, notes = keys_of(project)
-    if "mouser" not in keys:
+    if not keys:
         return notes or ["No enabled distributor: \"datasheet-lens dist\" shows the settings."]
-    lines = ["Source: Mouser"]
+    lines: list[str] = []
+    for name, credential in keys.items():
+        lines += _availability_at(name, credential, project, store)
+    return lines + notes
+
+
+def _availability_at(name: str, credential, project, store=None) -> list[str]:
+    """The lines of availability for one distributor."""
+    label = SUPPORTED[name][0]
+    lines = [f"Source: {label}"]
     for i, part in enumerate(project.parts):
         try:
-            offers = [o for o in mouser_search(part["mpn"], exact=True, key=keys["mouser"])
+            offers = [o for o in offers_of(name, part["mpn"], True, credential)
                       if o.mpn.lower() == part["mpn"].lower()]
         except Unavailable as e:  # the next parts fail too: do not wait for each one
             lines.append(f"not checked: {', '.join(p['mpn'] for p in project.parts[i:])}: {e}")
@@ -331,7 +399,7 @@ def availability(project, store=None) -> list[str]:
             lines.append(f"{part['mpn']}: not checked: {e}")
             continue
         if not offers:
-            lines.append(f"{part['mpn']}: WARNING: Mouser does not have this MPN (a base part, or a wrong MPN?)")
+            lines.append(f"{part['mpn']}: WARNING: {label} does not have this MPN (a base part, or a wrong MPN?)")
             continue
         offers, own = _of_maker(offers, part.get("manufacturer", ""), store)
         # One MPN can have more offers (cut tape and reel): the part is orderable
@@ -345,27 +413,95 @@ def availability(project, store=None) -> list[str]:
         if not orderable:
             state += f". WARNING: not orderable: {not_orderable(o)}"
         elif not stock and all(restricted(x) for x in offers):
-            state += (". WARNING: Mouser does not sell this part now (Restricted Availability). This is not the "
+            state += (f". WARNING: {label} does not sell this part now ({o.lifecycle}). This is not the "
                       "lifecycle state of the manufacturer: ask the manufacturer or a different distributor")
         elif not stock:
             state += (". WARNING: no stock" + (f" ({o.availability})" if o.availability else "")
                       + (f", lead time {o.lead_time}" if o.lead_time else ""))
         if part.get("manufacturer") and not own:
-            state += (f". WARNING: Mouser has no offer from {part['manufacturer']}: the data is of "
+            state += (f". WARNING: {label} has no offer from {part['manufacturer']}: the data is of "
                       + ", ".join(sorted({x.manufacturer for x in offers})))
         lines.append(state)
-    return lines + notes
+    return lines
 
 
 def status_lines(project=None) -> list[str]:
     """The enabled distributors, where the list comes from, and the state of
-    their keys (no values), with a note for each missing key."""
-    from .keys import key_source
-
-    names, source, skipped = enabled(project)
+    their keys (no values), with a note for each missing key, and the services
+    of each supported distributor."""
+    lookup = lookup_once()
+    names, source, skipped = enabled(project, lookup)
     lines = [f"enabled distributors: {', '.join(names) or 'none'} (from {source}); supported: "
              f"{', '.join(SUPPORTED)}; not supported yet: {', '.join(PLANNED)}"] + skipped
     for name in names:
-        where = key_source(name)
-        lines.append(f"{name}: key {where}" if where != "not set" else no_key_note(name, source))
+        value, where = lookup(name)
+        lines.append(f"{name}: key {where}" if value else
+                     (f"{name}: key {where}; " if where != "not set" else "") + no_key_note(name, source))
+    lines.append("The services of each supported distributor:")
+    for name, (has, lacks) in SERVICES.items():
+        lines.append(f"{name}: " + "; ".join(has) + (f". Not available: {'; '.join(lacks)}" if lacks else "")
+                     + ("" if name in names else ". Not enabled"))
+    return lines
+
+
+# The distributors with a parametric search (see parametric.py).
+PARAMETRIC = ("digikey",)
+
+
+def _parametric_credential(project=None) -> tuple[str, object]:
+    """The first enabled distributor with a parametric search and a key, and
+    its credential. A LensError with the steps when there is none: enable the
+    distributor, get a key, or both."""
+    lookup = lookup_once()
+    names, source, _ = enabled(project, lookup)
+    for name in PARAMETRIC:
+        if name in names and lookup(name)[0]:
+            return name, lookup(name)[0]
+    steps = []
+    for name in PARAMETRIC:
+        label = SUPPORTED[name][0]
+        enable = f"\"datasheet-lens dist {' '.join([*names, name])}\" (or with --local for this project)"
+        if name in names:
+            steps.append(no_key_note(name, source))
+        elif lookup(name)[0]:
+            steps.append(f"{label} has a key but is not enabled ({source}). Tell the user to enable it: {enable}.")
+        else:
+            steps.append(no_key_note(name) + f" Then enable it: {enable}.")
+    raise LensError("The parametric search needs a distributor with a parameter search: "
+                    + ", ".join(SUPPORTED[n][0] for n in PARAMETRIC) + ". " + " ".join(steps))
+
+
+def pick_lines(category: str, filters: list[str], keywords: str = "", in_stock: bool = True, sort: str = "stock",
+               limit: int = 20, offset: int = 0, project=None) -> list[str]:
+    """The parametric search at the enabled distributors, as lines with the source."""
+    from . import digikey
+
+    _, cred = _parametric_credential(project)
+    return digikey.search_lines(digikey.search(category, filters, keywords, in_stock, sort, limit, offset, cred))
+
+
+def parameter_lines(category: str, project=None) -> list[str]:
+    """The parameters of a category at the enabled distributor with a parametric search."""
+    from . import digikey
+
+    _, cred = _parametric_credential(project)
+    return digikey.parameter_lines(category, cred)
+
+
+def link_lines(mpn: str, project=None) -> list[str]:
+    """The search links of part_links, and the direct links of DigiKey (CAD
+    models, datasheets) when DigiKey is enabled and has a key."""
+    from .links import format_links
+
+    if not mpn.strip():
+        raise LensError("the MPN is empty")
+    lines = format_links(mpn)
+    keys, _ = keys_of(project)
+    if "digikey" in keys:
+        from . import digikey
+
+        try:
+            lines += digikey.media_lines(mpn, keys["digikey"])
+        except LensError as e:
+            lines.append(f"Direct links of DigiKey: not checked: {e}")
     return lines

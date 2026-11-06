@@ -212,9 +212,16 @@ and MPN prefixes. The proposal is a hint only: the user or the model confirms it
 ## Distributors and keys
 
 `distributors.py` asks the Mouser Search API (part number search, exact or by the
-start of the MPN). It uses only the standard library (`urllib`). It keeps each answer
-for one hour. An HTTP error never shows the request URL, because the URL holds the
-key. `links.py` gives the search links of `part_links`.
+start of the MPN), and selects the distributors and their keys. It uses only the
+standard library (`urllib`). It keeps each answer in memory for one hour. An HTTP
+error never shows the request URL, because the URL holds the key. `links.py` gives
+the search links of `part_links`.
+
+`digikey.py` asks the DigiKey Product Information API v4: the parametric search, the
+offers of an MPN and the direct links to the CAD models. It gets a token with the
+OAuth2 client credentials flow. It keeps the DigiKey data only in memory, because the
+terms of DigiKey do not permit an own database. `parametric.py` holds the filter
+model of the parametric search (`NAME OP VALUE`), for each source.
 
 `keys.py` reads a key (the API key of a distributor, or the token of the team server)
 from the environment variable, the key store of the system (the package keyring) or
@@ -230,9 +237,10 @@ or the database.
 | `agents.py` | The datasheet-lens block in `AGENTS.md` and `CLAUDE.md`. |
 | `cli.py` | The command line interface. |
 | `config.py` | The location of the central store (`DATASHEET_LENS_HOME`), `config.json`, and the data folder (key `data`). |
-| `distributors.py` | The part data from the distributor APIs: search, availability, distributor list. |
+| `distributors.py` | The part data from the distributor APIs: search, availability, distributor list, services. |
+| `digikey.py` | The DigiKey API: parametric search, offers, direct links. |
 | `elements.py` | The element map: docling and text backends, page map, caption search. |
-| `errors.py` | `LensError`: a wrong input or a state that the user can repair. |
+| `errors.py` | `LensError`: a wrong input or a state that the user can repair. `Unavailable`: a distributor API that cannot answer now. |
 | `fetch.py` | The download of a PDF from a URL. |
 | `fileutil.py` | Atomic file writes. |
 | `identify.py` | The MPN proposal, the orderable codes and the base-part note. |
@@ -241,6 +249,7 @@ or the database.
 | `knowledge.py` | The facts: save, find, state. |
 | `links.py` | The search links for a part. |
 | `pages.py` | Page images, region images and PDF extracts. |
+| `parametric.py` | The filter model of the parametric search, for each source. |
 | `pdflock.py` | One lock for pdfium in a process. |
 | `pdftext.py` | Text lines with positions from the PDF text layer. |
 | `project.py` | The project file, sync, removal, CAD check. |

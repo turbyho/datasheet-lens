@@ -28,15 +28,45 @@ from .errors import LensError
 
 SERVICE = "datasheet-lens"
 # The name of a key -> its environment variable.
-KEYS = {"mouser": "DATASHEET_LENS_MOUSER_KEY", "team": "DATASHEET_LENS_TEAM_TOKEN"}
+KEYS = {"mouser": "DATASHEET_LENS_MOUSER_KEY", "digikey-id": "DATASHEET_LENS_DIGIKEY_ID",
+        "digikey-secret": "DATASHEET_LENS_DIGIKEY_SECRET", "team": "DATASHEET_LENS_TEAM_TOKEN"}
+# A credential of more keys: its name -> (key name, label) for each key, in the
+# order that "datasheet-lens key NAME" asks for them.
+GROUPS = {"digikey": (("digikey-id", "Client ID"), ("digikey-secret", "Client Secret"))}
 FILE = "keys.toml"
 
 
 def _name(name: str) -> str:
     key = name.strip().lower()
     if key not in KEYS:
-        raise LensError(f"unknown key {name!r}: {', '.join(KEYS)}")
+        raise LensError(f"unknown key {name!r}: {', '.join([*KEYS, *GROUPS])}")
     return key
+
+
+def credential(name: str) -> tuple[str | tuple[str, ...], str]:
+    """The credential of a distributor and where it is, with one lookup of each
+    key (a locked key store waits RING_TIMEOUT for each lookup). The credential
+    is the key, or for a group (digikey) the tuple of its keys; "" when a key of
+    the group is missing. The source has no value: for a group, the source of
+    each key."""
+    group = GROUPS.get(name.strip().lower())
+    if group is None:
+        return _lookup(_name(name))
+    found = {key: _lookup(_name(key)) for key, _ in group}
+    values = tuple(found[key][0] for key, _ in group)
+    if all(source == "not set" for _, source in found.values()):
+        return "", "not set"
+    return (values if all(values) else ""), "; ".join(f"{label} {found[key][1]}" for key, label in group)
+
+
+def get_credential(name: str) -> str | tuple[str, ...]:
+    """The credential of a distributor (see credential)."""
+    return credential(name)[0]
+
+
+def credential_source(name: str) -> str:
+    """Where the credential is, with no value (see credential)."""
+    return credential(name)[1]
 
 
 def _keyring():

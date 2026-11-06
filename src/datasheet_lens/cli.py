@@ -522,7 +522,7 @@ def cmd_key(args: argparse.Namespace) -> int:
     the token of the team server."""
     import getpass
 
-    from .keys import KEYS, delete_key, key_source, key_sources, set_key
+    from .keys import GROUPS, KEYS, delete_key, key_source, key_sources, set_key
 
     if not args.name:
         if args.delete:
@@ -530,20 +530,26 @@ def cmd_key(args: argparse.Namespace) -> int:
         for name, where in key_sources().items():
             print(f"{name}: {where}")
         return 0
+    name = args.name.strip().lower()
+    if name not in KEYS and name not in GROUPS:
+        raise LensError(f"unknown key {args.name!r}: {', '.join([*KEYS, *GROUPS])}")
+    # A group (digikey) is more keys: the command asks for each one.
+    items = list(GROUPS[name]) if name in GROUPS else [(name, "token" if name == "team" else "API key")]
     if args.delete:
-        delete_key(args.name)
-        print(f"{args.name}: removed from the key store and the file")
-        where = key_source(args.name)
-        if where != "not set":  # an environment variable, or a key store that did not answer
-            print(f"{args.name}: a key is still in {where}")
+        for key, _ in items:
+            delete_key(key)
+            print(f"{key}: removed from the key store and the file")
+            where = key_source(key)
+            if where != "not set":  # an environment variable, or a key store that did not answer
+                print(f"{key}: a key is still in {where}")
         return 0
-    # Not on the screen and not in the shell history.
-    label = "token" if args.name.lower() == "team" else "API key"
-    value = getpass.getpass(f"{args.name} {label}: ") if sys.stdin.isatty() else sys.stdin.readline()
-    print(f"{args.name}: saved in {set_key(args.name, value)}")
-    env = KEYS[args.name.lower()]
-    if key_source(args.name).startswith("environment"):
-        print(f"{args.name}: the environment variable {env} comes first: remove it, else the saved key is not used")
+    for key, label in items:
+        # Not on the screen and not in the shell history.
+        value = getpass.getpass(f"{name} {label}: ") if sys.stdin.isatty() else sys.stdin.readline()
+        print(f"{key}: saved in {set_key(key, value)}")
+        if key_source(key).startswith("environment"):
+            print(f"{key}: the environment variable {KEYS[key]} comes first: remove it, else the saved key is not "
+                  "used")
     return 0
 
 
@@ -586,16 +592,30 @@ def cmd_dist(args: argparse.Namespace) -> int:
     from .config import load_config
     from .setup import save_config
 
+    import re
+
+    if args.site is not None and not re.fullmatch(r"[A-Za-z]{2}", args.site):
+        raise LensError("--site: a country code of 2 letters, for example CZ or US")
+    if args.currency is not None and not re.fullmatch(r"[A-Za-z]{3}", args.currency):
+        raise LensError("--currency: a currency code of 3 letters, for example CZK, EUR or USD")
     if args.local:
+        if args.site or args.currency:
+            raise LensError("--site and --currency are global settings: give them without --local")
         project = load(args.path)
         set_distributors(project, check_names(args.names) if args.names else None)
         print(f"project {project.root}: " + (f"distributors {', '.join(project.distributors)}"
                                             if project.distributors is not None else "the global configuration"))
-    elif args.names:
+    elif args.names or args.site or args.currency:
         cfg = load_config(strict=True)  # a file that cannot be read is not written over
-        cfg["distributors"] = check_names(args.names)
+        if args.names:
+            cfg["distributors"] = check_names(args.names)
+            print(f"global: distributors {', '.join(cfg['distributors'])}")
+        for key in ("site", "currency"):
+            value = getattr(args, key)
+            if value:
+                cfg[key] = value.upper()
+                print(f"global: {key} {cfg[key]}")
         save_config(cfg)
-        print(f"global: distributors {', '.join(cfg['distributors'])}")
     print("\n".join(status_lines(load_optional(args.path))))
     return 0
 
@@ -606,6 +626,23 @@ def cmd_find(args: argparse.Namespace) -> int:
     from .project import load_optional
 
     print("\n".join(search_lines(args.mpn, args.exact, load_optional(args.path))))
+    return 0
+
+
+def cmd_pick(args: argparse.Namespace) -> int:
+    """The command pick: the parametric search at a distributor (DigiKey)."""
+    from .distributors import parameter_lines, pick_lines
+    from .project import load_optional
+
+    project = load_optional(args.path)
+    if args.params:
+        if args.filters:
+            raise LensError("-P shows the parameters of a category: give no FILTER with it")
+        lines = parameter_lines(args.category, project)
+    else:
+        lines = pick_lines(args.category, args.filters, args.keywords, not args.all, args.sort, args.limit,
+                           args.offset, project)
+    print("\n".join(lines))
     return 0
 
 
@@ -634,9 +671,10 @@ def cmd_maker(args: argparse.Namespace) -> int:
 
 def cmd_links(args: argparse.Namespace) -> int:
     """The command links: search links for a part (datasheet, stock, CAD files)."""
-    from .links import format_links
+    from .distributors import link_lines
 
-    print("\n".join(format_links(args.mpn)))
+    # The global distributor list: the links do not need a project file.
+    print("\n".join(link_lines(args.mpn)))
     return 0
 
 
@@ -762,11 +800,30 @@ def build_parser() -> argparse.ArgumentParser:
     fd.add_argument("mpn", metavar="MPN", help="an MPN, or the start of the MPNs (a base part)")
     fd.add_argument("-x", "--exact", action="store_true", help="only this MPN")
     fd.set_defaults(func=cmd_find)
+    pk = sub.add_parser("pick", help="find parts by their parameters at a distributor (DigiKey; needs a key: "
+                                     "datasheet-lens key digikey)")
+    pk.add_argument("category", metavar="CATEGORY",
+                    help="the category: a part of its name or its ID, for example \"Single FETs, MOSFETs\" or 278")
+    pk.add_argument("filters", nargs="*", metavar="FILTER",
+                    help="NAME OP VALUE, with OP one of = < <= > >= has, for example \"Vdss >= 20 V\" or "
+                         "\"package has 3x3\". With no FILTER and -P: the parameters of the category")
+    pk.add_argument("-P", "--params", action="store_true", help="show the parameters of the category and their "
+                                                                "values")
+    pk.add_argument("-k", "--keywords", default="", help="words that the parts must have")
+    pk.add_argument("-a", "--all", action="store_true", help="also the parts with no stock")
+    pk.add_argument("-s", "--sort", choices=("stock", "price"), default="stock", help="default: stock")
+    pk.add_argument("-n", "--limit", type=int, default=20, help="the number of parts (1 to 50, default 20)")
+    pk.add_argument("-o", "--offset", type=int, default=0, help="skip this number of parts (the next page)")
+    pk.set_defaults(func=cmd_pick)
     ds = sub.add_parser("dist", help="show or set the distributors that datasheet-lens asks (global, or with "
                                      "--local for the project)")
     ds.add_argument("names", nargs="*", metavar="NAME", help="the distributors, for example mouser")
     ds.add_argument("--local", action="store_true",
                     help="set them in the project file; with no NAME, the project uses the global setting")
+    ds.add_argument("--site", metavar="CC", help="the country of the prices and the stock (global), for example "
+                                                 "CZ (default US). DigiKey uses it")
+    ds.add_argument("--currency", metavar="CUR", help="the currency of the prices (global), for example CZK "
+                                                      "(default USD). DigiKey uses it")
     ds.add_argument("-p", "--path", "--project", dest="path", help="the project folder (default: the current folder or a parent "
                                                       "folder)")
     ds.set_defaults(func=cmd_dist)
@@ -799,7 +856,7 @@ def build_parser() -> argparse.ArgumentParser:
     psync_short = sub.add_parser("sync", help="synchronize the project (project sync)")
     psync_short.add_argument("--restore", action="store_true", help="copy a changed copy again from the store")
     psync_short.set_defaults(func=cmd_project_sync)
-    for p in (rm, st, ck, sk, fd, ls, psync_short):
+    for p in (rm, st, ck, sk, fd, pk, ls, psync_short):
         p.add_argument("-p", "--path", "--project", dest="path",
                        help="the project folder (default: the current folder or a parent folder)")
 

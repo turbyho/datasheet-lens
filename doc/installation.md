@@ -143,7 +143,7 @@ first four are in a different folder (see
 | `blobs/` | One file for each document, with its SHA-256 as the file name. |
 | `render/` | The rendered page images and PDF extracts (a cache). |
 | `tmp/` | Temporary files of the downloads. |
-| `config.json` | The configuration: the element map backend, the global list of distributors and the data folder. |
+| `config.json` | The configuration: the element map backend, the global list of distributors, the country and the currency of the prices, and the data folder. |
 | `keys.toml` | The API keys, only on a system with no key store. See [distributors.md](distributors.md). |
 
 The tool makes a file in `render/` again when the file is not there.

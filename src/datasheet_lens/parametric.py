@@ -1,0 +1,152 @@
+"""The filter model of the parametric part search, for each source.
+
+A filter is a text "NAME OP VALUE", for example "Vdss >= 20 V",
+"FET Type = N-Channel", "Supplier Device Package has 3x3" or
+"Rds On <= 10 mOhm at Vgs=2.5V". OP is one of = < <= > >= has. "=" and "has"
+accept more values with "|" (one of them). A condition after "at" or "@" tells
+the conditions of the value.
+
+A source keeps a parameter as a list of value texts, for example "25 V" or
+"4.5mOhm @ 20A, 8V". A numeric filter compares the first quantity of the value
+text before "@": "2.5V, 8V" gives 2.5 V, and "4.5mOhm @ 20A, 8V" gives
+0.0045 Ohm. A distributor keeps one point of a value only (DigiKey: RDS(on) at
+the highest drive voltage). Thus a filter with a condition cannot be applied to
+the source data: the result tells the user to read the value in the datasheet.
+
+Each filter gets a status:
+- server: the source applied it.
+- datasheet: no source data can decide it. Read the value in the datasheet.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+from .errors import LensError
+
+OPS = ("<=", ">=", "<", ">", "=", "has")
+PREFIXES = {"p": 1e-12, "n": 1e-9, "µ": 1e-6, "μ": 1e-6, "u": 1e-6, "m": 1e-3, "k": 1e3, "K": 1e3, "M": 1e6,
+            "G": 1e9}
+# The units, longest first. "Ohm", "Ohms" and "Ω" are one unit.
+UNITS = {"ohms": "Ohm", "ohm": "Ohm", "ω": "Ohm", "hz": "Hz", "°c": "°C", "v": "V", "a": "A", "f": "F", "h": "H",
+         "w": "W", "s": "s", "%": "%"}
+_UNIT = "|".join(sorted((re.escape(u) for u in UNITS), key=len, reverse=True))
+# A number, then a prefix and a unit, or a unit only, or nothing. A prefix needs a unit:
+# "5 m" is not 5 milli.
+_QUANTITY = re.compile(r"([+-]?\d+(?:\.\d+)?)\s*(?:([pnµμumkKMG])(" + _UNIT + r")\b|(" + _UNIT + r")(?![a-z])|)",
+                       re.IGNORECASE)
+_OP = re.compile(r"\s*(<=|>=|<|>|=|\bhas\b)\s*", re.IGNORECASE)
+_CONDITION = re.compile(r"\s+(?:at|@)\s+|\s*@\s*", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class Quantity:
+    value: float
+    unit: str  # "" for a number with no unit
+
+
+def quantity(text: str) -> Quantity | None:
+    """The first quantity of a text, before "@": "4.5mOhm @ 20A, 8V" gives
+    Quantity(0.0045, "Ohm"). None when the text has no number."""
+    head = text.split("@", 1)[0]
+    match = _QUANTITY.search(head)
+    if not match:
+        return None
+    number, prefix, prefixed_unit, unit = match.groups()
+    # A prefix letter with no unit after it is a unit itself ("1 A"): the regex
+    # takes the prefix group only when a unit follows.
+    scale = 1.0
+    if prefixed_unit:
+        if prefix in PREFIXES:
+            scale = PREFIXES[prefix]
+        elif prefix.lower() in PREFIXES:
+            scale = PREFIXES[prefix.lower()]
+        unit = prefixed_unit
+    return Quantity(float(number) * scale, UNITS.get((unit or "").lower(), ""))
+
+
+def _whole_quantity(text: str) -> Quantity | None:
+    """The quantity when the text is a quantity only ("20 V", "10mOhm"), else None."""
+    match = _QUANTITY.fullmatch(text.strip())
+    return quantity(text) if match else None
+
+
+@dataclass
+class Filter:
+    text: str  # as the user gave it
+    name: str
+    op: str
+    values: list[str]  # more than one: one of them ("=" and "has")
+    condition: str = ""
+    number: Quantity | None = None  # for a numeric filter
+
+    def matches(self, value_text: str) -> bool:
+        """True if a value text of the source agrees with the filter."""
+        if self.op == "has":
+            return any(v.lower() in value_text.lower() for v in self.values)
+        if self.number is not None:
+            q = quantity(value_text)
+            if q is None or (self.number.unit and q.unit and q.unit != self.number.unit):
+                return False
+            a, b = q.value, self.number.value
+            close = abs(a - b) <= 1e-9 * max(abs(a), abs(b), 1e-30)
+            return {"=": close, "<": a < b and not close, "<=": a < b or close, ">": a > b and not close,
+                    ">=": a > b or close}[self.op]
+        return any(v.lower() == value_text.strip().lower() for v in self.values)
+
+
+def parse_filter(text: str) -> Filter:
+    """A Filter from "NAME OP VALUE [at CONDITION]". A LensError for a text with
+    no operator, no name or no value, or a < <= > >= with a value that is not a
+    quantity."""
+    match = _OP.search(text)
+    if not match:
+        raise LensError(f"filter {text!r}: give NAME OP VALUE, with OP one of {' '.join(OPS)} "
+                        "(for example \"Vdss >= 20 V\")")
+    name, op, rest = text[:match.start()].strip(), match[1].lower(), text[match.end():].strip()
+    if not name or not rest:
+        raise LensError(f"filter {text!r}: the name or the value is empty")
+    parts = _CONDITION.split(rest, maxsplit=1)
+    value, condition = parts[0].strip(), (parts[1].strip() if len(parts) > 1 else "")
+    values = [v.strip() for v in value.split("|") if v.strip()] if op in ("=", "has") else [value]
+    if not values:
+        raise LensError(f"filter {text!r}: the value is empty")
+    number = _whole_quantity(values[0]) if len(values) == 1 and op != "has" else None
+    if op in ("<", "<=", ">", ">=") and number is None:
+        raise LensError(f"filter {text!r}: {op} needs a number with its unit, for example 20 V or 10 mOhm")
+    return Filter(text=text.strip(), name=name, op=op, values=values, condition=condition, number=number)
+
+
+@dataclass
+class Parameter:
+    """A parameter of a category at a source, with its values (ID and text)."""
+    id: str
+    name: str
+    values: list[tuple[str, str]] = field(default_factory=list)
+
+
+def resolve(name: str, parameters: list[Parameter], aliases: dict[str, str]) -> Parameter:
+    """The parameter for a filter name: the same name (case is ignored), an
+    alias of the source, or the only parameter whose name holds the text. A
+    LensError for no parameter or for more parameters, with the names."""
+    key = name.strip().lower()
+    by_name = {p.name.lower(): p for p in parameters}
+    if key in by_name:
+        return by_name[key]
+    alias = aliases.get(key.replace(" ", "_"))
+    if alias and alias.lower() in by_name:
+        return by_name[alias.lower()]
+    found = [p for p in parameters if key in p.name.lower()]
+    if len(found) == 1:
+        return found[0]
+    if found:
+        raise LensError(f"filter name {name!r} fits more parameters: " + "; ".join(p.name for p in found)
+                        + ". Give the full name.")
+    raise LensError(f"no parameter {name!r} in this category. The parameters: "
+                    + "; ".join(p.name for p in parameters))
+
+
+def matching_values(flt: Filter, parameter: Parameter) -> list[tuple[str, str]]:
+    """The values (ID, text) of the parameter that agree with the filter."""
+    return [(vid, text) for vid, text in parameter.values if flt.matches(text)]

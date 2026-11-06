@@ -45,8 +45,10 @@ interfaces can change.
   parts of the design and their documents. The team gets it with the repository.
   `project_check` compares it with the parts of the CAD project.
 - **Orderable parts.** The ordering codes of a datasheet, and the lifecycle state,
-  stock and prices from the official API of a distributor (Mouser now). No
+  stock and prices from the official APIs of the distributors (Mouser, DigiKey). No
   scraping.
+- **Parametric search.** Find new parts and replacement parts by their parameters
+  (DigiKey), then read the values that decide in the datasheets.
 - **Team server (optional).** One shared store for a team: the documents, parts,
   facts and the index and element map of each document. Each person keeps a local
   store that works also with no connection, and that synchronizes with the server.
@@ -128,6 +130,7 @@ only the files that exist: make one of them first if you want the block.
 | `codes DOC` | Show the orderable codes of a datasheet |
 | `links MPN` | Show search links for a datasheet, stock, a symbol, a footprint, a 3D model |
 | `find MPN` | Find a part at the distributors (lifecycle, stock, prices) |
+| `pick CATEGORY FILTER ...` | Find parts by their parameters, for example `pick 278 "vdss >= 20 V"` |
 | `stock` | Show the lifecycle state and the stock of each project part |
 | `key NAME` | Save the API key of a distributor, or the token of the team server (`key team`) |
 | `server connect URL` | Connect the store to a team server; `server sync`, `server` (state) |
@@ -138,7 +141,9 @@ All commands and options are in [doc/cli.md](https://github.com/turbyho/datashee
 Each user has a personal API key for each distributor. Get a free Mouser key at
 the [Mouser API Hub](https://www.mouser.com/api-hub/) (the Search API key, not the
 Cart API key), then run
-`datasheet-lens key mouser`. See [doc/distributors.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/distributors.md).
+`datasheet-lens key mouser`. Get a free DigiKey key (a Client ID and a Client
+Secret of a production app) at [developer.digikey.com](https://developer.digikey.com),
+then run `datasheet-lens key digikey`. See [doc/distributors.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/distributors.md).
 
 ## Documentation
 
@@ -150,7 +155,7 @@ Cart API key), then run
 | [doc/agent-workflow.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/agent-workflow.md) | How an agent reads a datasheet, with an example |
 | [doc/projects.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/projects.md) | Project file, layout, sync, team workflow, consistency with the CAD project |
 | [doc/cli.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/cli.md) | Reference of all CLI commands and options |
-| [doc/distributors.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/distributors.md) | Distributor data, API keys, distributor selection, search links |
+| [doc/distributors.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/distributors.md) | Distributor data, API keys, distributor selection, parametric search, search links |
 | [doc/team-server.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/team-server.md) | Team server: installation, accounts and tokens, connection of a store, synchronization, API |
 | [doc/architecture.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/architecture.md) | For developers: design decisions and module map |
 | [doc/development.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/development.md) | Development setup, tests, code and text style |

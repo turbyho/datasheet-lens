@@ -455,12 +455,33 @@ datasheet-lens find [-x] [-p PATH] MPN
 ```
 
 Find a part at the enabled distributors: the concrete MPNs, the lifecycle state, the
-stock, the prices, the package and the datasheet URL. It needs an API key.
+stock, the prices, the package (DigiKey only) and the datasheet URL. It needs an API
+key.
 
 | Argument or option | Effect |
 |---|---|
 | `MPN` | An MPN, or the start of the MPNs (a base part, 3 characters or more). |
 | `-x`, `--exact` | Only this MPN. |
+
+### pick
+
+```text
+datasheet-lens pick [-P] [-a] [-s stock|price] [-n N] [-o N] [-k WORDS] [-p PATH] CATEGORY [FILTER ...]
+```
+
+Find parts by their parameters (a parametric search) at DigiKey. It needs the DigiKey
+key. See [distributors.md](distributors.md), "Find parts by their parameters".
+
+| Argument or option | Effect |
+|---|---|
+| `CATEGORY` | The DigiKey category: its ID or a part of its name. A name that fits more categories gives the list to select from. |
+| `FILTER` | `NAME OP VALUE`, for example `"vdss >= 20 V"` or `"package has 3x3"`. |
+| `-P`, `--params` | Show the parameters of the category, with the number of values and examples. |
+| `-a`, `--all` | Also the parts with no stock. |
+| `-s`, `--sort` | `stock` (most first, the default) or `price` (lowest first). |
+| `-n`, `--limit` | The number of parts, 1 to 50 (default 20). |
+| `-o`, `--offset` | Skip this number of parts (the next page). |
+| `-k`, `--keywords` | Words that the parts must have. |
 
 ### stock
 
@@ -474,16 +495,19 @@ part that is not orderable, that the distributor does not have, or that has no s
 ### dist
 
 ```text
-datasheet-lens dist [--local] [-p PATH] [NAME ...]
+datasheet-lens dist [--local] [--site CC] [--currency CUR] [-p PATH] [NAME ...]
 ```
 
 Show or set the distributors that datasheet-lens asks. With no option and no `NAME`,
-show the enabled distributors and the state of their keys.
+show the enabled distributors, the state of their keys, and the services of each
+distributor.
 
 | Argument or option | Effect |
 |---|---|
-| `NAME` | The distributors, for example `mouser`. They become the global setting. |
+| `NAME` | The distributors, for example `mouser digikey`. They become the global setting. |
 | `--local` | Set the names in the project file. With no `NAME`, remove the setting from the project file: the project then uses the global setting. |
+| `--site CC` | The country of the prices and the stock, for example `CZ` (global, default `US`). DigiKey uses it. |
+| `--currency CUR` | The currency of the prices, for example `CZK` (global, default `USD`). DigiKey uses it. |
 
 ### server
 
@@ -512,14 +536,16 @@ for the key and does not show it. With no `NAME`, show where each key is (no val
 
 | Argument or option | Effect |
 |---|---|
-| `NAME` | `mouser` (the distributor), or `team` (the token of the team server, see [team-server.md](team-server.md)). |
-| `--delete` | Remove the saved key from the key store and from the key file. |
+| `NAME` | `mouser` or `digikey` (a distributor), or `team` (the token of the team server, see [team-server.md](team-server.md)). |
+| `--delete` | Remove the saved key from the key store and from the key file. For `digikey`: the two parts. |
 
-For Mouser, use the key of the Search API, not the key of the Cart API. See
+For Mouser, use the key of the Search API, not the key of the Cart API. For DigiKey,
+the command asks for the Client ID and then for the Client Secret. See
 [distributors.md](distributors.md).
 
 When the input is not a terminal, the command reads the key from the first line of
-the input.
+the input (for DigiKey: the Client ID from the first line, the Client Secret from the
+second line).
 
 ### links
 

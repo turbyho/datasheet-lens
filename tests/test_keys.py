@@ -50,9 +50,35 @@ def test_key_in_the_key_store(monkeypatch, capsys):
     assert keys.set_key("mouser", " k1 ") == "the key store of the system"
     assert ring.data == {("datasheet-lens", "mouser"): "k1"} and keys._read_file() == {}
     assert keys.get_key("mouser") == "k1"
-    assert keys.key_sources() == {"mouser": "the key store of the system", "team": "not set"}
+    unset = {"digikey-id": "not set", "digikey-secret": "not set", "team": "not set"}
+    assert keys.key_sources() == {"mouser": "the key store of the system", **unset}
     keys.delete_key("mouser")
-    assert keys.get_key("mouser") == "" and keys.key_sources() == {"mouser": "not set", "team": "not set"}
+    assert keys.get_key("mouser") == "" and keys.key_sources() == {"mouser": "not set", **unset}
+
+
+def test_digikey_credential_is_two_keys(monkeypatch, capsys):
+    """"key digikey" asks for the Client ID and the Client Secret, and saves the
+    two in the key store. The credential is complete only with the two."""
+    ring = FakeRing()
+    monkeypatch.setattr(keys, "_keyring", lambda: ring)
+    assert keys.get_credential("digikey") == "" and keys.credential_source("digikey") == "not set"
+    monkeypatch.setattr("sys.stdin", __import__("io").StringIO("id-123\nsecret-456\n"))
+    assert main(["key", "digikey"]) == 0
+    out = capsys.readouterr().out
+    assert "digikey-id: saved in the key store" in out and "digikey-secret: saved in the key store" in out
+    assert keys.get_credential("digikey") == ("id-123", "secret-456")
+    assert ring.data == {("datasheet-lens", "digikey-id"): "id-123", ("datasheet-lens", "digikey-secret"): "secret-456"}
+    assert "id-123" not in out and "secret-456" not in out
+    monkeypatch.setenv("DATASHEET_LENS_DIGIKEY_ID", "env-id")
+    assert keys.get_credential("digikey") == ("env-id", "secret-456")
+    assert keys.credential_source("digikey") == ("Client ID environment variable DATASHEET_LENS_DIGIKEY_ID; "
+                                                 "Client Secret the key store of the system")
+    monkeypatch.delenv("DATASHEET_LENS_DIGIKEY_ID")
+    assert main(["key", "digikey", "--delete"]) == 0
+    assert ring.data == {} and keys.get_credential("digikey") == ""
+    ring.data[("datasheet-lens", "digikey-id")] = "only-id"
+    assert keys.get_credential("digikey") == ""  # a half credential is no credential
+    assert main(["key", "nokey"]) == 2
 
 
 def test_token_of_the_team_server(monkeypatch, capsys):

@@ -114,7 +114,8 @@ each change of the CAD project, do these steps:
    project_check again: it must give no missing, extra or different part.
 6. project_availability: tell the user about each part that is not orderable
    or has no stock, and give the user each note about a missing API key.
-   search_distributors gives the concrete MPNs of a part.
+   search_distributors gives the concrete MPNs of a part. find_parts finds new
+   parts and replacements.
 
 The store identifies a document by its SHA-256: add_document of a file that it
 has copies nothing and gives the reference. Do not match a file to a document
@@ -134,8 +135,8 @@ Find the content step by step:
 4. search_text: a word, a register name or a value, with page and line.
 5. get_page_map: the elements of one page, with IDs and regions.
 6. get_page_image with an element ID, a caption (all pages of a table) or a
-   region (300 to 600 dpi): read the values here. For a table that fills the page, a full page at max_px 1600 is
-   enough.
+   region (300 to 600 dpi): read the values here. A table that fills the page:
+   a full page at max_px 1600.
 7. save_fact: save each value that the work uses, with its page and element.
 """
 
@@ -815,16 +816,17 @@ def part_links(
 ) -> str:
     """Search links for a part: datasheet, price and stock (DigiKey, Mouser,
     Farnell, LCSC, Octopart, Findchips), and symbol, footprint and 3D model
-    (Component Search Engine, SnapMagic, Ultra Librarian). Use them when the store
-    and the CAD project have no datasheet, and for the CAD files. datasheet-lens
-    does not open these pages: open one with a web tool, or give the links to the
-    user. A datasheet that you find: add_document with its URL. Gives one line
-    for each site."""
-    from .links import format_links
+    (Component Search Engine, SnapMagic, Ultra Librarian). With a DigiKey key,
+    also the direct links of DigiKey to the CAD models and the datasheets of the
+    MPN. Use them when the store and the CAD project have no datasheet, and for
+    the CAD files. datasheet-lens does not open these pages: open one with a web
+    tool, or give the links to the user (a CAD site needs a free account for the
+    download). A datasheet that you find: add_document with its URL. Gives one
+    line for each link."""
+    from .distributors import link_lines
 
-    if not mpn.strip():
-        raise LensError("the MPN is empty")
-    return "\n".join(format_links(mpn))
+    # The global distributor list: the links do not need a project file.
+    return "\n".join(link_lines(mpn))
 
 
 @tool
@@ -852,6 +854,55 @@ def search_distributors(
     from .project import load_optional
 
     return "\n".join(search_lines(mpn, exact, load_optional(path or None)))
+
+
+Category = Annotated[str, Field(description=(
+    "The category at the distributor: its ID or a part of its name, for example 278 or \"Single FETs, "
+    "MOSFETs\". A name that fits more categories gives the list to select from."))]
+
+
+@tool
+def find_parts(
+        category: Category,
+        filters: Annotated[list[str], Field(description=(
+            "The filters, each \"NAME OP VALUE\". OP: = < <= > >= has. NAME: a parameter of part_parameters "
+            "(full name, short name or a unique part of the name). = and has accept more values with | "
+            "(one of them). Examples: \"vdss >= 20 V\", \"channel = N-Channel\", \"package has 3x3|3.3x3.3\", "
+            "\"drive <= 2.5V\". A condition after \"at\" (\"rds_on <= 10 mOhm at Vgs=2.5V\") is not "
+            "applied: read that value in the datasheet."))] = [],
+        keywords: Annotated[str, Field(description="Words that the parts must have. Usually empty.")] = "",
+        in_stock: Annotated[bool, Field(description="True: only parts with stock.")] = True,
+        sort: Annotated[str, Field(description="stock (most first) or price (lowest first).")] = "stock",
+        limit: Annotated[int, Field(description="The number of parts, 1 to 50.")] = 20,
+        offset: Annotated[int, Field(description="Skip this number of parts (the next page).")] = 0,
+        path: ProjectPath = "") -> str:
+    """Find new parts or replacement parts by their parameters (a parametric
+    search) at a distributor with an official parameter API (DigiKey). Call
+    part_parameters first to get the names and values of the parameters. Gives
+    each filter with its status, and for each part: MPN, manufacturer,
+    distributor number, lifecycle state, stock, price, the filtered parameters,
+    datasheet and product URL. A numeric filter compares the first number of a
+    value ("2.5V, 8V" gives 2.5 V). A distributor keeps one value of a
+    parameter at its own conditions (DigiKey: RDS(on) at the highest drive
+    voltage): read each value that the design needs in the datasheet
+    (add_document, get_page_image) and save it with save_fact. With no key, the
+    result has the steps for the user: give them to the user."""
+    from .distributors import pick_lines
+    from .project import load_optional
+
+    return "\n".join(pick_lines(category, filters, keywords, in_stock, sort, limit, offset,
+                                load_optional(path or None)))
+
+
+@tool
+def part_parameters(category: Category, path: ProjectPath = "") -> str:
+    """The parameters of a part category at a distributor with a parameter API
+    (DigiKey), for the filters of find_parts: the full name, the short name,
+    the number of values and examples of the values. Use it before find_parts."""
+    from .distributors import parameter_lines
+    from .project import load_optional
+
+    return "\n".join(parameter_lines(category, load_optional(path or None)))
 
 
 @tool

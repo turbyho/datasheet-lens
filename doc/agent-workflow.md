@@ -197,6 +197,8 @@ search links:
 - Datasheet, price and stock: DigiKey, Mouser, Farnell, LCSC, Octopart, Findchips.
 - Symbol, footprint and 3D model: Component Search Engine, SnapMagic, Ultra
   Librarian.
+- With a DigiKey key: the direct links of DigiKey to the CAD models and the
+  datasheets of the MPN.
 
 datasheet-lens does not open these pages. The agent opens one with a web tool, or
 gives the links to the user. For a datasheet that it finds, the agent calls
