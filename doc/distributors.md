@@ -161,6 +161,11 @@ The MCP tool is `search_distributors(mpn, exact)`. The result gives one line for
 orderable part, with its source. Use it to select the concrete MPN of the BOM, and to
 make sure that it can be ordered. The start of an MPN must have 3 characters or more.
 
+Each line gives the part number of the distributor (for example
+`Mouser 511-USBLC6-2SC6`, `DigiKey 497-5235-1-ND`, `JLCPCB C7519`). Give this number
+to `adopt` (see [Take a found part](#take-a-found-part)). An MPN of more manufacturers
+(a second source, or a copy of a part) gives one line for each manufacturer.
+
 ## Find parts by their parameters
 
 The parametric search finds new parts or replacement parts by their parameters. Each
@@ -331,7 +336,13 @@ does these steps:
 2. It gets the datasheet. A datasheet of the part, or of its base part, in the store
    comes first: the tool does not download a second copy. Else it downloads one: a
    URL on the site of the manufacturer comes first, a copy at a distributor next. The
-   tool asks the other sources for URLs only when it needs them. The result tells the
+   tool asks the other sources for URLs only when it needs them. It uses only the
+   URLs of the parts of the same manufacturer: a copy of a part with the same MPN has
+   its own datasheet. The manufacturer registry compares the names (see
+   `datasheet-lens maker` in [cli.md](cli.md)). The result gives the names of the
+   manufacturers whose URLs the tool did not use. When one of them is a different
+   name of the manufacturer, record it with `datasheet-lens maker alias NAME OTHER`.
+   The result tells the
    URL that it used, and the URLs that failed. When no URL gives a PDF, the part comes
    with no datasheet: find it with `links`.
 3. It adds the document and the part to the store, and in a project folder to the
@@ -439,8 +450,10 @@ The MCP tool is `part_links(mpn)`. It gives one search link for each site:
 
 When DigiKey is in the global distributor list and has a key, the result also gives
 the direct links of DigiKey for the MPN (`Direct links (Source: DigiKey)`). They go to
-the CAD models at SnapMagic and Ultra Librarian, and to the datasheets. The list of
-the project file has no effect here.
+the CAD models at SnapMagic and Ultra Librarian, and to the datasheets. An MPN of more
+manufacturers gives the links of each manufacturer, with its name
+(`Direct links (Source: DigiKey, STMicroelectronics)`). The list of the project file
+has no effect here.
 
 datasheet-lens does not open these links. A person or an agent with a web tool opens
 them. The sites for the CAD files need a free account for the download. For a

@@ -86,7 +86,7 @@ def test_datasheet_url_order(jlc, downloads, monkeypatch):  # noqa: F811
 
     def others(c, source, project=None):
         calls.append(c["mpn"])
-        return ["https://www.lcsc.com/b.pdf", "https://www.ti.com/a.pdf"]
+        return ["https://www.lcsc.com/b.pdf", "https://www.ti.com/a.pdf"], []
 
     monkeypatch.setattr(adopt_module, "_other_urls", others)
     # A URL of the manufacturer: first, and the other sources are asked only when it fails.
@@ -97,11 +97,11 @@ def test_datasheet_url_order(jlc, downloads, monkeypatch):  # noqa: F811
     urls = adopt_module.datasheet_urls({"mpn": "X", "datasheet": "https://jlcpcb.com/x.pdf"}, "jlcpcb")
     assert list(urls) == ["https://www.ti.com/a.pdf", "https://jlcpcb.com/x.pdf", "https://www.lcsc.com/b.pdf"]
     monkeypatch.setattr(adopt_module, "datasheet_urls",
-                        lambda c, s, p=None: iter(["https://ti.com/missing.pdf", "https://www.lcsc.com/ds.pdf"]))
+                        lambda c, s, p=None, n=None: iter(["https://ti.com/missing.pdf", "https://www.lcsc.com/ds.pdf"]))
     text = "\n".join(adopt_module.adopt("jlcpcb", "C1002")["lines"])
     assert "datasheet: https://www.lcsc.com/ds.pdf" in text and "failed before: https://ti.com/missing.pdf" in text
     assert "project: none (not in a project folder)" in text
-    monkeypatch.setattr(adopt_module, "datasheet_urls", lambda c, s, p=None: iter([]))
+    monkeypatch.setattr(adopt_module, "datasheet_urls", lambda c, s, p=None, n=None: iter([]))
     result = adopt_module.adopt("jlcpcb", "C1004")
     assert result["document"] is None
     assert "datasheet: NOT ADDED. No source gives a datasheet URL" in "\n".join(result["lines"])
@@ -155,7 +155,7 @@ def test_review_fixes(jlc, downloads, tmp_path, monkeypatch):  # noqa: F811
 
     monkeypatch.setattr(fetch, "downloaded", broken_then_good)
     monkeypatch.setattr(adopt_module, "datasheet_urls",
-                        lambda c, s, p=None: iter(["https://ti.com/broken.pdf", "https://www.lcsc.com/good.pdf"]))
+                        lambda c, s, p=None, n=None: iter(["https://ti.com/broken.pdf", "https://www.lcsc.com/good.pdf"]))
     text = "\n".join(adopt_module.adopt("jlcpcb", "C1004")["lines"])
     assert "datasheet: https://www.lcsc.com/good.pdf" in text and "failed before: https://ti.com/broken.pdf" in text
 
@@ -169,3 +169,38 @@ def fetch_pdf(tmp_path, name="other.pdf"):
     pdf.new_page(200, 200)
     pdf.save(str(path))
     return path
+
+
+def test_datasheets_of_other_sources_only_of_the_same_manufacturer(jlc, downloads, monkeypatch):  # noqa: F811
+    """An MPN can have parts of more manufacturers (a second source, a copy),
+    each with its own datasheet: a different source gives only the URLs of the
+    parts of the same manufacturer (a live call, 2026-11-07: a Mouser part got
+    the first JLCPCB URL of its MPN, which can be the URL of a copy)."""
+    from datasheet_lens import distributors
+
+    offers = [distributors.Offer("Mouser", "FET-A", "Maker A", datasheet_url="https://a.example/fet-a.pdf"),
+              distributors.Offer("Mouser", "FET-A", "Maker Z", datasheet_url="https://z.example/fet-a.pdf"),
+              distributors.Offer("Mouser", "FET-A", "", datasheet_url="https://unknown.example/fet-a.pdf")]
+    monkeypatch.setattr(distributors, "keys_of", lambda project=None: ({"mouser": "key"}, []))
+    monkeypatch.setattr(distributors, "offers_of", lambda name, mpn, exact, cred: offers)
+    # The JLCPCB library has FET-A of Maker A (https://x/FET-A.pdf).
+    assert adopt_module._other_urls({"mpn": "FET-A", "manufacturer": "maker a"}, "digikey") == (
+        ["https://a.example/fet-a.pdf", "https://x/FET-A.pdf"], ["Mouser: Maker Z"])
+    assert adopt_module._other_urls({"mpn": "FET-A", "manufacturer": "Maker Z"}, "digikey") == (
+        ["https://z.example/fet-a.pdf"], ["Mouser: Maker A", "JLCPCB: Maker A"])
+    assert adopt_module._other_urls({"mpn": "FET-A", "manufacturer": ""}, "digikey") == ([], [])
+    # The result names the URLs that the tool did not use, for the user to decide.
+    # A part of Mouser with a datasheet URL at Mouser: the other sources are asked.
+    monkeypatch.setattr(distributors, "keys_of", lambda project=None: ({"digikey": "key"}, []))
+    monkeypatch.setattr(distributors, "offers_of", lambda name, mpn, exact, cred: [
+        distributors.Offer("DigiKey", "FET-A", "Maker Z", datasheet_url="https://z.example/fet-a.pdf")])
+    monkeypatch.setattr(adopt_module, "_part", lambda source, number, mpn: {
+        "mpn": "FET-A", "manufacturer": "Maker A", "package": "", "number": "1-FET-A", "library": "",
+        "url": "https://www.mouser.com/p/1", "datasheet": "https://www.mouser.com/ds/fet-a.pdf"})
+    text = "\n".join(adopt_module.adopt("mouser", "1-FET-A")["lines"])
+    assert "datasheet: https://x/FET-A.pdf" in text  # the URL of Maker A in the JLCPCB library
+    assert ("datasheet URLs not used: the parts of other manufacturers with the MPN FET-A: DigiKey: Maker Z. When "
+            "a name is a different name of Maker A, tell the user: record it with manufacturer_relation") in text
+    # An offer with no number of the source cannot be a purchase source.
+    with pytest.raises(LensError, match="Mouser gives no part number for FET-A"):
+        adopt_module._one([distributors.Offer("Mouser", "FET-A", "Maker A")], "FET-A", "Mouser")

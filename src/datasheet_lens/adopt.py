@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import re
+import sqlite3
 from collections.abc import Iterator
 from urllib.parse import urlparse
 
@@ -79,22 +80,21 @@ def _digikey(number: str, mpn: str) -> dict:
         from .distributors import no_key_note
 
         raise LensError(no_key_note("digikey"))
-    product = digikey.product(number or mpn, credential)
-    if product is None:
-        raise LensError(f"DigiKey has no part {number or mpn}")
+    if not number:
+        # One offer for each manufacturer of the MPN.
+        return _one(digikey.offers(mpn, True, credential), mpn, "DigiKey")
+    product = digikey.product(number, credential)
+    # The number names one packaging of the product (cut tape, reel): it stays.
+    numbers = {str(v.get("DigiKeyProductNumber") or "").lower(): str(v.get("DigiKeyProductNumber") or "")
+               for v in (product or {}).get("ProductVariations") or []}
+    if number.lower() not in numbers:
+        if product is not None or digikey.offers(number, True, credential):
+            raise LensError(f"{number!r} is not a DigiKey number of a product: give an MPN as mpn")
+        raise LensError(f"DigiKey has no part {number}")
     _, currency = digikey.locale()
     offer = digikey.offer_of(product, currency)
-    if number:
-        # The number names one packaging of the product (cut tape, reel): it stays.
-        numbers = {str(v.get("DigiKeyProductNumber") or "").lower(): str(v.get("DigiKeyProductNumber") or "")
-                   for v in product.get("ProductVariations") or []}
-        if number.lower() not in numbers:
-            raise LensError(f"{number!r} is not a DigiKey number of a product: give an MPN as mpn")
-        number = numbers[number.lower()]
-    elif offer.mpn.lower() != mpn.lower():
-        raise LensError(f"DigiKey gives {offer.mpn} for {mpn}, not the same MPN: give the DigiKey number")
     return {"mpn": offer.mpn, "manufacturer": offer.manufacturer, "package": offer.package,
-            "number": number or offer.distributor_pn, "url": offer.product_url, "library": "",
+            "number": numbers[number.lower()], "url": offer.product_url, "library": "",
             "datasheet": offer.datasheet_url}
 
 
@@ -111,11 +111,18 @@ def _mouser(number: str, mpn: str) -> dict:
 
 
 def _one(offers: list, text: str, where: str) -> dict:
+    """The part of the one offer, or a LensError: no offer, or more offers (with
+    their numbers to select from). An offer with no number of the source (a
+    DigiKey product with no packaging) cannot be a purchase source."""
     if not offers:
         raise LensError(f"{where} has no part {text}")
+    offers = [o for o in offers if o.distributor_pn]
+    if not offers:
+        raise LensError(f"{where} gives no part number for {text}: take the part from a different source")
     if len(offers) > 1:
         raise LensError(f"{where} has more parts for {text}. Give the number of one: "
-                        + "; ".join(f"{o.distributor_pn} ({o.mpn}, {o.manufacturer})" for o in offers[:10]))
+                        + "; ".join(f"{o.distributor_pn} ({o.mpn}, {o.manufacturer or 'manufacturer unknown'})"
+                                    for o in offers[:10]))
     o = offers[0]
     return {"mpn": o.mpn, "manufacturer": o.manufacturer, "package": o.package, "number": o.distributor_pn,
             "url": o.product_url, "library": o.library, "datasheet": o.datasheet_url}
@@ -126,38 +133,58 @@ def _is_distributor(url: str) -> bool:
     return any(h in host for h in DISTRIBUTOR_HOSTS)
 
 
-def _other_urls(c: dict, source: str, project=None) -> list[str]:
-    """The datasheet URLs of the other sources for the MPN. An error of a
-    source only leaves out its URL."""
+def _other_urls(c: dict, source: str, project=None) -> tuple[list[str], list[str]]:
+    """The datasheet URLs of the other sources for the MPN, only of the parts
+    of the same manufacturer: an MPN can have parts of more manufacturers (a
+    second source, a copy), each with its own datasheet. The manufacturer
+    registry compares the names. It does not learn a name by itself: a
+    distributor name that it does not know is a different manufacturer here.
+    Thus the second list gives the names of the URLs that the tool did not use
+    ("Mouser: Vishay Semiconductors"), for the user to decide. A part with no
+    manufacturer gets no URL of a different source. An error of a source only
+    leaves out its URL."""
     from .distributors import jlcpcb_ready, keys_of, offers_of
+    from .store import Store
 
-    urls: list[str] = []
+    found = []
     keys, _ = keys_of(project)
     for name, cred in keys.items():
         if name == source:
             continue
         try:
-            urls += [o.datasheet_url for o in offers_of(name, c["mpn"], True, cred) if o.datasheet_url]
+            found += offers_of(name, c["mpn"], True, cred)
         except (LensError, Unavailable):
             continue
     if source != "jlcpcb" and jlcpcb_ready():
         from . import jlcpcb
 
-        with contextlib.suppress(LensError):
-            urls += [o.datasheet_url for o in jlcpcb.offers(c["mpn"], True) if o.datasheet_url]
-    return urls
+        with contextlib.suppress(LensError, sqlite3.Error):
+            found += jlcpcb.offers(c["mpn"], True)
+    found = [o for o in found if o.datasheet_url and o.manufacturer.strip()]
+    if not found or not c["manufacturer"].strip():
+        return [], []
+    with Store() as store:
+        same = [store.same_maker(o.manufacturer, c["manufacturer"]) for o in found]
+    urls = [o.datasheet_url for o, s in zip(found, same) if s]
+    others = list(dict.fromkeys(f"{o.source}: {o.manufacturer}" for o, s in zip(found, same) if not s))
+    return urls, others
 
 
-def datasheet_urls(c: dict, source: str, project=None) -> Iterator[str]:
+def datasheet_urls(c: dict, source: str, project=None, not_used: list[str] | None = None) -> Iterator[str]:
     """The datasheet URLs in their order: a URL on the site of the manufacturer
     first. The other sources are asked only when the URL of the source is not
-    on the site of the manufacturer, or when it fails."""
+    on the site of the manufacturer, or when it fails. not_used gets the
+    sources and the names of the manufacturers whose URLs the tool did not use
+    (see _other_urls)."""
     seen: set[str] = set()
     first = (c.get("datasheet") or "").strip()
     if first and not _is_distributor(first):
         seen.add(first)
         yield first
-    others = [u.strip() for u in _other_urls(c, source, project) if u.strip()]
+    urls, names = _other_urls(c, source, project)
+    if not_used is not None:
+        not_used += names
+    others = [u.strip() for u in urls if u.strip()]
     ordered = [u for u in others if not _is_distributor(u)] + ([first] if first else []) \
         + [u for u in others if _is_distributor(u)]
     for url in ordered:
@@ -204,16 +231,30 @@ def adopt(source: str, number: str = "", mpn: str = "", base: str = "", category
         lines.append(f"datasheet: in the store already (document {known.sha256[:12]}, {known.filename})")
         return _commit(c, source, base, category, project, lock, lines, known, new=False)
     failed: list[str] = []
-    for url in datasheet_urls(c, source, project):
+    not_used: list[str] = []
+    for url in datasheet_urls(c, source, project, not_used):
         doc = _download(url, lock, failed)
         if doc is not None:
             lines.append(f"datasheet: {url} (document {doc.sha256[:12]}, {doc.pages} pages)"
                          + (f"; failed before: {'; '.join(failed)}" if failed else ""))
+            lines += _not_used_line(c, not_used)
             return _commit(c, source, base, category, project, lock, lines, doc, new=True)
     lines.append("datasheet: NOT ADDED. " + ("The URLs that failed: " + "; ".join(failed) if failed
                                              else "No source gives a datasheet URL.")
                  + " Find the datasheet (part_links) and add it with add_document.")
+    lines += _not_used_line(c, not_used)
     return _commit(c, source, base, category, project, lock, lines, None, new=False)
+
+
+def _not_used_line(c: dict, not_used: list[str]) -> list[str]:
+    """The line about the datasheet URLs of other manufacturers, or none: the
+    user decides if a name is a different name of the manufacturer."""
+    if not not_used:
+        return []
+    return [f"datasheet URLs not used: the parts of other manufacturers with the MPN {c['mpn']}: "
+            f"{'; '.join(not_used)}. When a name is a different name of {c['manufacturer']}, tell the user: "
+            "record it with manufacturer_relation (CLI: datasheet-lens maker alias NAME OTHER). Then adopt uses "
+            "its URLs."]
 
 
 def _download(url: str, lock, failed: list[str]):

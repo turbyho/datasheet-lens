@@ -381,12 +381,15 @@ def not_orderable(offer: Offer) -> str:
 
 
 def format_offer(o: Offer) -> str:
-    """One line for an offer: MPN, manufacturer, lifecycle (Mouser gives it only
-    for some parts), stock, prices, the package when the distributor gives it,
-    and the datasheet URL."""
+    """One line for an offer: MPN, manufacturer, the number of the distributor
+    (adopt_part takes it), lifecycle (Mouser gives it only for some parts),
+    stock, prices, the package when the distributor gives it, and the datasheet
+    URL."""
     prices = ", ".join(f"{q}: {p}" for q, p in o.prices[:3])
     warn = not_orderable(o)
-    parts = [f"{o.mpn} ({o.manufacturer})"]
+    parts = [f"{o.mpn} ({o.manufacturer or 'manufacturer unknown'})"]
+    if o.distributor_pn:
+        parts.append(f"{o.source} {o.distributor_pn}")
     if o.lifecycle or warn:
         parts.append(f"state: {o.lifecycle or 'discontinued'}" + (f" [NOT ORDERABLE: {warn}]" if warn else "")
                      + (" [the distributor does not sell it now; not a lifecycle state of the manufacturer]"

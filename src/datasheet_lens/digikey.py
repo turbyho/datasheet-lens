@@ -492,8 +492,9 @@ def offer_of(product: dict, currency: str):
 
 
 def product(number: str, credential=None) -> dict | None:
-    """The DigiKey product of a DigiKey number or an MPN (productdetails), or
-    None when DigiKey has none."""
+    """The DigiKey product of a DigiKey number (productdetails), or None when
+    DigiKey has none. For an MPN, use offers: productdetails gives HTTP 404 also
+    for an MPN of more products."""
     try:
         data = call("GET", f"/search/{urllib.parse.quote(number.strip(), safe='')}/productdetails",
                     credential=credential)
@@ -503,9 +504,15 @@ def product(number: str, credential=None) -> dict | None:
     return found if isinstance(found, dict) else None
 
 
-def offers(mpn: str, exact: bool = True, credential=None) -> list:
+def offers(mpn: str, exact: bool = True, credential=None, timeout: float = TIMEOUT) -> list:
     """The DigiKey offers of an MPN: exact, or each part whose MPN starts with it
-    (up to 50). An MPN that DigiKey does not have gives no offer."""
+    (up to 50). One offer for each product: an MPN of more manufacturers (a
+    second source, a copy) gives one offer for each manufacturer. An MPN that
+    DigiKey does not have gives no offer.
+
+    The keyword search gives the products, also for an exact MPN: productdetails
+    gives HTTP 404 for an MPN of more products ("Duplicate Products found", a
+    live call, 2026-11-07), thus it is only for a DigiKey number."""
     from .distributors import MIN_PREFIX
 
     mpn = mpn.strip()
@@ -519,20 +526,24 @@ def offers(mpn: str, exact: bool = True, credential=None) -> list:
     cached = _offers.get(key)
     if cached and cached[0] > now - CACHE_SECONDS:
         return list(cached[1])
-    if exact:
-        found = product(mpn, credential)
-        products = [found] if found is not None else []
-    else:
-        data = call("POST", "/search/keyword", {"Keywords": mpn, "Limit": MAX_LIMIT},
-                    query={"includes": "Products,ExactMatches,ProductsCount"}, credential=credential)
-        data = data if isinstance(data, dict) else {}
-        products, seen = [], set()
-        for p in (data.get("ExactMatches") or []) + (data.get("Products") or []):
-            number = str(p.get("ManufacturerProductNumber") or "")
-            if number.upper().startswith(mpn.upper()) and number not in seen:
-                seen.add(number)
-                products.append(p)
-    result = [offer_of(p, currency) for p in products if p.get("ManufacturerProductNumber")]
+    data = call("POST", "/search/keyword", {"Keywords": mpn, "Limit": MAX_LIMIT},
+                query={"includes": "Products,ExactMatches,ProductsCount"}, credential=credential, timeout=timeout)
+    data = data if isinstance(data, dict) else {}
+    products, seen = [], set()
+    for p in (data.get("ExactMatches") or []) + (data.get("Products") or []):
+        number = str(p.get("ManufacturerProductNumber") or "").strip().upper()
+        if not (number == mpn.upper() if exact else number.startswith(mpn.upper())):
+            continue
+        # One entry for each product: the two lists can give the same product. Its
+        # page URL ends with the product ID of DigiKey. Two products can have the
+        # same MPN and manufacturer (a product of a marketplace seller), each with
+        # its own DigiKey numbers and stock.
+        maker = p.get("Manufacturer") or {}
+        identity = str(p.get("ProductUrl") or "").strip() or (number, str(maker.get("Id") or maker.get("Name") or ""))
+        if identity not in seen:
+            seen.add(identity)
+            products.append(p)
+    result = [offer_of(p, currency) for p in products]
     if len(_offers) > 500:
         _offers.clear()
     _offers[key] = (now, result)
@@ -547,15 +558,41 @@ MEDIA_TIMEOUT = 15.0
 
 def media_lines(mpn: str, credential=None) -> list[str]:
     """The direct links of DigiKey for an MPN: the CAD models (SnapMagic, Ultra
-    Librarian) and the datasheets. datasheet-lens does not download them."""
-    try:
-        data = call("GET", f"/search/{urllib.parse.quote(mpn.strip(), safe='')}/media", credential=credential,
-                    timeout=MEDIA_TIMEOUT)
-    except NotFound:
-        return []
+    Librarian) and the datasheets. datasheet-lens does not download them. An
+    MPN of more manufacturers gives the links of each one, with its name: the
+    request for the media uses the DigiKey number of each product (with the MPN,
+    DigiKey gives HTTP 404 for an MPN of more products)."""
+    # One request for each manufacturer: the products of one manufacturer (a
+    # product of a marketplace seller) have the same media. A product with a
+    # DigiKey number first.
+    chosen: dict[str, object] = {}
+    for offer in sorted(offers(mpn, True, credential, timeout=MEDIA_TIMEOUT), key=lambda o: not o.distributor_pn):
+        chosen.setdefault(offer.manufacturer, offer)
     lines = []
-    for item in (data or {}).get("MediaLinks") or [] if isinstance(data, dict) else []:
-        kind = MEDIA.get(str(item.get("MediaType") or ""))
-        if kind and item.get("Url"):
-            lines.append(f"  {kind}: {str(item.get('Title') or '').strip()}: {url(item['Url'])}")
-    return ["Direct links (Source: DigiKey):"] + lines if lines else []
+    for offer in chosen.values():
+        # A product with no packaging has no DigiKey number: the MPN names it when
+        # it is the only product.
+        number = offer.distributor_pn or (mpn.strip() if len(chosen) == 1 else "")
+        if not number:
+            continue
+        head = "Direct links (Source: DigiKey" + (f", {offer.manufacturer or 'manufacturer unknown'})"
+                                                  if len(chosen) > 1 else ")")
+        try:
+            data = call("GET", f"/search/{urllib.parse.quote(number, safe='')}/media", credential=credential,
+                        timeout=MEDIA_TIMEOUT)
+        except NotFound:
+            continue
+        except Unavailable as e:  # the next requests fail too: do not wait for each one
+            lines.append(f"{head}: not checked: {e}")
+            break
+        except LensError as e:
+            lines.append(f"{head}: not checked: {e}")
+            continue
+        links = []
+        for item in (data or {}).get("MediaLinks") or [] if isinstance(data, dict) else []:
+            kind = MEDIA.get(str(item.get("MediaType") or ""))
+            if kind and item.get("Url"):
+                links.append(f"  {kind}: {str(item.get('Title') or '').strip()}: {url(item['Url'])}")
+        if links:
+            lines += [f"{head}:"] + links
+    return lines

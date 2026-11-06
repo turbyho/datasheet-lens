@@ -84,13 +84,23 @@ def api(monkeypatch):
                 {"MediaType": "Product Photos", "Title": "photo", "Url": "https://example.com/p.jpg"},
                 {"MediaType": "EDA Models", "Title": "FAKE-FET-1 by SnapEDA",
                  "Url": "https://www.snapeda.com/parts/FAKE-FET-1/view-part/?ref=digikey"}]}).encode())
+        known = [p for v in state.get("products", {}).values() for p in (v if isinstance(v, list) else [v])]
         if request.full_url.endswith("/productdetails"):
-            mpn = urllib.parse.unquote(request.full_url.split("/search/")[1].split("/")[0])
-            product = state.get("products", {}).get(mpn)
-            if product is None:
+            # A DigiKey number, in upper or lower case. As DigiKey: an MPN of more
+            # products gives HTTP 404.
+            number = urllib.parse.unquote(request.full_url.split("/search/")[1].split("/")[0]).upper()
+            found = [p for p in known
+                     if number in [v["DigiKeyProductNumber"].upper() for v in p["ProductVariations"]]]
+            if len(found) != 1:
                 raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(b"{}"))
-            return Answer(json.dumps({"Product": product}).encode())
+            return Answer(json.dumps({"Product": found[0]}).encode())
         query = urllib.parse.urlparse(request.full_url).query
+        if "ExactMatches" in query:  # the offers of an MPN: the keyword search
+            word = json.loads(body)["Keywords"].upper()
+            found = known + [PRODUCT]
+            return Answer(json.dumps({
+                "ExactMatches": [p for p in found if p["ManufacturerProductNumber"].upper() == word],
+                "Products": [p for p in found if word in p["ManufacturerProductNumber"].upper()]}).encode())
         if "includes" in query:  # a search with filters
             return Answer(json.dumps({"ProductsCount": 1, "Products": [PRODUCT]}).encode())
         return Answer(json.dumps(FILTERS).encode())
@@ -378,3 +388,87 @@ def test_search_marks_parts_that_are_not_orderable(api):
     assert "state: Obsolete [NOT ORDERABLE: Obsolete]" in line
     line = digikey.product_line(dict(PRODUCT, ProductStatus={"Status": "Discontinued at Digi-Key"}), [], "USD")
     assert "[DigiKey does not sell it now" in line and "NOT ORDERABLE" not in line
+
+
+def _second_source(mpn, maker, number, stock):
+    """A product of the MPN from a different manufacturer (a second source)."""
+    return dict(_product(mpn, stock=stock), Manufacturer={"Id": sum(map(ord, maker)), "Name": maker},
+                ProductUrl=f"https://www.digikey.com/p/{number}",
+                ProductVariations=[{"DigiKeyProductNumber": number, "PackageType": {"Name": "Cut Tape (CT)"}}])
+
+
+def test_an_mpn_of_more_manufacturers(api, store_home, tmp_path):
+    """DigiKey gives HTTP 404 in productdetails for an MPN of more products: the
+    keyword search gives one offer for each manufacturer (a live call,
+    2026-11-07: an MPN of four manufacturers was "not at DigiKey")."""
+    from datasheet_lens import adopt
+    from datasheet_lens import project as prj
+    from datasheet_lens.store import Store
+
+    api["products"] = {"DUP-1": [_second_source("DUP-1", "Maker One", "1-DUP-1-CT-ND", 70),
+                                 _second_source("DUP-1", "Maker Two", "2-DUP-1-CT-ND", 5),
+                                 _second_source("DUP-1Y", "Maker One", "1-DUP-1Y-CT-ND", 9)]}
+    assert [(o.manufacturer, o.distributor_pn) for o in digikey.offers("dup-1")] == [
+        ("Maker One", "1-DUP-1-CT-ND"), ("Maker Two", "2-DUP-1-CT-ND")]
+    assert [(o.mpn, o.manufacturer) for o in digikey.offers("DUP", exact=False)] == [
+        ("DUP-1", "Maker One"), ("DUP-1", "Maker Two"), ("DUP-1Y", "Maker One")]
+    # The number of the distributor in each line: adopt_part takes it.
+    text = "\n".join(distributors.search_lines("DUP-1", exact=True))
+    assert "DUP-1 (Maker Two); DigiKey 2-DUP-1-CT-ND; state: Active" in text
+    # The direct links of each manufacturer, with its name.
+    lines = distributors.link_lines("DUP-1")
+    assert "Direct links (Source: DigiKey, Maker One):" in lines and "Direct links (Source: DigiKey, Maker Two):" in lines
+    assert any(url.endswith("/search/2-DUP-1-CT-ND/media") for url, _, _ in api["sent"])
+    # The availability of the manufacturer of the project part.
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "DUP-1", manufacturer="Maker Two")
+        lines = distributors.availability(prj.load(project.root), store)
+    assert lines[1] == "DUP-1: Active, stock 5"
+    # adopt: the MPN of more manufacturers asks for the number; an MPN is not a number.
+    with pytest.raises(LensError, match="DigiKey has more parts for DUP-1. Give the number of one: 1-DUP-1-CT-ND "
+                                        r"\(DUP-1, Maker One\); 2-DUP-1-CT-ND \(DUP-1, Maker Two\)"):
+        adopt._part("digikey", "", "DUP-1")
+    with pytest.raises(LensError, match="'DUP-1' is not a DigiKey number of a product: give an MPN as mpn"):
+        adopt._part("digikey", "DUP-1", "")
+    with pytest.raises(LensError, match="DigiKey has no part 9-NO-ND"):
+        adopt._part("digikey", "9-NO-ND", "")
+    part = adopt._part("digikey", "2-dup-1-ct-nd", "")
+    assert (part["mpn"], part["manufacturer"], part["number"]) == ("DUP-1", "Maker Two", "2-DUP-1-CT-ND")
+    assert adopt._part("digikey", "", "DUP-1Y")["number"] == "1-DUP-1Y-CT-ND"
+
+
+def test_two_products_of_one_manufacturer(api, store_home, tmp_path, monkeypatch):
+    """DigiKey can have two products of one MPN and one manufacturer (a product
+    of a marketplace seller): two offers, each with its DigiKey number and its
+    stock. The direct links come from one product of the manufacturer."""
+    from datasheet_lens import adopt
+    from datasheet_lens import project as prj
+    from datasheet_lens.store import Store
+
+    api["products"] = {"TWO-1": [_second_source("TWO-1", "Maker One", "1-TWO-1-CT-ND", 70),
+                                 _second_source("TWO-1", "Maker One", "2156-TWO-1-ND", 30)]}
+    assert [o.distributor_pn for o in digikey.offers("TWO-1")] == ["1-TWO-1-CT-ND", "2156-TWO-1-ND"]
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "TWO-1", manufacturer="Maker One")
+        assert distributors.availability(prj.load(project.root), store)[1] == "TWO-1: Active, stock 100"
+    with pytest.raises(LensError, match="DigiKey has more parts for TWO-1"):
+        adopt._part("digikey", "", "TWO-1")
+    lines = distributors.link_lines("TWO-1")
+    assert "Direct links (Source: DigiKey):" in lines
+    assert sum(1 for url, _, _ in api["sent"] if url.endswith("/media")) == 1
+    # An error of one request: the links of the manufacturers before it stay.
+    api["products"] = {"DUP-2": [_second_source("DUP-2", "Maker One", "1-DUP-2-CT-ND", 7),
+                                 _second_source("DUP-2", "Maker Two", "2-DUP-2-CT-ND", 5)]}
+    real = digikey.call
+
+    def call(method, path, *args, **kwargs):
+        if path.endswith("/2-DUP-2-CT-ND/media"):
+            raise Unavailable("DigiKey API: HTTP 503 Service Unavailable")
+        return real(method, path, *args, **kwargs)
+
+    monkeypatch.setattr(digikey, "call", call)
+    lines = digikey.media_lines("DUP-2")
+    assert lines[0] == "Direct links (Source: DigiKey, Maker One):" and len(lines) == 4
+    assert lines[3] == "Direct links (Source: DigiKey, Maker Two): not checked: DigiKey API: HTTP 503 Service Unavailable"
