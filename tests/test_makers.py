@@ -26,6 +26,9 @@ def test_registry(store_home):
         assert makers.same(db, "Microchip", "MICROCHIP TECHNOLOGY INC.")
         assert makers.same(db, "ROHM Semiconductor", "ROHM")
         assert makers.same(db, "ti", "TEXAS INSTRUMENTS Inc.")  # a short name of SHORT_NAMES
+        # The names of the distributors (live calls, 2026-11-07).
+        assert makers.same(db, "Microchip Tech", "Microchip Technology")
+        assert makers.same(db, "Vishay Siliconix", "Vishay Semiconductors")
         assert not makers.same(db, "TXN", "Texas Instruments")
         assert not makers.same(db, "TI", "")
         store.maker_relation("alias", "TXN", "Texas Instruments")

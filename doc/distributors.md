@@ -217,6 +217,15 @@ RDS(on) at the highest drive voltage only. Thus the tool does not apply a filter
 with a condition after `at` or `@` (`rds_on <= 10 mOhm at Vgs=2.5V`). The result
 marks it `NOT APPLIED`. Read that value in the datasheet of each part.
 
+The DigiKey API does not apply a filter on some parameters: it gives no part,
+although it gives parts for the values. For example, the parameters whose values are
+counts (`Unidirectional Channels`, `Number of Regulators`). When a search gives no
+part, the tool does a check of each filter alone. A filter that DigiKey does not apply
+gets the mark `NOT APPLIED`, and the tool does the search again without it. The
+number of parts is then the number for the applied filters. The tool compares the
+value of that parameter in each part line: a part that does not agree gets the mark
+`NOT AGREE`. The tool keeps the result of each check for one hour.
+
 The result gives each filter with its status. For each part, it gives:
 
 - The MPN, the manufacturer and the DigiKey number.

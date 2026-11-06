@@ -213,3 +213,45 @@ def test_distributor_settings_with_problems(store_home, tmp_path, capsys):
     config_path().write_text("{broken", encoding="utf-8")
     assert main(["dist", "mouser"]) == 2
     assert config_path().read_text(encoding="utf-8") == "{broken"
+
+
+def test_mouser_gives_only_the_parts_of_the_text(monkeypatch, store_home, tmp_path):
+    """Mouser also gives other parts: for "Exact", MPNs that only start with the
+    text, and for a start, a part whose suggested replacement agrees. A part
+    that Mouser lists with the number "N/A" has no number to order (live calls,
+    2026-11-07)."""
+    long_mpn = dict(PART, ManufacturerPartNumber="TPS7A0233PYCHR-TP", MouserPartNumber="833-TPS7A0233PYCHR-TP")
+    other = dict(OLD, ManufacturerPartNumber="TPS79433DGNT", MouserPartNumber="595-TPS79433DGNT",
+                 SuggestedReplacement="595-TPS7A0233PYCHR")
+    no_number = dict(PART, Manufacturer="Other Maker", MouserPartNumber="N/A")
+    sent = []
+
+    def urlopen(request, timeout):  # Mouser gives each part for each text
+        sent.append(json.loads(request.data))
+        return Answer(json.dumps({"Errors": [], "SearchResults": {"Parts": [PART, long_mpn, other, no_number]}})
+                      .encode())
+
+    monkeypatch.setenv(distributors.MOUSER_ENV, "secret-key")
+    monkeypatch.setattr(distributors.urllib.request, "urlopen", urlopen)
+    distributors._cache.clear()
+    offers = distributors.mouser_search("tps7a0233pychr")
+    assert [(o.mpn, o.distributor_pn) for o in offers] == [("TPS7A0233PYCHR", "595-TPS7A0233PYCHR"),
+                                                            ("TPS7A0233PYCHR", "")]
+    assert [o.mpn for o in distributors.mouser_search("TPS7A02", exact=False)] == [
+        "TPS7A0233PYCHR", "TPS7A0233PYCHR-TP", "TPS7A0233PYCHR"]
+    # A Mouser number is a search text too (adopt).
+    assert [o.distributor_pn for o in distributors.mouser_search("833-TPS7A0233PYCHR-TP")] == [
+        "833-TPS7A0233PYCHR-TP"]
+    line = distributors.format_offer(offers[1])
+    assert "TPS7A0233PYCHR (Other Maker); state: New Product [NOT ORDERABLE: Mouser gives no part number to order]" \
+        in line and "Mouser N/A" not in line
+    # The lifecycle state comes first: an obsolete part keeps its replacement.
+    obsolete = distributors._mouser_offer(dict(OLD, MouserPartNumber="N/A"))
+    assert distributors.not_orderable(obsolete) == "Obsolete, replacement TPS7A0218PYCHR2"
+    # The availability of a part of the manufacturer with no number: not orderable.
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "TPS7A0233PYCHR", manufacturer="Other Maker")
+        lines = distributors.availability(prj.load(project.root), store)
+    assert "TPS7A0233PYCHR: New Product, stock 1234. WARNING: not orderable: Mouser gives no part number to order" \
+        in lines

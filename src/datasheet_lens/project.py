@@ -629,9 +629,16 @@ def _safe(name: str) -> str:
 
 def layout_dir(project: Project, part: dict) -> str:
     """The subfolder of the copies of a part (relative to the folder), from the
-    layout and the part in the project file (manufacturer, category, mpn). A
-    missing value gives UNKNOWN."""
-    values = {k: _safe(str(part.get(k, ""))) or UNKNOWN for k in LAYOUT_KEYS}
+    layout and the part in the project file (manufacturer, category, mpn). The
+    manufacturer is its built-in name (makers.builtin_name): the distributors
+    and the datasheets write one manufacturer in different forms ("TI", "Texas
+    Instruments"), and each form would get its own folder. Not the relations of
+    the store: they differ between the machines, and the copies of a shared
+    project would move with each sync. A missing value gives UNKNOWN."""
+    values = {k: str(part.get(k, "")) for k in LAYOUT_KEYS}
+    if values["manufacturer"].strip():
+        values["manufacturer"] = makers.builtin_name(values["manufacturer"].strip())
+    values = {k: _safe(v) or UNKNOWN for k, v in values.items()}
     text = project.layout.format_map(values)
     return "/".join(p for p in text.split("/") if p.strip() and p.strip() != ".")
 

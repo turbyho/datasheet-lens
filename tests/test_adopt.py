@@ -204,3 +204,25 @@ def test_datasheets_of_other_sources_only_of_the_same_manufacturer(jlc, download
     # An offer with no number of the source cannot be a purchase source.
     with pytest.raises(LensError, match="Mouser gives no part number for FET-A"):
         adopt_module._one([distributors.Offer("Mouser", "FET-A", "Maker A")], "FET-A", "Mouser")
+
+
+def test_texts_of_the_result(jlc, downloads, monkeypatch):  # noqa: F811
+    """Each part to select from is in the list. The line of a failed URL gives
+    the URL one time, and the sentence ends before the next one."""
+    from datasheet_lens import distributors
+
+    offers = [distributors.Offer("Mouser", "X", f"Maker {i}", distributor_pn=f"{i}-X") for i in range(13)]
+    with pytest.raises(LensError) as e:
+        adopt_module._one(offers, "X", "Mouser")
+    assert "0-X (X, Maker 0); " in str(e.value) and str(e.value).endswith("12-X (X, Maker 12)")
+
+    @contextlib.contextmanager
+    def html(url, home):
+        raise LensError(f"{url} did not give a PDF (text/html): download the file by hand")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(fetch, "downloaded", html)
+    monkeypatch.setattr(adopt_module, "datasheet_urls", lambda c, s, p=None, n=None: iter(["https://ti.com/x"]))
+    text = "\n".join(adopt_module.adopt("jlcpcb", "C1004")["lines"])
+    assert ("datasheet: NOT ADDED. The URLs that failed: https://ti.com/x: did not give a PDF (text/html): download "
+            "the file by hand. Find the datasheet") in text

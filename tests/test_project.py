@@ -316,7 +316,7 @@ def test_layout(store_home, text_pdf, tmp_path):
         project = prj.init_project(tmp_path / "board")  # default: {manufacturer}
         assert prj.load(project.root).layout == "{manufacturer}"
         prj.add_part(project, store, "OPA2134", category="Op amp")
-        assert prj.sync(project, store)["copied"] == ["TI/opa2134.pdf"]
+        assert prj.sync(project, store)["copied"] == ["Texas Instruments/opa2134.pdf"]
 
         # A new layout with the category: sync moves the copy, and removes the
         # empty subfolder.
@@ -324,12 +324,12 @@ def test_layout(store_home, text_pdf, tmp_path):
                                                                  'layout = "{category}/{manufacturer}"')
         project.path.write_text(text, encoding="utf-8")
         project = prj.load(project.root)
-        assert prj.sync(project, store, apply=False)["moved"] == ["TI/opa2134.pdf -> Op amp/TI/opa2134.pdf"]
+        assert prj.sync(project, store, apply=False)["moved"] == ["Texas Instruments/opa2134.pdf -> Op amp/Texas Instruments/opa2134.pdf"]
         report = prj.sync(project, store)
-        assert report["moved"] == ["TI/opa2134.pdf -> Op amp/TI/opa2134.pdf"]
-        assert (project.folder_path / "Op amp/TI/opa2134.pdf").is_file()
+        assert report["moved"] == ["Texas Instruments/opa2134.pdf -> Op amp/Texas Instruments/opa2134.pdf"]
+        assert (project.folder_path / "Op amp/Texas Instruments/opa2134.pdf").is_file()
         assert not (project.folder_path / "TI").exists()
-        assert prj.load(project.root).parts[0]["documents"][0]["file"] == "Op amp/TI/opa2134.pdf"
+        assert prj.load(project.root).parts[0]["documents"][0]["file"] == "Op amp/Texas Instruments/opa2134.pdf"
 
         # A file that the user put into the folder: its reference is pinned, and
         # sync does not move it. A part with no category and no manufacturer
@@ -344,14 +344,23 @@ def test_layout(store_home, text_pdf, tmp_path):
         assert prj.layout_dir(project, {"mpn": "X", "manufacturer": ""}) == "_unknown/_unknown"
 
 
-def test_layout_checks(tmp_path):
+def test_layout_checks(store_home, tmp_path):
     for bad, message in (("{vendor}", "use only"), ("../{mpn}", "no '..'"), ("{mpn", "use")):
         with pytest.raises(LensError, match=message):
             prj.init_project(tmp_path / bad.replace("/", "_"), layout=bad)
     project = prj.init_project(tmp_path / "flat", layout="")
+    by_maker = prj.Project(tmp_path, layout="{manufacturer}")
     assert prj.layout_dir(project, {"mpn": "X", "manufacturer": "TI"}) == ""
-    assert prj.layout_dir(prj.Project(tmp_path, layout="{manufacturer}"),
-                          {"mpn": "X", "manufacturer": "A/B: C"}) == "A_B_ C"
+    assert prj.layout_dir(by_maker, {"mpn": "X", "manufacturer": "A/B: C"}) == "A_B_ C"
+    # The built-in name: one folder for each manufacturer, also when the
+    # distributors and the datasheets write its name in other forms.
+    for name in ("TI", "Texas Instruments Inc.", "TEXAS INSTRUMENTS"):
+        assert prj.layout_dir(by_maker, {"mpn": "X", "manufacturer": name}) == "Texas Instruments"
+    assert prj.layout_dir(by_maker, {"mpn": "X", "manufacturer": "Microchip Technology"}) == "Microchip"
+    # Not a relation of the store: it differs between the machines.
+    with Store() as store:
+        store.maker_relation("alias", "TXN", "Texas Instruments")
+    assert prj.layout_dir(by_maker, {"mpn": "X", "manufacturer": "TXN"}) == "TXN"
 
 
 def test_moved_document_block(store_home, text_pdf, tmp_path):
@@ -379,7 +388,7 @@ def test_moved_document_block(store_home, text_pdf, tmp_path):
     lines = prj.format_report(report, True, ("add {part}{base} {sha}", " -b {base}"))
     assert any("was the block moved?" in line and f"add OPA2134 {doc.sha256[:12]}" in line for line in lines)
     assert (project.folder_path / "Micro Crystal/rtc.pdf").is_file()
-    assert not (project.folder_path / "TI/rtc.pdf").exists()
+    assert not (project.folder_path / "Texas Instruments/rtc.pdf").exists()
 
 
 def test_shared_document_on_a_new_machine(store_home, text_pdf, tmp_path, monkeypatch):
@@ -425,12 +434,12 @@ def test_one_copy_for_a_document_of_two_parts(store_home, text_pdf, tmp_path):
         prj.add_part(project, store, "TPS7A0233PYCHR", base="TPS7A02")
         prj.add_part(project, store, "TPS7A0218PYCHR", base="TPS7A02")
         lines = prj.format_report(prj.sync(project, store), True, ("", ""))
-        assert lines == ["copied: TI/tps7a02.pdf", "1 copies are current"], lines
+        assert lines == ["copied: Texas Instruments/tps7a02.pdf", "1 copies are current"], lines
         # The next sync and a move to a new layout count the file one time too.
         assert prj.format_report(prj.sync(project, store), True, ("", "")) == ["1 copies are current"]
         project.layout = "{category}"
         lines = prj.format_report(prj.sync(project, store), True, ("", ""))
-    assert lines == ["moved to its subfolder: TI/tps7a02.pdf -> _unknown/tps7a02.pdf", "1 copies are current"], lines
+    assert lines == ["moved to its subfolder: Texas Instruments/tps7a02.pdf -> _unknown/tps7a02.pdf", "1 copies are current"], lines
 
 
 def test_the_add_hints_of_the_cli_and_the_server():

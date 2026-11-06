@@ -129,7 +129,7 @@ come before the first `[[part]]`.
 | Key | Value |
 |---|---|
 | `mpn` | Necessary. The MPN of the part in the BOM: the concrete orderable MPN. |
-| `manufacturer` | The manufacturer, as the project writes it (the layout uses it as a folder). It can be any name of the manufacturer that the store knows (see `datasheet-lens maker` in [cli.md](cli.md)). Necessary when two parts have the same MPN. |
+| `manufacturer` | The manufacturer, as the project writes it (the layout uses its built-in name, see [Layout](#layout)). It can be any name of the manufacturer that the store knows (see `datasheet-lens maker` in [cli.md](cli.md)). Necessary when two parts have the same MPN. |
 | `base` | The base part of the datasheet, when `mpn` is a concrete part of it. |
 | `category` | The function of the part, for example `ADC`, `LDO`, `MCU`. The layout can use it. |
 | `variants` | For information only: the parts that the same datasheet covers. The tool writes it from the store. |
@@ -184,7 +184,7 @@ It can use these placeholders:
 
 | Placeholder | Value |
 |---|---|
-| `{manufacturer}` | The manufacturer of the part. |
+| `{manufacturer}` | The built-in name of the manufacturer of the part. |
 | `{category}` | The category (function) of the part. |
 | `{mpn}` | The MPN of the part. |
 
@@ -199,6 +199,13 @@ Examples:
 Rules:
 
 - A missing value gives the subfolder `_unknown`.
+- `{manufacturer}` gives one folder for each manufacturer. The distributors and the
+  datasheets write the name of one manufacturer in different forms (`TI`,
+  `Texas Instruments Inc.`). The tool uses the built-in name of the manufacturer
+  registry (`Texas Instruments`). A name that is not a built-in name stays as the
+  part gives it. The relations that a user records (`datasheet-lens maker`) do not
+  change the folder: they differ between the machines, and the copies of a shared
+  project would move with each sync.
 - The tool replaces the characters that a file name cannot hold with `_`.
 - The name of a copy is the file name of the document in the store. When a different
   file has that name, the tool adds the first 8 characters of the SHA-256.

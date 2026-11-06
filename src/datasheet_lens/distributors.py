@@ -243,7 +243,14 @@ def restricted(offer: Offer) -> bool:
     return "restricted" in state or state == "discontinued at digi-key"
 
 
+# The Mouser number of a part that Mouser lists with no number of its own (a
+# live call, 2026-11-07: "N/A" for three manufacturers of SMAJ12A). It is not a
+# number to order: the offer gets no number.
+MOUSER_NO_NUMBER = "N/A"
+
+
 def _mouser_offer(part: dict) -> Offer:
+    number = str(part.get("MouserPartNumber", "")).strip()
     return Offer(
         source="Mouser", mpn=str(part.get("ManufacturerPartNumber", "")).strip(),
         manufacturer=str(part.get("Manufacturer", "")).strip(),
@@ -258,10 +265,17 @@ def _mouser_offer(part: dict) -> Offer:
                 for p in part.get("PriceBreaks") or []],
         datasheet_url=str(part.get("DataSheetUrl") or "").strip(),
         product_url=str(part.get("ProductDetailUrl") or "").strip(),
-        distributor_pn=str(part.get("MouserPartNumber", "")).strip())
+        distributor_pn="" if number.upper() == MOUSER_NO_NUMBER else number)
 
 
 MIN_PREFIX = 3  # a shorter start of an MPN gives 50 parts of no use
+
+
+def fits(text: str, search: str, exact: bool) -> bool:
+    """True if a part number is the search text (exact) or starts with it. Case
+    is ignored. The rule of each MPN search of the distributors."""
+    text, search = text.strip().upper(), search.strip().upper()
+    return text == search if exact else text.startswith(search)
 MAX_CACHE = 500
 
 
@@ -310,6 +324,11 @@ def mouser_search(mpn: str, exact: bool = True, key: str = "") -> list[Offer]:
         raise LensError(f"Mouser API: {text}")
     parts = (data.get("SearchResults") or {}).get("Parts") or []
     offers = [_mouser_offer(p) for p in parts if isinstance(p, dict) and p.get("ManufacturerPartNumber")]
+    # Mouser also gives other parts: for "Exact", MPNs that only start with the
+    # text (SMAJ12A-TP for SMAJ12A), and for a start, parts with a suggested
+    # replacement that agrees (TPS79433DGNT for TPS7A2033, a live call,
+    # 2026-11-07). The search text is an MPN or a Mouser number.
+    offers = [o for o in offers if fits(o.mpn, mpn, exact) or fits(o.distributor_pn, mpn, exact)]
     if len(_cache) >= MAX_CACHE:  # remove the old answers
         for k in [k for k, (t, _) in _cache.items() if now - t >= CACHE_SECONDS] or list(_cache):
             del _cache[k]
@@ -368,15 +387,17 @@ def offers_of(name: str, mpn: str, exact: bool, credential) -> list[Offer]:
 
 
 def not_orderable(offer: Offer) -> str:
-    """The reason why an offer cannot be ordered, or "": obsolete, discontinued,
-    end of life. A part that only the distributor does not sell now (restricted)
-    is not in this group."""
+    """The reason why an offer cannot be ordered, or "": no part number of the
+    distributor (Mouser gives "N/A"), obsolete, discontinued, end of life. A
+    part that only the distributor does not sell now (restricted) is not in this
+    group."""
     state = offer.lifecycle.lower()
-    if restricted(offer) and not offer.discontinued:
-        return ""
-    if offer.discontinued or any(w in state for w in ("obsolete", "discontinued", "end of life", "eol")):
+    if offer.discontinued or (any(w in state for w in ("obsolete", "discontinued", "end of life", "eol"))
+                              and not restricted(offer)):
         return f"{offer.lifecycle or 'discontinued'}" + (f", replacement {offer.replacement}" if offer.replacement
                                                           else "")
+    if not offer.distributor_pn:
+        return f"{offer.source} gives no part number to order"
     return ""
 
 
@@ -390,10 +411,11 @@ def format_offer(o: Offer) -> str:
     parts = [f"{o.mpn} ({o.manufacturer or 'manufacturer unknown'})"]
     if o.distributor_pn:
         parts.append(f"{o.source} {o.distributor_pn}")
-    if o.lifecycle or warn:
-        parts.append(f"state: {o.lifecycle or 'discontinued'}" + (f" [NOT ORDERABLE: {warn}]" if warn else "")
-                     + (" [the distributor does not sell it now; not a lifecycle state of the manufacturer]"
-                        if restricted(o) else ""))
+    marks = [f"state: {o.lifecycle}" if o.lifecycle else "", f"[NOT ORDERABLE: {warn}]" if warn else "",
+             "[the distributor does not sell it now; not a lifecycle state of the manufacturer]"
+             if restricted(o) else ""]
+    if any(marks):
+        parts.append(" ".join(m for m in marks if m))
     parts.append(f"stock: {o.stock if o.stock is not None else o.availability or 'unknown'}"
                  + (" (NOT IN STOCK at JLCPCB: the assembly needs an order of the part)"
                     if o.library and o.stock == 0 else ""))
@@ -464,7 +486,7 @@ def _availability_jlcpcb(project, store=None) -> list[str]:
             state += ". WARNING: NOT IN STOCK at JLCPCB: the assembly needs an order of the part"
         if part.get("manufacturer") and not own:
             state += (f". WARNING: the JLCPCB library has no part from {part['manufacturer']}: the data is of "
-                      + ", ".join(sorted({x.manufacturer for x in offers})))
+                      + ", ".join(sorted({x.manufacturer or "manufacturer unknown" for x in offers})))
         lines.append(state)
     note = jlcpcb.age_note()
     return lines + ([note] if note else [])
@@ -476,8 +498,7 @@ def _availability_at(name: str, credential, project, store=None) -> list[str]:
     lines = [f"Source: {label}"]
     for i, part in enumerate(project.parts):
         try:
-            offers = [o for o in offers_of(name, part["mpn"], True, credential)
-                      if o.mpn.lower() == part["mpn"].lower()]
+            offers = [o for o in offers_of(name, part["mpn"], True, credential) if fits(o.mpn, part["mpn"], True)]
         except Unavailable as e:  # the next parts fail too: do not wait for each one
             lines.append(f"not checked: {', '.join(p['mpn'] for p in project.parts[i:])}: {e}")
             break
@@ -506,7 +527,7 @@ def _availability_at(name: str, credential, project, store=None) -> list[str]:
                       + (f", lead time {o.lead_time}" if o.lead_time else ""))
         if part.get("manufacturer") and not own:
             state += (f". WARNING: {label} has no offer from {part['manufacturer']}: the data is of "
-                      + ", ".join(sorted({x.manufacturer for x in offers})))
+                      + ", ".join(sorted({x.manufacturer or "manufacturer unknown" for x in offers})))
         lines.append(state)
     return lines
 

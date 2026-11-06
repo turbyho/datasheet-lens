@@ -258,7 +258,9 @@ def parameters(category: dict, credential=None) -> tuple[list[Parameter], int]:
     out = []
     for p in (data.get("FilterOptions") or {}).get("ParametricFilters") or []:
         values = [(str(v.get("ValueId")), str(v.get("ValueName") or "")) for v in p.get("FilterValues") or []]
-        out.append(Parameter(id=str(p.get("ParameterId")), name=str(p.get("ParameterName") or ""), values=values))
+        counts = {str(v.get("ValueId")): _count(v.get("ProductCount")) or 0 for v in p.get("FilterValues") or []}
+        out.append(Parameter(id=str(p.get("ParameterId")), name=str(p.get("ParameterName") or ""), values=values,
+                             counts=counts))
     count = int(data.get("ProductsCount") or 0)
     if len(_parameters) > 50:
         _parameters.clear()
@@ -269,9 +271,25 @@ def parameters(category: dict, credential=None) -> tuple[list[Parameter], int]:
 @dataclass
 class FilterResult:
     filter: Filter
-    status: str  # server, datasheet
+    status: str  # server, datasheet, not_applied (see _not_applied)
     parameter: Parameter | None = None
     values: list[tuple[str, str]] = field(default_factory=list)
+    parts: int = 0  # not_applied: the number of parts with the values, as DigiKey gives it
+
+
+# The checks of the filters (_not_applied): (category ID, parameter ID) gives the
+# time of the check and True when DigiKey does not apply the filter: it gives no
+# part, although DigiKey gives parts for its values (a live call, 2026-11-07: the
+# parameters whose value IDs are counts, for example "Unidirectional Channels"
+# and "Number of Regulators").
+_not_applied_cache: dict[tuple[str, str], tuple[float, bool]] = {}
+
+
+def _checked(category_id: str, parameter_id: str) -> bool | None:
+    """The result of a check of a filter that is not older than CACHE_SECONDS:
+    True when DigiKey does not apply it, or None."""
+    entry = _not_applied_cache.get((category_id, parameter_id))
+    return entry[1] if entry and entry[0] > time.monotonic() - CACHE_SECONDS else None
 
 
 @dataclass
@@ -315,6 +333,28 @@ def search(category: str, filters: list[str], keywords: str = "", in_stock: bool
             groups[parameter.id] = [v for v, _ in values]
     if any(not ids for ids in groups.values()):
         return SearchResult(cat, results, 0, [], offset, sort)
+    groups = _without(groups, results, {pid for pid in groups if _checked(cat["id"], pid)}, params)
+
+    def run(groups: dict[str, list[str]]) -> dict:
+        data = call("POST", "/search/keyword",
+                    _request(cat, groups, keywords, in_stock, sort, limit, offset),
+                    query={"includes": "Products,ProductsCount"}, credential=credential)
+        return data if isinstance(data, dict) else {}
+
+    data = run(groups)
+    if not int(data.get("ProductsCount") or 0) and groups:
+        broken = _not_applied(cat, params, groups, credential)
+        if broken:
+            groups = _without(groups, results, broken, params)
+            data = run(groups)
+    return SearchResult(cat, results, int(data.get("ProductsCount") or 0), list(data.get("Products") or []),
+                        offset, sort)
+
+
+def _request(cat: dict, groups: dict[str, list[str]], keywords: str = "", in_stock: bool = False,
+             sort: str = "stock", limit: int = 1, offset: int = 0) -> dict:
+    """The body of a search: the category and one filter for each parameter
+    (the value IDs: one of them)."""
     request = {"Keywords": keywords.strip(), "Limit": limit, "Offset": offset,
                "SortOptions": dict(zip(("Field", "SortOrder"), SORTS[sort], strict=True)),
                "FilterOptionsRequest": {"ParameterFilterRequest": {
@@ -323,11 +363,41 @@ def search(category: str, filters: list[str], keywords: str = "", in_stock: bool
                                         for pid, ids in groups.items()]}}}
     if in_stock:
         request["FilterOptionsRequest"]["SearchOptions"] = ["InStock"]
-    data = call("POST", "/search/keyword", request, query={"includes": "Products,ProductsCount"},
-                credential=credential)
-    data = data if isinstance(data, dict) else {}
-    return SearchResult(cat, results, int(data.get("ProductsCount") or 0), list(data.get("Products") or []),
-                        offset, sort)
+    return request
+
+
+def _not_applied(cat: dict, params: list[Parameter], groups: dict[str, list[str]], credential=None) -> set[str]:
+    """The parameters whose filter DigiKey does not apply: alone, with no
+    other filter and no stock option, the filter gives no part, although
+    DigiKey gives parts for its values. A request for each filter that has no
+    check in the cache: only when a search gives no part."""
+    by_id = {p.id: p for p in params}
+    broken = set()
+    for pid, ids in groups.items():
+        if _checked(cat["id"], pid) is not None or not sum(by_id[pid].counts.get(v, 0) for v in ids):
+            continue  # checked before, or DigiKey gives no number: no check
+        data = call("POST", "/search/keyword", _request(cat, {pid: ids}), query={"includes": "ProductsCount"},
+                    credential=credential)
+        not_applied = not int((data if isinstance(data, dict) else {}).get("ProductsCount") or 0)
+        if not_applied:
+            broken.add(pid)
+        if len(_not_applied_cache) > 500:
+            _not_applied_cache.clear()
+        _not_applied_cache[(cat["id"], pid)] = (time.monotonic(), not_applied)
+    return broken
+
+
+def _without(groups: dict[str, list[str]], results: list[FilterResult], broken: set[str],
+             params: list[Parameter]) -> dict[str, list[str]]:
+    """The groups with no filter of a parameter that DigiKey does not apply. Its
+    filters get the status not_applied, with the number of parts of their
+    values."""
+    by_id = {p.id: p for p in params}
+    for r in results:
+        if r.status == "server" and r.parameter is not None and r.parameter.id in broken:
+            r.status = "not_applied"
+            r.parts = sum(by_id[r.parameter.id].counts.get(v, 0) for v, _ in r.values)
+    return {pid: ids for pid, ids in groups.items() if pid not in broken}
 
 
 def _parameter(product: dict, name: str) -> str:
@@ -392,7 +462,9 @@ def search_lines(result: SearchResult) -> list[str]:
     and the next step."""
     _, currency = locale()
     cat = result.category
+    skipped = [r for r in result.filters if r.status == "not_applied"]
     lines = [f"Source: DigiKey. Category {cat['id']} {cat['path']}: {result.count} parts agree"
+             + (" with the applied filters" if skipped else "")
              + (f", parts {result.offset + 1} to {result.offset + len(result.products)}, sorted by {result.sort}"
                 if result.products else "") + "."]
     names: list[str] = []
@@ -401,6 +473,10 @@ def search_lines(result: SearchResult) -> list[str]:
         if r.status == "datasheet":
             lines.append(f"filter \"{r.filter.text}\": NOT APPLIED. DigiKey keeps one value of \"{name}\" at its own "
                          f"conditions, not at {r.filter.condition}. Read the value in the datasheet of each part.")
+        elif r.status == "not_applied":
+            lines.append(f"filter \"{r.filter.text}\": NOT APPLIED. DigiKey gives no part for a filter on \"{name}\", "
+                         f"although it gives {r.parts} parts with its values (a fault of the DigiKey API). The "
+                         f"search is without this filter: compare the value of \"{name}\" in the line of each part.")
         elif not r.values:
             examples = " | ".join(t for _, t in _spread(r.parameter.values, 8)) if r.parameter else ""
             lines.append(f"filter \"{r.filter.text}\": no value of \"{name}\" agrees. Examples of the values "
@@ -412,7 +488,14 @@ def search_lines(result: SearchResult) -> list[str]:
             names.append(name)
     if "Supplier Device Package" not in names:
         names.append("Supplier Device Package")
-    lines += [product_line(p, names, currency) for p in result.products]
+    for p in result.products:
+        # A filter that DigiKey does not apply: the tool compares the value of the part.
+        marks = []
+        for r in skipped:
+            value = _parameter(p, r.parameter.name)
+            if value not in {text for _, text in r.values}:
+                marks.append(f"[NOT AGREE: filter \"{r.filter.text}\": {value or 'no value'}]")
+        lines.append(product_line(p, names, currency) + "".join(f" {m}" for m in marks))
     if result.products:
         lines.append("The values come from DigiKey. Read each value that the design needs in the datasheet of the "
                      "part (add_document, then get_page_image), and save it with save_fact.")
@@ -460,14 +543,18 @@ def _count(value) -> int | None:
 
 
 def stock(product: dict) -> int | None:
-    """The stock of a product. The API leaves out QuantityAvailable when it is 0
-    (a live call, 2026-11-06): then the sum of the stock of each packaging."""
+    """The stock of a product. The API can leave out QuantityAvailable: when it
+    is 0 (a live call, 2026-11-06), and also for a product with stock (a live
+    call, 2026-11-07). Then the largest stock of a packaging gives it: the
+    packagings share one stock (cut tape and Digi-Reel are cut from the stock of
+    the reel), and QuantityAvailable is their largest value, not their sum (a
+    live call, 2026-11-07: 84540 with 84540 for each of three packagings)."""
     total = _count(product.get("QuantityAvailable"))
     if total is not None:
         return total
     counts = [_count(v.get("QuantityAvailableforPackageType")) for v in product.get("ProductVariations") or []]
     counts = [c for c in counts if c is not None]
-    return sum(counts) if counts else None
+    return max(counts) if counts else None
 
 
 def offer_of(product: dict, currency: str):
@@ -513,7 +600,7 @@ def offers(mpn: str, exact: bool = True, credential=None, timeout: float = TIMEO
     The keyword search gives the products, also for an exact MPN: productdetails
     gives HTTP 404 for an MPN of more products ("Duplicate Products found", a
     live call, 2026-11-07), thus it is only for a DigiKey number."""
-    from .distributors import MIN_PREFIX
+    from .distributors import MIN_PREFIX, fits
 
     mpn = mpn.strip()
     if not mpn:
@@ -532,7 +619,7 @@ def offers(mpn: str, exact: bool = True, credential=None, timeout: float = TIMEO
     products, seen = [], set()
     for p in (data.get("ExactMatches") or []) + (data.get("Products") or []):
         number = str(p.get("ManufacturerProductNumber") or "").strip().upper()
-        if not (number == mpn.upper() if exact else number.startswith(mpn.upper())):
+        if not fits(number, mpn, exact):
             continue
         # One entry for each product: the two lists can give the same product. Its
         # page URL ends with the product ID of DigiKey. Two products can have the

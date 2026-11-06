@@ -175,10 +175,12 @@ def parse_filter(text: str) -> Filter:
 
 @dataclass
 class Parameter:
-    """A parameter of a category at a source, with its values (ID and text)."""
+    """A parameter of a category at a source, with its values (ID and text),
+    and the number of parts of each value ID when the source gives it."""
     id: str
     name: str
     values: list[tuple[str, str]] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=dict)
 
 
 def resolve(name: str, parameters: list[Parameter], aliases: dict[str, str]) -> Parameter:

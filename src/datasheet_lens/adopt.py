@@ -122,7 +122,7 @@ def _one(offers: list, text: str, where: str) -> dict:
     if len(offers) > 1:
         raise LensError(f"{where} has more parts for {text}. Give the number of one: "
                         + "; ".join(f"{o.distributor_pn} ({o.mpn}, {o.manufacturer or 'manufacturer unknown'})"
-                                    for o in offers[:10]))
+                                    for o in offers))
     o = offers[0]
     return {"mpn": o.mpn, "manufacturer": o.manufacturer, "package": o.package, "number": o.distributor_pn,
             "url": o.product_url, "library": o.library, "datasheet": o.datasheet_url}
@@ -239,7 +239,7 @@ def adopt(source: str, number: str = "", mpn: str = "", base: str = "", category
                          + (f"; failed before: {'; '.join(failed)}" if failed else ""))
             lines += _not_used_line(c, not_used)
             return _commit(c, source, base, category, project, lock, lines, doc, new=True)
-    lines.append("datasheet: NOT ADDED. " + ("The URLs that failed: " + "; ".join(failed) if failed
+    lines.append("datasheet: NOT ADDED. " + ("The URLs that failed: " + "; ".join(failed) + "." if failed
                                              else "No source gives a datasheet URL.")
                  + " Find the datasheet (part_links) and add it with add_document.")
     lines += _not_used_line(c, not_used)
@@ -275,7 +275,10 @@ def _download(url: str, lock, failed: list[str]):
                 build_index(store, doc.id)
                 return doc
     except (LensError, Unavailable, OSError, pdfium.PdfiumError) as e:
-        failed.append(f"{url}: {e}")
+        # The errors of fetch start with the URL: the line gives it one time.
+        reason = str(e)
+        reason = reason[len(url):].lstrip(": ") if reason.startswith(url) else reason
+        failed.append(f"{url}: {reason}")
         return None
 
 

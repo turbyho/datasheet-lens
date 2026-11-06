@@ -57,7 +57,7 @@ class Answer(io.BytesIO):
 @pytest.fixture
 def api(monkeypatch):
     """The fake DigiKey API. It keeps each request (URL, headers, body)."""
-    for cache in (digikey._token, digikey._categories, digikey._parameters):
+    for cache in (digikey._token, digikey._categories, digikey._parameters, digikey._not_applied_cache):
         cache.clear()
     monkeypatch.setenv("DATASHEET_LENS_DIGIKEY_ID", "client-id")
     monkeypatch.setenv("DATASHEET_LENS_DIGIKEY_SECRET", "client-secret")
@@ -102,6 +102,10 @@ def api(monkeypatch):
                 "ExactMatches": [p for p in found if p["ManufacturerProductNumber"].upper() == word],
                 "Products": [p for p in found if word in p["ManufacturerProductNumber"].upper()]}).encode())
         if "includes" in query:  # a search with filters
+            sent_filters = json.loads(body)["FilterOptionsRequest"]["ParameterFilterRequest"]["ParameterFilters"]
+            if any(f["ParameterId"] in state.get("ignored", ()) for f in sent_filters) or (
+                    state.get("no_part_for_more") and len(sent_filters) > 1):
+                return Answer(json.dumps({"Products": []}).encode())  # as DigiKey: no ProductsCount
             return Answer(json.dumps({"ProductsCount": 1, "Products": [PRODUCT]}).encode())
         return Answer(json.dumps(FILTERS).encode())
 
@@ -293,6 +297,11 @@ def test_stock_with_no_quantity_available():
     product["ProductVariations"] = [{"QuantityAvailableforPackageType": 0}, {"QuantityAvailableforPackageType": "0"}]
     assert digikey.stock(product) == 0
     assert digikey.stock({"ProductVariations": [{}]}) is None
+    # The packagings share one stock: the largest value, not the sum (a live
+    # call, 2026-11-07: 126000, 126773 and 126773 gave 379546).
+    assert digikey.stock({"ProductVariations": [{"QuantityAvailableforPackageType": 126000},
+                                                {"QuantityAvailableforPackageType": 126773},
+                                                {"QuantityAvailableforPackageType": "126773"}]}) == 126773
     assert digikey.stock(PRODUCT) == 900
 
 
@@ -472,3 +481,45 @@ def test_two_products_of_one_manufacturer(api, store_home, tmp_path, monkeypatch
     lines = digikey.media_lines("DUP-2")
     assert lines[0] == "Direct links (Source: DigiKey, Maker One):" and len(lines) == 4
     assert lines[3] == "Direct links (Source: DigiKey, Maker Two): not checked: DigiKey API: HTTP 503 Service Unavailable"
+
+
+def test_a_filter_that_digikey_does_not_apply(api, monkeypatch):
+    """DigiKey gives no part for a filter on some parameters (their value IDs
+    are counts), although it gives parts for their values (a live call,
+    2026-11-07). A search with no part checks each filter alone, and searches
+    again without the filters that DigiKey does not apply."""
+    channels = dict(_filter(12, "Unidirectional Channels", [("1", "1"), ("2", "2")]))
+    channels["FilterValues"] = [dict(v, ProductCount=n) for v, n in zip(channels["FilterValues"], (40, 3))]
+    monkeypatch.setitem(globals(), "FILTERS", {"ProductsCount": 25, "FilterOptions": {
+        "ParametricFilters": FILTERS["FilterOptions"]["ParametricFilters"] + [channels]}})
+    api["ignored"] = {12}
+    result = digikey.search("100", ["unidirectional channels = 1", "vdss >= 20 V"])
+    assert result.count == 1 and [r.status for r in result.filters] == ["not_applied", "server"]
+    searches = _searches(api)
+    assert [[f["ParameterId"] for f in s["FilterOptionsRequest"]["ParameterFilterRequest"]["ParameterFilters"]]
+            for s in searches] == [[12, 6], [12], [6]]  # the search, the check, the search again
+    # (The values of Vdss have no number of parts here: no check.)
+    text = "\n".join(digikey.search_lines(result))
+    assert ('filter "unidirectional channels = 1": NOT APPLIED. DigiKey gives no part for a filter on "Unidirectional '
+            'Channels", although it gives 40 parts with its values (a fault of the DigiKey API).') in text
+    assert "1 parts agree with the applied filters" in text
+    # The value of the part does not agree with the filter (PRODUCT has no such value).
+    assert text.count('[NOT AGREE: filter "unidirectional channels = 1": no value]') == 1
+    result.products = [dict(PRODUCT, Parameters=PRODUCT["Parameters"] + [
+        {"ParameterText": "Unidirectional Channels", "ValueText": "1"}])]
+    text = "\n".join(digikey.search_lines(result))
+    assert "Unidirectional Channels: 1" in text and "NOT AGREE" not in text
+    # The next search knows it: no search with no part, no check.
+    sent = len(_searches(api))
+    assert digikey.search("100", ["unidirectional channels = 1"]).count == 1
+    assert len(_searches(api)) == sent + 1
+    # A filter that DigiKey applies, and that gives no part with the others,
+    # stays. The check of it stays in the cache too: no second check.
+    api["ignored"], api["no_part_for_more"] = set(), True
+    digikey._not_applied_cache.clear()
+    for _ in range(2):
+        result = digikey.search("100", ["unidirectional channels = 2", "vdss >= 20 V"])
+        assert result.count == 0 and [r.status for r in result.filters] == ["server", "server"]
+    searches = _searches(api)[-3:]
+    assert [[f["ParameterId"] for f in s["FilterOptionsRequest"]["ParameterFilterRequest"]["ParameterFilters"]]
+            for s in searches] == [[12, 6], [12], [12, 6]]

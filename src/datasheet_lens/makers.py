@@ -35,7 +35,7 @@ MANUFACTURERS = {
     "Analog Devices": ("ANALOG DEVICES", "ANALOG.COM", "ANALOG_DEVICES"),
     "Maxim Integrated": ("MAXIM INTEGRATED", "MAXIM_INTEGRATED"),
     "STMicroelectronics": ("STMICROELECTRONICS", "ST.COM"),
-    "Microchip": ("MICROCHIP TECHNOLOGY", "MICROCHIP"),
+    "Microchip": ("MICROCHIP TECHNOLOGY", "MICROCHIP", "MICROCHIP TECH"),
     "NXP": ("NXP SEMICONDUCTORS", "NXP.COM", "NXP"),
     "Nordic Semiconductor": ("NORDIC SEMICONDUCTOR", "NORDICSEMI"),
     "Infineon": ("INFINEON TECHNOLOGIES", "INFINEON"),
@@ -44,7 +44,7 @@ MANUFACTURERS = {
     "Micro Crystal": ("MICRO CRYSTAL", "MICROCRYSTAL"),
     "Espressif": ("ESPRESSIF SYSTEMS", "ESPRESSIF"),
     "ROHM": ("ROHM SEMICONDUCTOR", "ROHM CO"),
-    "Vishay": ("VISHAY INTERTECHNOLOGY", "VISHAY"),
+    "Vishay": ("VISHAY INTERTECHNOLOGY", "VISHAY", "VISHAY SILICONIX", "VISHAY SEMICONDUCTORS"),
     "Toshiba": ("TOSHIBA ELECTRONIC", "TOSHIBA"),
     "Diodes Incorporated": ("DIODES INCORPORATED", "DIODES INC"),
     "Nexperia": ("NEXPERIA",),
@@ -215,6 +215,15 @@ def listing(db: sqlite3.Connection) -> list[str]:
 SEED_VERSION = hashlib.sha256(json.dumps([MANUFACTURERS, SHORT_NAMES], sort_keys=True).encode()).hexdigest()[:12]
 
 
+def builtin_name(name: str) -> str:
+    """The name of MANUFACTURERS for a name of its built-in names ("TI" and
+    "Texas Instruments Inc." give "Texas Instruments"), or the name itself. Only
+    the built-in names: the relations of the users differ between the stores,
+    and the same version of datasheet-lens gives the same name on each
+    machine."""
+    return _BUILTIN.get(key(name), name)
+
+
 def _seed_groups() -> dict[str, int]:
     """The key of each name of MANUFACTURERS and SHORT_NAMES, with the number of
     its manufacturer: the manufacturers that seed makes in an empty registry."""
@@ -272,3 +281,10 @@ def seed(db: sqlite3.Connection) -> None:
             _add_alias(db, n, mid, "builtin")
     db.execute("INSERT INTO meta VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
                (SEED_KEY, SEED_VERSION))
+
+
+# The key of each built-in name, with the name of its manufacturer (builtin_name).
+_BUILTIN: dict[str, str] = {}
+for _name, _long in MANUFACTURERS.items():
+    for _n in (_name, *_long, *SHORT_NAMES.get(_name, ())):
+        _BUILTIN.setdefault(key(_n), _name)

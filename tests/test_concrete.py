@@ -30,7 +30,7 @@ def test_concrete_part_finds_the_datasheet_of_its_base(store_home, text_pdf, tmp
         project = prj.init_project(tmp_path / "board")
         part = prj.add_part(project, store, "TLV75533PDBVR", base="TLV755P")
         assert part["base"] == "TLV755P" and "variants" not in part
-        assert [d["file"] for d in part["documents"]] == ["TI/tlv755p.pdf"]
+        assert [d["file"] for d in part["documents"]] == ["Texas Instruments/tlv755p.pdf"]
     text = project.path.read_text(encoding="utf-8")
     assert 'mpn = "TLV75533PDBVR"' in text and 'base = "TLV755P"' in text
     assert prj.load(project.root).parts[0]["base"] == "TLV755P"
@@ -153,8 +153,8 @@ def test_concrete_part_gets_the_manufacturer_of_its_base(store_home, text_pdf, t
         part = prj.add_part(project, store, "TLV75533PDBVR", base="TLV755P")
         assert part["manufacturer"] == "TI"
         assert store.part(store.find_part("TLV75533PDBVR"))["manufacturer"] == "TI"
-        assert prj.sync(project, store)["moved"] == []  # the copy stays in TI/
-    assert part["documents"][0]["file"] == "TI/tlv755p.pdf"
+        assert prj.sync(project, store)["moved"] == []  # the copy stays in Texas Instruments/ (the name of the registry for TI)
+    assert part["documents"][0]["file"] == "Texas Instruments/tlv755p.pdf"
 
 
 def test_sync_gives_a_concrete_part_the_manufacturer_of_its_base(store_home, text_pdf, tmp_path):
