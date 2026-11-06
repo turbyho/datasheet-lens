@@ -550,6 +550,13 @@ def cmd_key(args: argparse.Namespace) -> int:
         if key_source(key).startswith("environment"):
             print(f"{key}: the environment variable {KEYS[key]} comes first: remove it, else the saved key is not "
                   "used")
+    from .distributors import SUPPORTED, enabled
+
+    names, source, _ = enabled(None)
+    if name in SUPPORTED and name not in names:
+        # A distributor list that the user set before does not get the new distributor.
+        print(f"{name} is not in the distributor list ({source}): run \"datasheet-lens dist "
+              f"{' '.join([*names, name])}\" to use it")
     return 0
 
 
@@ -796,7 +803,7 @@ def build_parser() -> argparse.ArgumentParser:
     lk.add_argument("mpn", metavar="MPN")
     lk.set_defaults(func=cmd_links)
     fd = sub.add_parser("find", help="find a part at the distributors: concrete MPNs, state, stock, prices "
-                                     "(needs a key: datasheet-lens key mouser)")
+                                     "(needs a key: datasheet-lens key mouser or digikey)")
     fd.add_argument("mpn", metavar="MPN", help="an MPN, or the start of the MPNs (a base part)")
     fd.add_argument("-x", "--exact", action="store_true", help="only this MPN")
     fd.set_defaults(func=cmd_find)
@@ -834,8 +841,9 @@ def build_parser() -> argparse.ArgumentParser:
     sv.set_defaults(func=cmd_server)
     ky = sub.add_parser("key", help="save the API key of a distributor or the token of the team server (asks for "
                                      "it), or show where the keys are")
-    ky.add_argument("name", nargs="?", metavar="NAME", help="mouser (a distributor) or team (the token of the team "
-                                                             "server). Empty: show the keys")
+    ky.add_argument("name", nargs="?", metavar="NAME", help="mouser or digikey (a distributor; digikey-id or "
+                                                             "digikey-secret: one part of the DigiKey key), or team "
+                                                             "(the token of the team server). Empty: show the keys")
     ky.add_argument("--delete", action="store_true", help="remove the saved key")
     ky.set_defaults(func=cmd_key)
     mk = sub.add_parser("maker", help="show the manufacturer registry, or record a relation of two manufacturer "

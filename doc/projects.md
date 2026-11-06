@@ -80,7 +80,7 @@ folder = "datasheets"
 # The subfolder of each copy in the folder.
 layout = "{manufacturer}"
 # Optional: the distributors for this project (see distributors.md).
-distributors = ["mouser"]
+distributors = ["mouser", "digikey"]
 
 # A concrete orderable part, and the base part of its datasheet.
 [[part]]
@@ -119,7 +119,7 @@ pinned = true
 |---|---|---|
 | `folder` | The document folder: a relative path with `/` and no `..`. | `datasheets` |
 | `layout` | The subfolder of each copy. See [Layout](#layout). | `{manufacturer}` in a new project file. `""` when the key is missing. |
-| `distributors` | A list of distributor names. When the key is missing, the project uses the global setting. | missing |
+| `distributors` | A list of distributor names. When the key is missing, the project uses the global list. | missing |
 
 TOML puts each key after a table header into that table. Thus the top-level keys must
 come before the first `[[part]]`.

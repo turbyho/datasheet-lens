@@ -266,10 +266,12 @@ or add `"update_check": false` to `config.json` in the store folder.
 
 ## Uninstall
 
-1. Remove the saved API keys (see [distributors.md](distributors.md)):
+1. Remove the saved API keys and the token (see [distributors.md](distributors.md)):
 
    ```sh
    datasheet-lens key mouser --delete
+   datasheet-lens key digikey --delete
+   datasheet-lens key team --delete
    ```
 
 2. Remove the package:

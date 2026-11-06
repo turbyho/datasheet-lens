@@ -816,9 +816,9 @@ def part_links(
 ) -> str:
     """Search links for a part: datasheet, price and stock (DigiKey, Mouser,
     Farnell, LCSC, Octopart, Findchips), and symbol, footprint and 3D model
-    (Component Search Engine, SnapMagic, Ultra Librarian). With a DigiKey key,
-    also the direct links of DigiKey to the CAD models and the datasheets of the
-    MPN. Use them when the store and the CAD project have no datasheet, and for
+    (Component Search Engine, SnapMagic, Ultra Librarian). When DigiKey is in
+    the global distributor list and has a key, also the direct links of DigiKey
+    to the CAD models and the datasheets of the MPN. Use them when the store and the CAD project have no datasheet, and for
     the CAD files. datasheet-lens does not open these pages: open one with a web
     tool, or give the links to the user (a CAD site needs a free account for the
     download). A datasheet that you find: add_document with its URL. Gives one
@@ -923,8 +923,10 @@ def project_availability(path: ProjectPath = "") -> str:
 @tool
 def distributor_status(path: ProjectPath = "") -> str:
     """The distributors that datasheet-lens asks (from the project file, the
-    global configuration or the default), and if each has an API key (no key
-    values). For a distributor with no key, a note with the steps for the user:
+    global configuration or the default), if each has an API key (no key
+    values), and the services of each distributor: which one has a parametric
+    search, a package, direct links. Use it to select the distributor for a
+    task. For a distributor with no key, a note with the steps for the user:
     give it to the user. The user changes the list with the CLI command
     "datasheet-lens dist NAME ..." (global) or "datasheet-lens dist --local NAME ..."
     (this project)."""

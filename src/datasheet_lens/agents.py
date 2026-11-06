@@ -64,8 +64,13 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
   concrete orderable MPNs of a part. They ask the enabled distributors
   (distributor_status; the user sets them with `datasheet-lens dist`, globally
   or with `--local` for the project). Each needs a personal API key, which the
-  user saves with `datasheet-lens key mouser`: give the user each note about a
-  missing key.
+  user saves with `datasheet-lens key mouser` or `datasheet-lens key digikey`:
+  give the user each note about a missing key.
+- To find a new part or a replacement part by its parameters: part_parameters,
+  then find_parts (CLI `datasheet-lens pick CATEGORY FILTER ...`). Read each
+  value that the design needs in the datasheet of the candidate. part_links
+  (CLI `datasheet-lens links MPN`) gives the links to the datasheet, the symbol,
+  the footprint and the 3D model: give them to the user.
 - To change the MPN, the base part or the category of a part:
   project_update_part (CLI `datasheet-lens set MPN -m NEW`), not remove and add.
 - project_sync (CLI `datasheet-lens sync`) keeps `datasheet-lens.toml` and

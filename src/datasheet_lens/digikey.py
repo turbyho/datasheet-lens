@@ -41,7 +41,7 @@ MAX_LIMIT = 50  # the API gives 50 products for each request
 # Short names for DigiKey parameter names. A filter can also use the full name, or
 # a part of the name that only one parameter has.
 ALIASES = {
-    "vds": "Drain to Source Voltage (Vdss)", "vdss": "Drain to Source Voltage (Vdss)",
+    "vdss": "Drain to Source Voltage (Vdss)", "vds": "Drain to Source Voltage (Vdss)",
     "rds_on": "Rds On (Max) @ Id, Vgs", "rdson": "Rds On (Max) @ Id, Vgs",
     "vgs_th": "Vgs(th) (Max) @ Id", "vgsth": "Vgs(th) (Max) @ Id",
     "id": "Current - Continuous Drain (Id) @ 25°C", "qg": "Gate Charge (Qg) (Max) @ Vgs",

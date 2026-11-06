@@ -26,7 +26,8 @@ work, not the size of the datasheet.
            CLI (cli.py)          MCP server (server.py)
                   \                   /
                    library modules
-   (indexer, elements, pages, knowledge, identify, project, distributors)
+   (indexer, elements, pages, knowledge, identify, project, distributors,
+    digikey, parametric, links)
                           |
              central store (store.py)
        SQLite database + content-addressed files
@@ -219,8 +220,8 @@ the search links of `part_links`.
 
 `digikey.py` asks the DigiKey Product Information API v4: the parametric search, the
 offers of an MPN and the direct links to the CAD models. It gets a token with the
-OAuth2 client credentials flow. It keeps the DigiKey data only in memory, because the
-terms of DigiKey do not permit an own database. `parametric.py` holds the filter
+client credentials flow of OAuth2. It keeps the DigiKey data only in memory, because
+the terms of DigiKey do not permit a local database of DigiKey data. `parametric.py` holds the filter
 model of the parametric search (`NAME OP VALUE`), for each source.
 
 `keys.py` reads a key (the API key of a distributor, or the token of the team server)

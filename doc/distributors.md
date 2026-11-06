@@ -1,8 +1,9 @@
 # Distributors
 
 datasheet-lens can ask a distributor for the data of a part through its official
-API. This document tells what the data gives, how to set the API key, how to
-select the distributors, and how to find parts by their parameters.
+API. This document tells what the distributor data gives and how to set the API keys.
+It also tells how to select the distributors and how to find parts by their
+parameters.
 
 Supported now: Mouser and DigiKey. Not supported yet: Farnell and TME.
 
@@ -14,9 +15,9 @@ scheme permits is not always made or sold. The distributor data gives, for each
 concrete orderable MPN:
 
 - The manufacturer and a description.
-- The lifecycle state, for example `New Product` or `Obsolete`, and a suggested
-  replacement.
-- The stock, the availability and the lead time.
+- The lifecycle state, for example `New Product` or `Obsolete`. Mouser also gives a
+  suggested replacement.
+- The stock. Mouser also gives the availability and the lead time.
 - The prices for different quantities.
 - The package, from DigiKey only. Mouser gives no package.
 - The URL of the datasheet and of the product page.
@@ -50,18 +51,18 @@ separate button that makes a key.
 1. Make an account at [developer.digikey.com](https://developer.digikey.com). You
    can use your DigiKey account.
 2. Click **Organizations** and make an organization (for example with your name).
-   Only an organization can make a production application.
+   Only an organization can make a production app.
 3. Open the organization. Under **Operations**, click **Production Apps**, then
    **Create Production App**.
 4. Type a name, for example `datasheet-lens`.
 5. For **OAuth Callback**, type `https://localhost`. datasheet-lens does not use the
    callback, but the form must have a value that starts with `https://`.
-6. Select the API product **Product Information V4**, and save the application.
-7. In the list of production apps, click the name of the application. Its page shows
-   the **Client ID** and the **Client Secret**.
+6. Select the API product **Product Information V4**, and save the app.
+7. In the list of production apps, click the name of the app. Its page shows the
+   **Client ID** and the **Client Secret**.
 
 The key is free. The limits are 120 requests each minute and 1000 requests each day.
-Do not use a sandbox application: its data is not complete.
+Do not use a sandbox app: its data is not complete.
 
 ### Save a key
 
@@ -72,8 +73,13 @@ datasheet-lens key digikey    # asks for the Client ID, then for the Client Secr
 
 The command asks for the key. It does not show the key, and the key does not go into
 the shell history. When the input is not a terminal, the command reads the key from
-the first line of the input (for DigiKey: the Client ID from the first line and the
-Client Secret from the second line).
+the first line of the input. For DigiKey, it reads the Client ID from the first line
+and the Client Secret from the second line. `datasheet-lens key digikey-id` and
+`datasheet-lens key digikey-secret` save one part of the DigiKey key.
+
+If you set a distributor list before (`datasheet-lens dist`), the new distributor is
+not in it. The command `key` then tells you the command that adds it, for example
+`datasheet-lens dist mouser digikey`.
 
 The command saves the key in the key store of the system:
 
@@ -105,7 +111,7 @@ The tool never writes a key into a message, a log or the database.
 ### Show and remove keys
 
 ```sh
-datasheet-lens key                    # where each key is, with no value
+datasheet-lens key                    # where each key is, with no value (DigiKey: digikey-id, digikey-secret)
 datasheet-lens key mouser --delete    # remove the saved key
 datasheet-lens key digikey --delete   # remove the two parts of the DigiKey key
 ```
@@ -122,17 +128,18 @@ Thus you can select the distributors that datasheet-lens asks:
 | Command | Effect |
 |---|---|
 | `datasheet-lens dist` | Show the enabled distributors, where the list comes from, and the state of each key. |
-| `datasheet-lens dist mouser` | Set the global list (in `config.json` of the store folder). |
-| `datasheet-lens dist --local mouser` | Set the list in the project file (key `distributors`). |
+| `datasheet-lens dist mouser digikey` | Set the global list (in `config.json` of the store folder). |
+| `datasheet-lens dist --local mouser digikey` | Set the list in the project file (key `distributors`). |
 | `datasheet-lens dist --local` | Remove the list from the project file. The project then uses the global list. |
-| `datasheet-lens dist --site CZ --currency CZK` | Set the country and the currency of the prices and the stock (global). |
+| `datasheet-lens dist --site CZ --currency CZK` | Set the country and the currency of the prices and the stock. These settings are global: the command does not accept them with `--local`. |
 
 The tool uses the first list that it finds:
 
 1. The key `distributors` of the project file.
 2. The global list in `config.json`.
-3. The default: each distributor with a saved key. With no key at all: `mouser`,
-   so that you get the note with the steps.
+3. The default: each distributor with a key (in an environment variable, the key
+   store or the key file). With no key at all: `mouser`, so that you get the note
+   with the steps.
 
 A name that the tool does not support gives an error. A name in a list that a newer
 version wrote is ignored, with a note.
@@ -155,22 +162,25 @@ make sure that it can be ordered. The start of an MPN must have 3 characters or 
 ## Find parts by their parameters
 
 The parametric search finds new parts or replacement parts by their parameters. It
-uses DigiKey, because Mouser gives no parameters through its API. It needs the
-DigiKey key.
+uses DigiKey, because Mouser gives no parameters through its API. It needs DigiKey in
+the enabled distributors, and the DigiKey key.
 
 ```sh
-datasheet-lens pick mosfet                     # the categories that fit "mosfet"
-datasheet-lens pick 278 -P                     # the parameters of category 278, with values
+datasheet-lens pick mosfet                     # an error with the categories that fit "mosfet"
+datasheet-lens pick 278 -P                     # the parameters of category 278, with examples of values
 datasheet-lens pick 278 "channel = N-Channel" "vdss >= 20 V" "drive <= 2.5V" "package has 3x3"
 ```
 
 The MCP tools are `part_parameters(category)` and `find_parts(category, filters)`.
 
+A category with subcategories, or a name that fits more than one category, gives an
+error with a list of the categories. Select one ID from the list.
+
 A filter is `NAME OP VALUE`:
 
 | Part | Values |
 |---|---|
-| `NAME` | The full name of a parameter, its short name (`vdss`, `rds_on`, `vgs_th`, `id`, `qg`, `drive`, `channel`, `package`, `case`, `mounting`), or a part of the name that only one parameter has. |
+| `NAME` | The full name of a parameter, its short name, or a part of the name that only one parameter has. The short names for the FET categories: `vdss`, `rds_on`, `vgs_th`, `id`, `qg`, `drive`, `channel`. For all categories: `package`, `case`, `mounting`. `-P` shows the short names. |
 | `OP` | `=`, `<`, `<=`, `>`, `>=`, `has` (the value holds the text). |
 | `VALUE` | A number with its unit (`20 V`, `10 mOhm`, `5A`), or a text. `=` and `has` accept more values with `\|` (one of them), for example `package has 3x3\|3.3x3.3`. |
 
@@ -178,14 +188,19 @@ A numeric filter compares the first number of a value. For example, the drive
 voltage `2.5V, 8V` gives 2.5 V, the lowest gate voltage that the datasheet specifies.
 `4.5mOhm @ 20A, 8V` gives 4.5 mOhm. The text after `@` holds the conditions.
 
-DigiKey keeps one value of a parameter, at its own conditions. For example, it keeps
-RDS(on) at the highest drive voltage only. A filter with a condition (`rds_on <= 10
-mOhm at Vgs=2.5V`) is thus not applied. The result marks it `NOT APPLIED`. Read that
-value in the datasheet of each part.
+A filter with no value that agrees gives 0 parts and examples of the values.
 
-The result gives each filter with its status, and one line for each part: MPN,
-manufacturer, DigiKey number, lifecycle state, stock, price for 1 piece, the filtered
-parameters, the package, and the URLs of the datasheet and the product page.
+DigiKey keeps one value of a parameter, at its own conditions. For example, it keeps
+RDS(on) at the highest drive voltage only. Thus the tool does not apply a filter
+with a condition after `at` or `@` (`rds_on <= 10 mOhm at Vgs=2.5V`). The result
+marks it `NOT APPLIED`. Read that value in the datasheet of each part.
+
+The result gives each filter with its status. For each part, it gives:
+
+- The MPN, the manufacturer and the DigiKey number.
+- The lifecycle state, the stock and the price for 1 piece.
+- The filtered parameters and the package.
+- The URLs of the datasheet and of the product page.
 
 | Option | Effect |
 |---|---|
@@ -198,8 +213,8 @@ parameters, the package, and the URLs of the datasheet and the product page.
 The values come from the distributor. They can be different from the datasheet. Read
 each value that the design needs in the datasheet, and save it with `save_fact`.
 
-DigiKey ends some large answers early. The tool then sends the request again, up to
-3 times.
+DigiKey ends some large answers early. The tool then sends the request again. It
+sends a request 3 times at most.
 
 ## Check the project parts
 
@@ -212,9 +227,9 @@ distributor with a key (`Source: Mouser`, `Source: DigiKey`). Each section gives
 line for each project part with its lifecycle state and its stock. It gives a
 `WARNING` for a part that:
 
-- Is not orderable (obsolete or discontinued), with the replacement.
+- Is not orderable (obsolete or discontinued), with the replacement (Mouser).
 - The distributor does not have (a base part, or a wrong MPN).
-- Has no stock, with the availability and the lead time.
+- Has no stock, with the availability and the lead time (Mouser).
 - Has the Mouser state `Restricted Availability` or the DigiKey state
   `Discontinued at Digi-Key`: the distributor does not sell the part now. This is not
   the lifecycle state of the manufacturer. Ask the manufacturer or a different
@@ -289,9 +304,10 @@ The MCP tool is `part_links(mpn)`. It gives one search link for each site:
 | Datasheet, price, stock | DigiKey, Mouser, Farnell, LCSC, Octopart, Findchips |
 | Symbol, footprint, 3D model | Component Search Engine, SnapMagic, Ultra Librarian |
 
-With a DigiKey key, the result also gives the direct links of DigiKey for the MPN
-(`Direct links (Source: DigiKey)`): the CAD models at SnapMagic and Ultra Librarian,
-and the datasheets.
+When DigiKey is in the global distributor list and has a key, the result also gives
+the direct links of DigiKey for the MPN (`Direct links (Source: DigiKey)`). They go to
+the CAD models at SnapMagic and Ultra Librarian, and to the datasheets. The list of
+the project file has no effect here.
 
 datasheet-lens does not open these links. A person or an agent with a web tool opens
 them. The sites for the CAD files need a free account for the download. For a
@@ -306,7 +322,7 @@ the URL.
   with other data with no distinction. Thus each result names its source, for
   example `Source: Mouser`.
 - The terms of DigiKey ask to name DigiKey as the source of its data
-  (`Source: DigiKey`). They do not permit an own database of DigiKey data. Thus the
+  (`Source: DigiKey`). They do not permit a local database of DigiKey data. Thus the
   tool keeps the DigiKey data only in the memory of the process, for one hour, and
   never writes it to a file.
 - Each user uses a personal key under the terms of the distributor.

@@ -189,6 +189,20 @@ A datasheet can cover more parts, for example `ADC34J22`, `ADC34J23` and `ADC34J
 Give one of them as `part` and the others as `variants` to `add_document`. The store
 then links the datasheet to each variant.
 
+## Find a new part or a replacement part
+
+The parametric search finds candidates by their parameters (DigiKey):
+
+1. `part_parameters(category)`: the names of the parameters and examples of their
+   values.
+2. `find_parts(category, filters)`: the candidates, with each filter and its status.
+3. For each candidate that the design can use: `add_document` with its datasheet
+   URL, then `get_page_image` and `save_fact` for each value that the design needs.
+
+The distributor keeps one value of a parameter at its own conditions. Thus the tool
+marks a filter with a condition (`rds_on <= 10 mOhm at Vgs=2.5V`) `NOT APPLIED`. Read
+that value in the datasheet. See [use-cases.md](use-cases.md), use 15.
+
 ## Search links
 
 When the store has no datasheet and a distributor gives none, `part_links(mpn)` gives
@@ -197,8 +211,8 @@ search links:
 - Datasheet, price and stock: DigiKey, Mouser, Farnell, LCSC, Octopart, Findchips.
 - Symbol, footprint and 3D model: Component Search Engine, SnapMagic, Ultra
   Librarian.
-- With a DigiKey key: the direct links of DigiKey to the CAD models and the
-  datasheets of the MPN.
+- When DigiKey is in the global distributor list and has a key: the direct links of
+  DigiKey to the CAD models and the datasheets of the MPN.
 
 datasheet-lens does not open these pages. The agent opens one with a web tool, or
 gives the links to the user. For a datasheet that it finds, the agent calls

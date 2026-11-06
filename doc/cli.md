@@ -441,7 +441,7 @@ are not fitted. The Value column holds a general value and the MPNs in parenthes
 the fitted part first and then the alternatives, with the separators `,` and `;`
 (see [projects.md](projects.md#mpn-and-value-fields)). **It is tested only with BOM exports of
 KiCad and Eagle.** A BOM of a different CAD tool (for example Altium) can work when
-its column names are in the lists, but nobody has tested it. See [projects.md](projects.md#with-the-cli-and-a-bom-file) for the full
+its column names are in the lists, but nobody has tested it. See [projects.md](projects.md#a-bom-file) for the full
 rules.
 
 ## Distributors and links
@@ -455,8 +455,8 @@ datasheet-lens find [-x] [-p PATH] MPN
 ```
 
 Find a part at the enabled distributors: the concrete MPNs, the lifecycle state, the
-stock, the prices, the package (DigiKey only) and the datasheet URL. It needs an API
-key.
+stock, the prices, the package (DigiKey only) and the datasheet URL. With no key, it
+gives a note with the steps and the search links of `links`.
 
 | Argument or option | Effect |
 |---|---|
@@ -469,14 +469,15 @@ key.
 datasheet-lens pick [-P] [-a] [-s stock|price] [-n N] [-o N] [-k WORDS] [-p PATH] CATEGORY [FILTER ...]
 ```
 
-Find parts by their parameters (a parametric search) at DigiKey. It needs the DigiKey
-key. See [distributors.md](distributors.md), "Find parts by their parameters".
+Find parts by their parameters (a parametric search) at DigiKey. It needs DigiKey in
+the enabled distributors, and the DigiKey key. See
+[distributors.md](distributors.md#find-parts-by-their-parameters).
 
 | Argument or option | Effect |
 |---|---|
-| `CATEGORY` | The DigiKey category: its ID or a part of its name. A name that fits more categories gives the list to select from. |
-| `FILTER` | `NAME OP VALUE`, for example `"vdss >= 20 V"` or `"package has 3x3"`. |
-| `-P`, `--params` | Show the parameters of the category, with the number of values and examples. |
+| `CATEGORY` | The DigiKey category: its ID or a part of its name. A category with subcategories, or a name that fits more than one category, gives an error with a list of the categories. |
+| `FILTER` | `NAME OP VALUE [at CONDITION]`, for example `"vdss >= 20 V"` or `"package has 3x3"`. The tool does not apply a filter with a condition (after `at` or `@`): read that value in the datasheet. A filter with no value that agrees gives 0 parts and examples of the values. |
+| `-P`, `--params` | Show the parameters of the category, with their short names, the number of values and examples. Give no `FILTER` with it. |
 | `-a`, `--all` | Also the parts with no stock. |
 | `-s`, `--sort` | `stock` (most first, the default) or `price` (lowest first). |
 | `-n`, `--limit` | The number of parts, 1 to 50 (default 20). |
@@ -504,10 +505,12 @@ distributor.
 
 | Argument or option | Effect |
 |---|---|
-| `NAME` | The distributors, for example `mouser digikey`. They become the global setting. |
-| `--local` | Set the names in the project file. With no `NAME`, remove the setting from the project file: the project then uses the global setting. |
+| `NAME` | The distributors, for example `mouser digikey`. They become the global list. |
+| `--local` | Set the names in the project file. With no `NAME`, remove the list from the project file: the project then uses the global list. |
 | `--site CC` | The country of the prices and the stock, for example `CZ` (global, default `US`). DigiKey uses it. |
 | `--currency CUR` | The currency of the prices, for example `CZK` (global, default `USD`). DigiKey uses it. |
+
+`--site` and `--currency` are global: the command does not accept them with `--local`.
 
 ### server
 
@@ -536,7 +539,7 @@ for the key and does not show it. With no `NAME`, show where each key is (no val
 
 | Argument or option | Effect |
 |---|---|
-| `NAME` | `mouser` or `digikey` (a distributor), or `team` (the token of the team server, see [team-server.md](team-server.md)). |
+| `NAME` | `mouser` or `digikey` (a distributor), `digikey-id` or `digikey-secret` (one part of the DigiKey key), or `team` (the token of the team server, see [team-server.md](team-server.md)). |
 | `--delete` | Remove the saved key from the key store and from the key file. For `digikey`: the two parts. |
 
 For Mouser, use the key of the Search API, not the key of the Cart API. For DigiKey,
@@ -544,8 +547,12 @@ the command asks for the Client ID and then for the Client Secret. See
 [distributors.md](distributors.md).
 
 When the input is not a terminal, the command reads the key from the first line of
-the input (for DigiKey: the Client ID from the first line, the Client Secret from the
-second line).
+the input. For DigiKey, it reads the Client ID from the first line and the Client
+Secret from the second line.
+
+With no `NAME`, the command shows the DigiKey key as two lines: `digikey-id` and
+`digikey-secret`. When a distributor list exists and does not have the distributor of
+the saved key, the command tells you the `dist` command that adds it.
 
 ### links
 
@@ -554,4 +561,6 @@ datasheet-lens links MPN
 ```
 
 Show search links for a part: datasheet, price and stock, and symbol, footprint and 3D
-model. The command does not open the links.
+model. The command does not open the links. When DigiKey is in the global distributor list and has
+a key, the command also gives the direct links of DigiKey for the MPN: the CAD models
+at SnapMagic and Ultra Librarian, and the datasheets.

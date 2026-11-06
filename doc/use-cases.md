@@ -105,15 +105,18 @@ be bought.
 
 **Steps.**
 
-1. Save a personal API key one time: `datasheet-lens key mouser`.
+1. Save a personal API key one time: `datasheet-lens key mouser` or
+   `datasheet-lens key digikey`.
 2. Check the project: `project_availability` (CLI: `datasheet-lens stock`).
-3. For each warning, find a different MPN with `search_distributors`, and change the
-   part with `project_update_part`.
+3. For each warning, find a different MPN with `search_distributors`, or a part with
+   the same parameters with `find_parts` (see use 15). Then change the part with
+   `project_update_part`.
 
-**Result.** One line for each part with its lifecycle state and stock. A `WARNING`
-shows a part that is obsolete or discontinued (with the suggested replacement), a
-part that the distributor does not have (often a base part or a wrong MPN), or a part
-with no stock (with the lead time). See [distributors.md](distributors.md).
+**Result.** One section for each enabled distributor, with one line for each part:
+its lifecycle state and its stock. A `WARNING` shows a part that is obsolete or
+discontinued, a part that the distributor does not have (often a base part or a
+wrong MPN), or a part with no stock. Mouser also gives the suggested replacement and
+the lead time. See [distributors.md](distributors.md).
 
 ## 5. Review the design against the datasheets
 
@@ -296,3 +299,33 @@ the same microcontroller, LDO or sensor.
 **Result.** Each datasheet is in the store one time, with its index, its element
 map and its facts. Each project of the person uses them at once. The second project
 starts with the knowledge of the first one.
+
+## 15. Find a new part or a replacement part by its parameters
+
+**Situation.** The design needs a part with given parameters, for example an
+N-channel MOSFET for a 12 V load of 5 A with PWM and a gate drive of 3.3 V from a
+microcontroller. Or a project part is not orderable, and the team needs a
+replacement with the same parameters.
+
+**Steps.**
+
+1. Make sure that DigiKey is enabled and has a key: `distributor_status` (CLI:
+   `datasheet-lens dist`). It also tells the services of each distributor.
+2. Find the category and the names of its parameters: `part_parameters("278")` (CLI:
+   `datasheet-lens pick 278 -P`). A part of the category name gives a list of the
+   categories that fit.
+3. Find the candidates: `find_parts("278", ["channel = N-Channel", "vdss >= 20 V",
+   "drive <= 2.5V", "package has 3x3"])` (CLI: `datasheet-lens pick 278 ...`).
+4. For each candidate that the design can use, add its datasheet with `add_document`
+   (the datasheet URL of the result). Read each value that the design needs, for
+   example RDS(on) at a gate voltage of 2.5 V, with `get_page_image`. Save it with
+   `save_fact`.
+5. Give the user the links to the symbol, the footprint and the 3D model of the
+   selected part: `part_links(mpn)` (CLI: `datasheet-lens links MPN`).
+6. Add the selected part to the project with `project_add_part`.
+
+**Result.** A short list of candidates with stock, price and lifecycle state, and
+the values that the design needs, from the datasheets. The result marks a filter
+that the distributor data cannot decide `NOT APPLIED`: read that value in the
+datasheet. See
+[distributors.md](distributors.md#find-parts-by-their-parameters).

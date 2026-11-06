@@ -157,7 +157,7 @@ def test_category_and_parameter_errors(api):
 def test_parameter_lines(api):
     lines = digikey.parameter_lines("100")
     assert lines[0].startswith("Source: DigiKey. Category 100") and "(25 parts)" in lines[0]
-    assert "Drain to Source Voltage (Vdss) (short name vds): 4 values: 12 V | 20 V | 30 V | 60 V" in lines
+    assert "Drain to Source Voltage (Vdss) (short name vdss): 4 values: 12 V | 20 V | 30 V | 60 V" in lines
     digikey.parameter_lines("100")
     assert sum(1 for url, _, _ in api["sent"] if url.endswith("/search/keyword")) == 1  # the cache
 
@@ -199,7 +199,7 @@ def test_cli_pick_and_locale(api, store_home, capsys):
     assert main(["dist", "--site", "cz", "--currency", "czk"]) == 0
     assert "global: site CZ" in capsys.readouterr().out and digikey.locale() == ("CZ", "CZK")
     assert main(["pick", "100", "-P"]) == 0
-    assert "short name vds" in capsys.readouterr().out
+    assert "short name vdss" in capsys.readouterr().out
     assert main(["pick", "100", "vdss >= 20 V", "-a", "-n", "3", "-o", "6"]) == 0
     out = capsys.readouterr().out
     assert "price 1: 12.5 CZK" in out
@@ -342,3 +342,20 @@ def test_each_key_is_looked_up_once(api, store_home, monkeypatch):
     seen.clear()
     distributors.keys_of()
     assert sorted(seen) == ["digikey-id", "digikey-secret", "mouser"]
+
+
+def test_key_tells_when_the_distributor_is_not_in_the_list(store_home, monkeypatch, capsys):
+    """A distributor list that the user set before does not get DigiKey: the
+    command key tells how to add it."""
+    import io
+
+    from datasheet_lens.setup import save_config
+
+    save_config({"distributors": ["mouser"]})
+    monkeypatch.setattr("sys.stdin", io.StringIO("id-1\nsecret-1\n"))
+    assert main(["key", "digikey"]) == 0
+    assert 'run "datasheet-lens dist mouser digikey" to use it' in capsys.readouterr().out
+    save_config({})  # no list: the distributors with a key, DigiKey too
+    monkeypatch.setattr("sys.stdin", io.StringIO("id-1\nsecret-1\n"))
+    assert main(["key", "digikey"]) == 0
+    assert "not in the distributor list" not in capsys.readouterr().out

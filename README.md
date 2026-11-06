@@ -16,6 +16,11 @@ person and each AI agent of a project uses the same correct documents.
 - **One source for the two.** The hardware design and the software can use one
   project file, or each a project file with the same parts. The store identifies
   each PDF by its SHA-256, thus the two projects use the same document.
+- **Part selection.** datasheet-lens asks the official APIs of the distributors
+  (Mouser, DigiKey). A parametric search finds new parts and replacement parts by
+  their parameters. For each part, the tool gives the stock, the prices, the
+  lifecycle state and the links to the datasheet, the symbol, the footprint and the
+  3D model. The values that the design needs come from the datasheet.
 
 An LLM agent reads the datasheets through an MCP server. The tool does not convert
 a datasheet to text. A conversion makes errors that look correct: lost
@@ -44,11 +49,20 @@ interfaces can change.
 - **Project file.** `datasheet-lens.toml` in the repository of a design holds the
   parts of the design and their documents. The team gets it with the repository.
   `project_check` compares it with the parts of the CAD project.
-- **Orderable parts.** The ordering codes of a datasheet, and the lifecycle state,
-  stock and prices from the official APIs of the distributors (Mouser, DigiKey). No
-  scraping.
+- **Distributors.** The ordering codes of a datasheet, and for each orderable MPN
+  the lifecycle state, the stock and the prices from the official APIs of Mouser and
+  DigiKey. No scraping. `distributor_status` tells the services of each
+  distributor, for example which one has a parametric search.
 - **Parametric search.** Find new parts and replacement parts by their parameters
-  (DigiKey), then read the values that decide in the datasheets.
+  at DigiKey, for example "N-channel MOSFET, Vdss 20 V to 40 V, gate drive 2.5 V,
+  package 3x3". A distributor keeps one value of a parameter at its own conditions.
+  Thus the result marks a filter that the distributor data cannot decide (RDS(on) at
+  a gate voltage of 2.5 V) `NOT APPLIED`. The agent then reads that value in the
+  datasheet.
+- **Links to datasheets and CAD files.** For each MPN, the links to the datasheet,
+  the symbol, the footprint and the 3D model (Component Search Engine, SnapMagic,
+  Ultra Librarian). With DigiKey, also the direct links to the models of the part.
+  The user opens the links: datasheet-lens does not download the CAD files.
 - **Team server (optional).** One shared store for a team: the documents, parts,
   facts and the index and element map of each document. Each person keeps a local
   store that works also with no connection, and that synchronizes with the server.
@@ -68,6 +82,10 @@ check the BOM, and check the design against the original datasheets.
   different parts.
 - Select the concrete orderable MPN of a base part, and make sure that it can be
   ordered.
+- Find new parts or replacement parts by their parameters, then check the
+  candidates against their datasheets.
+- Get the links to the datasheet, the symbol, the footprint and the 3D model of a
+  part.
 - Review a schematic against the datasheets: pins, absolute maximum ratings, logic
   levels, application circuits.
 - Compare a footprint with the package drawing of the datasheet.
@@ -128,11 +146,11 @@ only the files that exist: make one of them first if you want the block.
 | `rm MPN` | Remove a part (or `-d DOC`, a document) from the project |
 | `search TEXT --part MPN` | Find a text in the documents of a part |
 | `codes DOC` | Show the orderable codes of a datasheet |
-| `links MPN` | Show search links for a datasheet, stock, a symbol, a footprint, a 3D model |
+| `links MPN` | Show links to the datasheet, stock, symbol, footprint and 3D model (with DigiKey: direct links) |
 | `find MPN` | Find a part at the distributors (lifecycle, stock, prices) |
 | `pick CATEGORY FILTER ...` | Find parts by their parameters, for example `pick 278 "vdss >= 20 V"` |
 | `stock` | Show the lifecycle state and the stock of each project part |
-| `key NAME` | Save the API key of a distributor, or the token of the team server (`key team`) |
+| `key NAME` | Save the API key of a distributor (`key mouser`, `key digikey`), or the token of the team server (`key team`) |
 | `server connect URL` | Connect the store to a team server; `server sync`, `server` (state) |
 | `dist NAME ...` | Select the distributors (globally, or `--local` for the project) |
 
@@ -141,9 +159,11 @@ All commands and options are in [doc/cli.md](https://github.com/turbyho/datashee
 Each user has a personal API key for each distributor. Get a free Mouser key at
 the [Mouser API Hub](https://www.mouser.com/api-hub/) (the Search API key, not the
 Cart API key), then run
-`datasheet-lens key mouser`. Get a free DigiKey key (a Client ID and a Client
-Secret of a production app) at [developer.digikey.com](https://developer.digikey.com),
-then run `datasheet-lens key digikey`. See [doc/distributors.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/distributors.md).
+`datasheet-lens key mouser`. Get a free DigiKey key at
+[developer.digikey.com](https://developer.digikey.com). The key is a Client ID and a
+Client Secret of a production app. Then run `datasheet-lens key digikey`. If you set
+a distributor list before, add DigiKey to it: `datasheet-lens dist mouser digikey`.
+See [doc/distributors.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/distributors.md).
 
 ## Documentation
 
