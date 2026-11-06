@@ -146,8 +146,9 @@ A name that the tool does not support gives an error. A name in a list that a ne
 version wrote is ignored, with a note.
 
 DigiKey gives the prices and the stock for the country and in the currency of the
-settings. The default is `US` and `USD`. Mouser gives them for the country of the
-Mouser account, and ignores these settings.
+settings. The default is `US` and `USD`. The MCP tool `set_price_locale(site,
+currency)` sets them too, when the user asks the agent. Mouser gives them for the
+country of the Mouser account, and ignores these settings.
 
 ## Find a part
 
@@ -253,6 +254,12 @@ download is 276 MB, and the database needs 2.2 GB on the disk. The tool puts it 
 
 The jlcparts project updates the data three times each day. The tool downloads it
 only on your command. A result tells you when the database is older than 1 day.
+
+An agent can start the update for you with the MCP tool
+`jlcpcb_library(action="update")`. The update runs in the background, and the tool
+answers at once. `jlcpcb_library(action="status")` gives the progress, the result or
+the error, and the age of the database. One update runs at a time. The agent starts
+an update only when you ask for it.
 
 > CAUTION: The data of jlcparts has no license statement. The values come from the
 > LCSC listings: some are typical values, not maximum values, and some parts copy the

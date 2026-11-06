@@ -594,17 +594,14 @@ def cmd_server(args: argparse.Namespace) -> int:
 def cmd_dist(args: argparse.Namespace) -> int:
     """The command dist: show or set the distributors that datasheet-lens asks,
     globally or (--local) for the project."""
-    from .distributors import check_names, status_lines
+    from .distributors import check_locale, check_names, set_locale, status_lines
     from .project import load, load_optional, set_distributors
     from .config import load_config
     from .setup import save_config
 
-    import re
-
-    if args.site is not None and not re.fullmatch(r"[A-Za-z]{2}", args.site):
-        raise LensError("--site: a country code of 2 letters, for example CZ or US")
-    if args.currency is not None and not re.fullmatch(r"[A-Za-z]{3}", args.currency):
-        raise LensError("--currency: a currency code of 3 letters, for example CZK, EUR or USD")
+    if args.site == "" or args.currency == "":
+        raise LensError("--site and --currency need a value, for example --site CZ --currency CZK")
+    check_locale(args.site, args.currency)
     if args.local:
         if args.site or args.currency:
             raise LensError("--site and --currency are global settings: give them without --local")
@@ -612,17 +609,14 @@ def cmd_dist(args: argparse.Namespace) -> int:
         set_distributors(project, check_names(args.names) if args.names else None)
         print(f"project {project.root}: " + (f"distributors {', '.join(project.distributors)}"
                                             if project.distributors is not None else "the global configuration"))
-    elif args.names or args.site or args.currency:
-        cfg = load_config(strict=True)  # a file that cannot be read is not written over
+    else:
         if args.names:
+            cfg = load_config(strict=True)  # a file that cannot be read is not written over
             cfg["distributors"] = check_names(args.names)
+            save_config(cfg)
             print(f"global: distributors {', '.join(cfg['distributors'])}")
-        for key in ("site", "currency"):
-            value = getattr(args, key)
-            if value:
-                cfg[key] = value.upper()
-                print(f"global: {key} {cfg[key]}")
-        save_config(cfg)
+        if args.site or args.currency:
+            print("\n".join(set_locale(args.site or "", args.currency or "")))
     print("\n".join(status_lines(load_optional(args.path))))
     return 0
 

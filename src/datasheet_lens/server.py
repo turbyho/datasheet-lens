@@ -950,6 +950,47 @@ def distributor_status(path: ProjectPath = "") -> str:
 
 
 @tool
+def set_price_locale(
+        site: Annotated[str, Field(description=(
+            "The country of the prices and the stock: a code of 2 letters, for example CZ, DE or US. Empty: no "
+            "change."))] = "",
+        currency: Annotated[str, Field(description=(
+            "The currency of the prices: a code of 3 letters, for example CZK, EUR or USD. Empty: no "
+            "change."))] = "") -> str:
+    """Set the country and the currency of the prices and the stock of DigiKey
+    in the global configuration of the user, as the CLI command "datasheet-lens
+    dist --site CZ --currency CZK". Mouser uses the country of the Mouser
+    account, and JLCPCB gives USD. Change it only when the user asks."""
+    from .distributors import set_locale
+
+    return "\n".join(set_locale(site, currency))
+
+
+@tool
+def jlcpcb_library(
+        action: Annotated[str, Field(description=(
+            "status: the state of the update job and of the local database. update: start the download of the "
+            "JLCPCB parts library in the background (276 MB to download, 2.2 GB on the disk; 20 s on a fast "
+            "connection, some minutes on a slow one), then call status until the update is done or failed. Start an update only when the "
+            "user asks for it."))] = "status") -> str:
+    """The JLCPCB parts library on this machine: the local database of the
+    parametric search with the source jlcpcb (JLCPCB stock for the assembly and
+    library class). The update runs in the background: this tool answers at
+    once, and status gives the progress. The old database stays until the new
+    one is complete and checked. Tell the user the limits of the data that the
+    result gives."""
+    from . import jlcpcb
+
+    action = action.strip().lower()
+    if action == "update":
+        jlcpcb.start_update()
+        return "\n".join([jlcpcb.LIMITS] + jlcpcb.status_lines())
+    if action != "status":
+        raise LensError("action: status or update")
+    return "\n".join(jlcpcb.status_lines())
+
+
+@tool
 def get_ordering_codes(document: DocRef) -> str:
     """The orderable codes of a datasheet, from its text layer. Gives one line for
     each code: the code, its page and its line, which in an ordering table gives

@@ -24,6 +24,7 @@ import json
 import os
 import sqlite3
 import struct
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -154,11 +155,15 @@ def update(progress: Callable[[str], None] = print, opener: Callable[[str], Iter
     stays when a step fails. Gives the state."""
     out = folder()
     out.mkdir(parents=True, exist_ok=True)
+    _remove_stale_tmp(out)
     started = time.time()
     progress(f"get {DATA_URL}/{ARCHIVE}")
     last = _get(f"{DATA_URL}/{ARCHIVE}")
     entry = _entry(last)
-    tmp = out / (DB_NAME + ".tmp")
+    # A file of this process only: an update in a second process (the CLI and the
+    # MCP server) does not write into it. The last complete update wins.
+    tmp = out / f"{DB_NAME}.{os.getpid()}.{threading.get_ident()}{TMP_SUFFIX}"
+    state_tmp = out / f"{STATE_NAME}.{os.getpid()}.{threading.get_ident()}{TMP_SUFFIX}"
     crc, size, done = 0, 0, 0
     inflate = zlib.decompressobj(-15) if entry["method"] == 8 else None
     try:
@@ -179,13 +184,31 @@ def update(progress: Callable[[str], None] = print, opener: Callable[[str], Iter
                             "run the update again")
         progress("add the indexes")
         _add_indexes(tmp)
+        state = {"downloaded": time.time(), "source": f"{DATA_URL}/{ARCHIVE}", "size": size,
+                 "seconds": round(time.time() - started, 1)}
+        state_tmp.write_text(json.dumps(state), encoding="utf-8")  # before the replace: no half result
         os.replace(tmp, db_path())
+        os.replace(state_tmp, out / STATE_NAME)
     finally:
         tmp.unlink(missing_ok=True)
-    state = {"downloaded": time.time(), "source": f"{DATA_URL}/{ARCHIVE}", "size": size,
-             "seconds": round(time.time() - started, 1)}
-    (out / STATE_NAME).write_text(json.dumps(state), encoding="utf-8")
+        state_tmp.unlink(missing_ok=True)
     return state
+
+
+TMP_SUFFIX = ".tmp"
+STALE_SECONDS = 3600.0  # an update takes minutes: an older temporary file is from a stopped update
+
+
+def _stale_tmp(out: Path) -> list[Path]:
+    """The temporary files of updates that stopped (a process that ended during
+    the download): older than STALE_SECONDS."""
+    now = time.time()
+    return [p for p in out.glob(f"*{TMP_SUFFIX}") if now - p.stat().st_mtime > STALE_SECONDS]
+
+
+def _remove_stale_tmp(out: Path) -> None:
+    for path in _stale_tmp(out):
+        path.unlink(missing_ok=True)
 
 
 def _add_indexes(path: Path) -> None:
@@ -202,8 +225,7 @@ def _add_indexes(path: Path) -> None:
 def remove() -> bool:
     """Delete the database and its state. True if there was one."""
     found = False
-    for name in (DB_NAME, STATE_NAME, DB_NAME + ".tmp"):
-        path = folder() / name
+    for path in [folder() / DB_NAME, folder() / STATE_NAME, *folder().glob(f"*{TMP_SUFFIX}")]:
         if path.exists():
             path.unlink()
             found = True
@@ -227,8 +249,9 @@ def age_note() -> str:
     """A note when the database is older than MAX_AGE_DAYS, else ""."""
     s = state()
     if s and s["age_days"] > MAX_AGE_DAYS:
-        return (f"Note: the JLCPCB database is {s['age_days']:.1f} days old. The stock changes each day: run "
-                "\"datasheet-lens jlc update\".")
+        return (f"Note: the JLCPCB database is {s['age_days']:.1f} days old. The stock changes each day: the "
+                "user runs \"datasheet-lens jlc update\", or an agent starts jlcpcb_library(action=\"update\") "
+                "when the user agrees.")
     return ""
 
 
@@ -236,8 +259,9 @@ def connect() -> sqlite3.Connection:
     """The database, read-only. A LensError with the step when there is none."""
     path = db_path()
     if not path.is_file():
-        raise LensError("The JLCPCB database is not on this machine. Tell the user: run \"datasheet-lens jlc "
-                        "update\" in a terminal (276 MB download, 2.2 GB on the disk). " + LIMITS)
+        raise LensError("The JLCPCB database is not on this machine (276 MB download, 2.2 GB on the disk). Ask the "
+                        "user: start the update with jlcpcb_library(action=\"update\") when the user agrees, or the "
+                        "user runs \"datasheet-lens jlc update\" in a terminal. " + LIMITS)
     db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
     db.row_factory = sqlite3.Row
     return db
@@ -567,3 +591,66 @@ def offers(mpn: str, exact: bool = True) -> list:
             package=row["package"] or "", library=library(row), datasheet_url=row["datasheet"] or "",
             product_url=PART_URL.format(lcsc=row["lcsc"]), distributor_pn=f"C{row['lcsc']}"))
     return out
+
+
+# The update in the background (the MCP tool jlcpcb_library). -------------------
+
+_job: dict = {"state": "idle"}  # idle, running, done, failed
+_job_lock = threading.Lock()
+
+
+def start_update(opener: Callable[[str], Iterator[bytes]] | None = None) -> dict:
+    """Start the update in a background thread, and give the state of the job
+    at once. A job that runs already is not started again."""
+    with _job_lock:
+        if _job.get("state") == "running":
+            return dict(_job)
+        _job.clear()
+        _job.update(state="running", progress="start", started=time.time())
+
+    def progress(line: str) -> None:
+        with _job_lock:
+            _job["progress"] = line
+
+    def run() -> None:
+        try:
+            result = update(progress=progress, opener=opener or _stream)
+        except Exception as e:  # the job gives each error to the next status call
+            with _job_lock:
+                _job.update(state="failed", error=f"{e.__class__.__name__}: {e}", finished=time.time())
+        else:
+            with _job_lock:
+                _job.update(state="done", progress="done", finished=time.time(), seconds=result["seconds"])
+
+    threading.Thread(target=run, name="jlcpcb-update", daemon=True).start()
+    return dict(_job)
+
+
+def job() -> dict:
+    """The state of the update job of this process."""
+    with _job_lock:
+        return dict(_job)
+
+
+def status_lines() -> list[str]:
+    """The state of the update job and of the database, as lines."""
+    j = job()
+    lines = []
+    if j["state"] == "running":
+        lines.append(f"update: running for {time.time() - j['started']:.0f} s: {j.get('progress', '')}. Ask the "
+                     "status again in some seconds")
+    elif j["state"] == "done":
+        lines.append(f"update: done in {j.get('seconds', 0)} s")
+    elif j["state"] == "failed":
+        lines.append(f"update: FAILED: {j.get('error', '')}. The old database, if any, stays")
+    s = state()
+    lines.append(f"database: {s['path']}, {s['age_days']:.1f} days old" if s else
+                 "database: not on this machine")
+    if j["state"] != "running" and folder().is_dir():
+        others = list(folder().glob(f"*{TMP_SUFFIX}"))
+        if others:
+            stale = set(_stale_tmp(folder()))
+            lines.append(f"{len(others)} temporary files of an update: "
+                         + ("an update that stopped (the next update deletes them)" if all(p in stale for p in others)
+                            else "an update of a different process (the CLI or a second MCP server) runs now"))
+    return lines + ([note] if (note := age_note()) else [])

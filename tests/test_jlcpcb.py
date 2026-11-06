@@ -3,8 +3,10 @@ offers and the availability. The data is made up: the jlcparts data has no
 license statement."""
 
 import json
+import os
 import sqlite3
 import struct
+import threading
 import time
 import zlib
 
@@ -65,6 +67,8 @@ def split_zip(payload: bytes, part_size: int, name: str = "cache.sqlite3") -> di
 @pytest.fixture
 def jlc(store_home, tmp_path, monkeypatch):
     """A JLCPCB database from the made-up parts, through the download code."""
+    jlcpcb._job.clear()
+    jlcpcb._job["state"] = "idle"
     payload = make_db(tmp_path / "source.sqlite3")
     files = split_zip(payload, part_size=150)
     assert len(files) > 2  # the data goes over more parts
@@ -89,7 +93,7 @@ def test_update_unpacks_the_split_zip(jlc):
     indexes = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'index'")}
     assert {"dl_mfr", "dl_subcategory"} <= indexes
     db.close()
-    assert not (jlcpcb.folder() / (jlcpcb.DB_NAME + ".tmp")).exists()
+    assert not list(jlcpcb.folder().glob("*.tmp"))
     assert jlcpcb.state()["age_days"] < 0.01 and jlcpcb.age_note() == ""
 
 
@@ -103,7 +107,7 @@ def test_a_wrong_download_keeps_the_old_database(jlc, monkeypatch):
     with pytest.raises((LensError, zlib.error)):
         jlcpcb.update(progress=lambda _: None, opener=lambda url: iter([files[url.rsplit("/", 1)[1]]]))
     assert jlcpcb.db_path().read_bytes() == before
-    assert not (jlcpcb.folder() / (jlcpcb.DB_NAME + ".tmp")).exists()
+    assert not list(jlcpcb.folder().glob("*.tmp"))
 
 
 def test_search_separates_stock_and_library(jlc):
@@ -228,3 +232,78 @@ def test_review_fixes(jlc, tmp_path, monkeypatch):
     assert "Source: JLCPCB parts library. Not checked: database disk image is malformed" in \
         distributors.search_lines("FET-A", exact=True)
     assert "FET-A: not checked: database disk image is malformed" in distributors.availability(prj.load(project.root))
+
+
+def _wait(seconds: float = 10.0) -> dict:
+    deadline = time.time() + seconds
+    while jlcpcb.job()["state"] == "running":
+        assert time.time() < deadline, f"the update job still runs after {seconds} s"
+        time.sleep(0.02)
+    return jlcpcb.job()
+
+
+def test_update_in_the_background_with_progress(jlc, monkeypatch):
+    """The MCP tool starts the update and answers at once; status gives the progress and the result."""
+    from datasheet_lens import server
+
+    files = jlc["files"]
+    gate = threading.Event()
+
+    def slow_opener(url):
+        gate.wait(5)  # the job stays "running" until the test opens the gate
+        yield files[url.rsplit("/", 1)[1]]
+
+    monkeypatch.setattr(jlcpcb, "_stream", slow_opener)
+    try:
+        out = server.jlcpcb_library("update")
+        assert "no license statement" in out and "update: running for" in out
+        assert "update: running for" in server.jlcpcb_library("update")  # no second job
+    finally:
+        gate.set()  # never leave the job thread waiting into a later test
+    assert _wait()["state"] == "done"
+    assert "update: done in" in server.jlcpcb_library("status")
+
+    def failing(url):
+        raise LensError("JLCPCB database: HTTP 404 Not Found")
+        yield b""
+
+    monkeypatch.setattr(jlcpcb, "_stream", failing)
+    server.jlcpcb_library("update")
+    assert _wait()["state"] == "failed"
+    out = server.jlcpcb_library("status")
+    assert "update: FAILED: LensError: JLCPCB database: HTTP 404" in out and "days old" in out  # the old one stays
+    with pytest.raises(Exception, match="action: status or update"):
+        server.jlcpcb_library("download")
+
+
+def test_set_price_locale(store_home):
+    from datasheet_lens import digikey, server
+
+    assert "global: site CZ, currency CZK" in server.set_price_locale("cz", "czk")
+    assert digikey.locale() == ("CZ", "CZK")
+    assert "currency EUR" in server.set_price_locale(currency="eur") and digikey.locale() == ("CZ", "EUR")
+    with pytest.raises(Exception, match="a country code of 2 letters"):
+        server.set_price_locale("CZE")
+    with pytest.raises(Exception, match="give the site"):
+        server.set_price_locale()
+
+
+
+def test_temporary_files_of_other_updates(jlc):
+    """Each update writes its own temporary file. A file of a running update of
+    a different process stays; a file of a stopped update (older than one hour)
+    goes at the next update."""
+    folder = jlcpcb.folder()
+    running = folder / "jlcpcb.sqlite3.999.1.tmp"
+    running.write_bytes(b"x")
+    assert "an update of a different process (the CLI or a second MCP server) runs now" in \
+        "\n".join(jlcpcb.status_lines())
+    stopped = folder / "jlcpcb.sqlite3.998.1.tmp"
+    stopped.write_bytes(b"x")
+    old = time.time() - 2 * jlcpcb.STALE_SECONDS
+    os.utime(stopped, (old, old))
+    jlcpcb.update(progress=lambda _: None, opener=jlc["opener"])
+    assert running.exists() and not stopped.exists()
+    os.utime(running, (old, old))
+    assert "an update that stopped (the next update deletes them)" in "\n".join(jlcpcb.status_lines())
+    assert jlcpcb.remove() and not list(folder.glob("*.tmp"))

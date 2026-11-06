@@ -214,6 +214,7 @@ def test_cli_pick_and_locale(api, store_home, capsys):
     assert "SearchOptions" not in request["FilterOptionsRequest"] and (request["Limit"], request["Offset"]) == (3, 6)
     assert api["sent"][-1][1]["X-digikey-locale-site"] == "CZ"
     assert main(["dist", "--site", "CZE"]) == 2
+    assert main(["dist", "--site", ""]) == 2  # an empty value is not "no change"
     assert main(["dist", "--local", "--site", "CZ"]) == 2
 
 

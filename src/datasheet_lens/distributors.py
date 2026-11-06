@@ -81,7 +81,8 @@ def _jlcpcb_status() -> str:
     s = jlcpcb.state()
     if not s:
         return ("jlcpcb: the local database is not on this machine. The user downloads it with \"datasheet-lens "
-                "jlc update\" (276 MB download, 2.2 GB on the disk)")
+                "jlc update\", or an agent starts jlcpcb_library(action=\"update\") when the user agrees (276 MB "
+                "download, 2.2 GB on the disk)")
     return f"jlcpcb: the local database is {s['age_days']:.1f} days old ({s['path']})"
 # With no list of the user: the distributors with a saved key. With no key at all:
 # Mouser, so that the user gets the note with the steps.
@@ -630,3 +631,36 @@ def link_lines(mpn: str, project=None) -> list[str]:
         except LensError as e:
             lines.append(f"Direct links of DigiKey: not checked: {e}")
     return lines
+
+
+def check_locale(site: str | None, currency: str | None) -> tuple[str | None, str | None]:
+    """The country and the currency in upper case, or a LensError. None or "":
+    no change."""
+    import re
+
+    if site and not re.fullmatch(r"[A-Za-z]{2}", site.strip()):
+        raise LensError("site: a country code of 2 letters, for example CZ or US")
+    if currency and not re.fullmatch(r"[A-Za-z]{3}", currency.strip()):
+        raise LensError("currency: a currency code of 3 letters, for example CZK, EUR or USD")
+    return (site.strip().upper() if site else None), (currency.strip().upper() if currency else None)
+
+
+def set_locale(site: str = "", currency: str = "") -> list[str]:
+    """Save the country and the currency of the prices and the stock in the
+    global configuration (DigiKey uses them). Gives the lines of the result."""
+    from .config import load_config
+    from .setup import save_config
+
+    site, currency = check_locale(site, currency)
+    if not site and not currency:
+        raise LensError("give the site (a country code, for example CZ) or the currency (for example CZK), or both")
+    cfg = load_config(strict=True)  # a file that cannot be read is not written over
+    for key, value in (("site", site), ("currency", currency)):
+        if value:
+            cfg[key] = value
+    save_config(cfg)
+    from . import digikey
+
+    s, c = digikey.locale()
+    return [f"global: site {s}, currency {c}. DigiKey gives its prices and stock for this country and currency. "
+            "Mouser uses the country of the Mouser account. JLCPCB gives USD."]

@@ -126,6 +126,8 @@ project folder. The other tools only read.
 | `part_parameters` | Give the parameters of a part category at DigiKey or in the JLCPCB parts library, with the number of values and examples of the values, for the filters of `find_parts`. | `category`, `source`, `path` | no |
 | `find_parts` | Find new parts or replacement parts by their parameters (a parametric search at DigiKey or in the JLCPCB parts library). | `category`, `filters`, `keywords`, `in_stock`, `sort`, `limit`, `offset`, `source`, `path` | no |
 | `project_availability` | Give the lifecycle state and the stock of each project part at each enabled distributor, with a warning for each problem. | `path` | no |
+| `set_price_locale` | Set the country and the currency of the DigiKey prices and stock (global), as `datasheet-lens dist --site --currency`. Only when the user asks. | `site`, `currency` | config.json |
+| `jlcpcb_library` | Give the state of the JLCPCB parts library, or start its update in the background (`action="update"`, only when the user asks). `status` gives the progress. | `action` | jlcpcb/ |
 | `distributor_status` | Give the enabled distributors, if each one has an API key (no key values), and the services of each distributor. | `path` | no |
 | `part_links` | Give search links for a part: datasheet, price, stock, symbol, footprint and 3D model. When DigiKey is in the global distributor list and has a key, also the direct links of DigiKey to the CAD models and the datasheets. | `mpn` | no |
 
