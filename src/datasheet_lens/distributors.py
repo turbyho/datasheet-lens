@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import sqlite3
 import re
 import time
 import urllib.error
@@ -34,7 +35,7 @@ from dataclasses import dataclass, field
 from urllib.parse import quote
 
 from . import makers
-from .errors import LensError, Unavailable
+from .errors import Choose, LensError, Unavailable
 from .keys import GROUPS, KEYS, get_key
 from .keys import credential as _credential_of
 
@@ -52,13 +53,36 @@ SERVICES = {
     "mouser": (["MPN search (search_distributors, project_availability): stock, prices, lifecycle state, "
                 "suggested replacement of an obsolete part, datasheet URL"],
                ["parametric search (Mouser gives no electrical parameters)", "package"]),
-    "digikey": (["parametric search (part_parameters, find_parts): parameters, stock, price, lifecycle state, "
+    "digikey": (["parametric search (part_parameters, find_parts with source digikey): parameters, stock, price, lifecycle state, "
                  "package, datasheet URL",
                  "MPN search (search_distributors, project_availability): stock, prices, lifecycle state, "
                  "package, datasheet URL",
                  "direct links to the CAD models (SnapMagic, Ultra Librarian) and the datasheets (part_links)"],
                 []),
+    "jlcpcb": (["parametric search (part_parameters, find_parts with source jlcpcb): parameters with more "
+                "points (RDS(on) at more Vgs), JLCPCB stock for the assembly, library class (Basic, Preferred, "
+                "Extended), price in USD, package, datasheet URL",
+                "MPN search (search_distributors, project_availability): JLCPCB stock and library class"],
+               ["lifecycle state (the database has no obsolete parts)",
+                "values of a known quality (LCSC listings: typical and maximum values mix, copies of values)"]),
 }
+
+
+def jlcpcb_ready() -> bool:
+    """True when the user downloaded the JLCPCB database (datasheet-lens jlc update)."""
+    from . import jlcpcb
+
+    return jlcpcb.db_path().is_file()
+
+
+def _jlcpcb_status() -> str:
+    from . import jlcpcb
+
+    s = jlcpcb.state()
+    if not s:
+        return ("jlcpcb: the local database is not on this machine. The user downloads it with \"datasheet-lens "
+                "jlc update\" (276 MB download, 2.2 GB on the disk)")
+    return f"jlcpcb: the local database is {s['age_days']:.1f} days old ({s['path']})"
 # With no list of the user: the distributors with a saved key. With no key at all:
 # Mouser, so that the user gets the note with the steps.
 DEFAULT = ["mouser"]
@@ -89,6 +113,7 @@ class Offer:
     datasheet_url: str = ""
     product_url: str = ""
     distributor_pn: str = ""
+    library: str = ""  # JLCPCB: Basic, Preferred or Extended (the assembly fee)
 
 
 def check_names(names: list[str]) -> list[str]:
@@ -96,6 +121,10 @@ def check_names(names: list[str]) -> list[str]:
     datasheet-lens does not support."""
     out = []
     for name in (n.strip().lower() for n in names):
+        if name == "jlcpcb":
+            raise LensError("jlcpcb is not a distributor of this list: it is a local database. Run "
+                            "\"datasheet-lens jlc update\" to download it, and \"datasheet-lens jlc remove\" to "
+                            "delete it")
         if name in PLANNED:
             raise LensError(f"{name} is not supported yet (supported: {', '.join(SUPPORTED)})")
         if name not in SUPPORTED:
@@ -296,7 +325,8 @@ def search_lines(mpn: str, exact: bool = False, project=None) -> list[str]:
     if not mpn.strip():
         raise LensError("the MPN is empty")
     keys, notes = keys_of(project)
-    if not keys:
+    jlc = jlcpcb_ready()
+    if not keys and not jlc:
         return notes + ["Search links:"] + format_links(mpn)
     lines = []
     for name, credential in keys.items():
@@ -308,6 +338,22 @@ def search_lines(mpn: str, exact: bool = False, project=None) -> list[str]:
             continue
         lines += ([f"Source: {label} ({len(offers)} parts)"] + [format_offer(o) for o in offers] if offers
                   else [f"Source: {label}. No part {'is' if exact else 'starts with'} {mpn.strip()}."])
+    if jlc:
+        from . import jlcpcb
+
+        try:
+            offers = jlcpcb.offers(mpn, exact)
+        except (LensError, sqlite3.Error) as e:  # the distributors still answer
+            lines.append(f"Source: JLCPCB parts library. Not checked: {e}")
+        else:
+            lines += ([f"Source: JLCPCB parts library ({len(offers)} parts)"] + [format_offer(o) for o in offers]
+                      if offers else [f"Source: JLCPCB parts library. No part {'is' if exact else 'starts with'} "
+                                      f"{mpn.strip()}."])
+        note = jlcpcb.age_note()
+        lines += [note] if note else []
+    if not keys:  # no distributor: the search links too
+        lines += notes + ["Search links:"] + format_links(mpn)
+        return lines
     return lines + notes
 
 
@@ -344,11 +390,15 @@ def format_offer(o: Offer) -> str:
         parts.append(f"state: {o.lifecycle or 'discontinued'}" + (f" [NOT ORDERABLE: {warn}]" if warn else "")
                      + (" [the distributor does not sell it now; not a lifecycle state of the manufacturer]"
                         if restricted(o) else ""))
-    parts.append(f"stock: {o.stock if o.stock is not None else o.availability or 'unknown'}")
+    parts.append(f"stock: {o.stock if o.stock is not None else o.availability or 'unknown'}"
+                 + (" (NOT IN STOCK at JLCPCB: the assembly needs an order of the part)"
+                    if o.library and o.stock == 0 else ""))
     if o.lead_time:
         parts.append(f"lead time {o.lead_time}")
     if prices:
         parts.append(f"price {prices}")
+    if o.library:
+        parts.append(f"library: {o.library}")
     if o.package or o.packaging:
         parts.append(" / ".join(x for x in (o.package, o.packaging) if x))
     if o.datasheet_url:
@@ -376,12 +426,44 @@ def availability(project, store=None) -> list[str]:
     the user. store: its manufacturer registry selects the offers of the
     manufacturer of the part."""
     keys, notes = keys_of(project)
-    if not keys:
+    jlc = jlcpcb_ready()
+    if not keys and not jlc:
         return notes or ["No enabled distributor: \"datasheet-lens dist\" shows the settings."]
     lines: list[str] = []
     for name, credential in keys.items():
         lines += _availability_at(name, credential, project, store)
+    if jlc:
+        lines += _availability_jlcpcb(project, store)
     return lines + notes
+
+
+def _availability_jlcpcb(project, store=None) -> list[str]:
+    """The lines of availability in the JLCPCB parts library: the JLCPCB stock
+    for the assembly and the library class of each project part, from the
+    manufacturer of the part when the MPN has parts of more manufacturers."""
+    from . import jlcpcb
+
+    lines = ["Source: JLCPCB parts library (stock for the JLCPCB assembly)"]
+    for part in project.parts:
+        try:
+            offers = jlcpcb.offers(part["mpn"], exact=True)
+        except (LensError, sqlite3.Error) as e:
+            lines.append(f"{part['mpn']}: not checked: {e}")
+            continue
+        if not offers:
+            lines.append(f"{part['mpn']}: WARNING: the JLCPCB parts library does not have this MPN")
+            continue
+        offers, own = _of_maker(offers, part.get("manufacturer", ""), store)
+        o = max(offers, key=lambda x: x.stock or 0)
+        state = f"{part['mpn']}: JLCPCB stock {o.stock}, library {o.library} ({o.distributor_pn})"
+        if not o.stock:
+            state += ". WARNING: NOT IN STOCK at JLCPCB: the assembly needs an order of the part"
+        if part.get("manufacturer") and not own:
+            state += (f". WARNING: the JLCPCB library has no part from {part['manufacturer']}: the data is of "
+                      + ", ".join(sorted({x.manufacturer for x in offers})))
+        lines.append(state)
+    note = jlcpcb.age_note()
+    return lines + ([note] if note else [])
 
 
 def _availability_at(name: str, credential, project, store=None) -> list[str]:
@@ -437,10 +519,13 @@ def status_lines(project=None) -> list[str]:
         value, where = lookup(name)
         lines.append(f"{name}: key {where}" if value else
                      (f"{name}: key {where}; " if where != "not set" else "") + no_key_note(name, source))
-    lines.append("The services of each supported distributor:")
+    lines.append(_jlcpcb_status())
+    lines.append("The services of each source (jlcpcb is not in the distributor list: \"datasheet-lens jlc "
+                 "update\" enables it):")
     for name, (has, lacks) in SERVICES.items():
+        enabled_now = jlcpcb_ready() if name == "jlcpcb" else name in names
         lines.append(f"{name}: " + "; ".join(has) + (f". Not available: {'; '.join(lacks)}" if lacks else "")
-                     + ("" if name in names else ". Not enabled"))
+                     + ("" if enabled_now else ". Not enabled"))
     return lines
 
 
@@ -471,21 +556,61 @@ def _parametric_credential(project=None) -> tuple[str, object]:
                     + ", ".join(SUPPORTED[n][0] for n in PARAMETRIC) + ". " + " ".join(steps))
 
 
-def pick_lines(category: str, filters: list[str], keywords: str = "", in_stock: bool = True, sort: str = "stock",
-               limit: int = 20, offset: int = 0, project=None) -> list[str]:
-    """The parametric search at the enabled distributors, as lines with the source."""
-    from . import digikey
+PARAMETRIC_SOURCES = ("digikey", "jlcpcb")
 
+
+def _source(source: str, project=None) -> tuple[str, object]:
+    """The source of the parametric search and its credential. The caller
+    always names the source: the categories, the parameters and the meaning of
+    the stock differ between the sources."""
+    source = source.strip().lower()
+    if source not in PARAMETRIC_SOURCES:
+        raise LensError(f"give the source of the search: {' or '.join(PARAMETRIC_SOURCES)} (digikey: the stock "
+                        "and the lifecycle at DigiKey; jlcpcb: the JLCPCB stock for the assembly and the library "
+                        "class)")
+    if source == "jlcpcb":
+        if not jlcpcb_ready():
+            from . import jlcpcb
+
+            jlcpcb.connect()  # the LensError with the step for the user
+        return "jlcpcb", None
     _, cred = _parametric_credential(project)
-    return digikey.search_lines(digikey.search(category, filters, keywords, in_stock, sort, limit, offset, cred))
+    return "digikey", cred
 
 
-def parameter_lines(category: str, project=None) -> list[str]:
-    """The parameters of a category at the enabled distributor with a parametric search."""
-    from . import digikey
+def pick_lines(source: str, category: str, filters: list[str], keywords: str = "", in_stock: bool = True,
+               sort: str = "stock", limit: int = 20, offset: int = 0, project=None) -> list[str]:
+    """The parametric search at a source (digikey or jlcpcb), as lines with the
+    source. A category text that fits more categories gives the list to select
+    from, as a normal result."""
+    name, cred = _source(source, project)
+    try:
+        if name == "jlcpcb":
+            from . import jlcpcb
 
-    _, cred = _parametric_credential(project)
-    return digikey.parameter_lines(category, cred)
+            return jlcpcb.search_lines(jlcpcb.search(category, filters, keywords, in_stock, sort, limit, offset))
+        from . import digikey
+
+        return digikey.search_lines(digikey.search(category, filters, keywords, in_stock, sort, limit, offset,
+                                                   cred))
+    except Choose as c:
+        return c.lines
+
+
+def parameter_lines(source: str, category: str, project=None) -> list[str]:
+    """The parameters of a category at a source of the parametric search. A
+    category text that fits more categories gives the list to select from."""
+    name, cred = _source(source, project)
+    try:
+        if name == "jlcpcb":
+            from . import jlcpcb
+
+            return jlcpcb.parameter_lines(category)
+        from . import digikey
+
+        return digikey.parameter_lines(category, cred)
+    except Choose as c:
+        return c.lines
 
 
 def link_lines(mpn: str, project=None) -> list[str]:

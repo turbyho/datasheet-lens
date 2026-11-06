@@ -67,8 +67,10 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
   user saves with `datasheet-lens key mouser` or `datasheet-lens key digikey`:
   give the user each note about a missing key.
 - To find a new part or a replacement part by its parameters: part_parameters,
-  then find_parts (CLI `datasheet-lens pick CATEGORY FILTER ...`). Read each
-  value that the design needs in the datasheet of the candidate. part_links
+  then find_parts, with the source digikey or jlcpcb (CLI `datasheet-lens pick
+  SOURCE CATEGORY FILTER ...`). For the JLCPCB assembly, use jlcpcb: it gives
+  the JLCPCB stock and the library class (Basic, Preferred, Extended). Read each value that the design needs in
+  the datasheet of the candidate. part_links
   (CLI `datasheet-lens links MPN`) gives the links to the datasheet, the symbol,
   the footprint and the 3D model: give them to the user.
 - To change the MPN, the base part or the category of a part:

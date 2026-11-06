@@ -11,7 +11,7 @@ import pytest
 
 from datasheet_lens import digikey, distributors
 from datasheet_lens.cli import main
-from datasheet_lens.errors import LensError, Unavailable
+from datasheet_lens.errors import Choose, LensError, Unavailable
 
 CATEGORIES = {"Categories": [{"CategoryId": 2, "Name": "Cables", "ProductCount": 9, "Children": [
     {"CategoryId": 20, "ParentId": 2, "Name": "Accessories", "ProductCount": 4, "Children": []}]},
@@ -137,11 +137,18 @@ def test_no_matching_value_asks_nothing(api):
 
 
 def test_category_and_parameter_errors(api):
-    with pytest.raises(LensError, match="fits more DigiKey categories") as e:
+    with pytest.raises(Choose, match="fits more DigiKey categories") as e:
         digikey.search("mosfet", [])
-    assert "100: Semiconductors > FETs, MOSFETs > Single FETs, MOSFETs (25 parts)" in str(e.value)
-    with pytest.raises(LensError, match="101: .*FET, MOSFET Arrays"):  # a category with subcategories
+    # The name in quotes to copy, then the ID, the path and the parts; a leaf category first.
+    assert e.value.lines[1] == ('  "Single FETs, MOSFETs" (ID 100): Semiconductors > FETs, MOSFETs > Single FETs, '
+                                'MOSFETs, 25 parts')
+    assert "[has subcategories: select one of them]" in str(e.value)
+    assert e.value.lines[-1].startswith('For example: datasheet-lens pick digikey "Single FETs, MOSFETs" -P')
+    with pytest.raises(Choose, match='The category "FETs, MOSFETs" has subcategories') as e:
         digikey.search("10", [])
+    assert '"FET, MOSFET Arrays" (ID 101)' in str(e.value)
+    # The CLI and the MCP tools give the list as a normal result.
+    assert distributors.pick_lines("digikey", "mosfet", [])[0].startswith("The category 'mosfet' fits more")
     with pytest.raises(LensError, match="no DigiKey category"):
         digikey.search("capacitor", [])
     with pytest.raises(LensError, match="fits more parameters"):  # Vdss and Drive Voltage
@@ -180,27 +187,27 @@ def test_errors_of_the_api(api):
 
 def test_no_key_gives_the_steps(monkeypatch, store_home):
     with pytest.raises(LensError) as e:
-        distributors.pick_lines("100", [])
+        distributors.pick_lines("digikey", "100", [])
     text = str(e.value)
     assert 'run "datasheet-lens key digikey"' in text and "Client ID and the Client Secret" in text
     assert "DATASHEET_LENS_DIGIKEY_ID and DATASHEET_LENS_DIGIKEY_SECRET" in text
     # The default without a key: Mouser only. The steps also enable DigiKey.
     assert 'Then enable it: "datasheet-lens dist mouser digikey"' in text
-    assert main(["pick", "100", "vdss >= 20 V"]) == 2
+    assert main(["pick", "digikey", "100", "vdss >= 20 V"]) == 2
 
 
 def test_default_distributors_are_those_with_a_key(api, store_home):
     assert distributors.enabled(None) == (["digikey"], "the default: the distributors with a saved key", [])
-    lines = distributors.pick_lines("100", ["vdss >= 20 V"])
+    lines = distributors.pick_lines("digikey", "100", ["vdss >= 20 V"])
     assert lines[0].startswith("Source: DigiKey")
 
 
 def test_cli_pick_and_locale(api, store_home, capsys):
     assert main(["dist", "--site", "cz", "--currency", "czk"]) == 0
     assert "global: site CZ" in capsys.readouterr().out and digikey.locale() == ("CZ", "CZK")
-    assert main(["pick", "100", "-P"]) == 0
+    assert main(["pick", "digikey", "100", "-P"]) == 0
     assert "short name vdss" in capsys.readouterr().out
-    assert main(["pick", "100", "vdss >= 20 V", "-a", "-n", "3", "-o", "6"]) == 0
+    assert main(["pick", "digikey", "100", "vdss >= 20 V", "-a", "-n", "3", "-o", "6"]) == 0
     out = capsys.readouterr().out
     assert "price 1: 12.5 CZK" in out
     request = _searches(api)[-1]
@@ -213,8 +220,8 @@ def test_cli_pick_and_locale(api, store_home, capsys):
 def test_mcp_tools(api, store_home):
     from datasheet_lens import server
 
-    assert server.part_parameters("100").startswith("Source: DigiKey")
-    assert "FAKE-FET-1" in server.find_parts("100", ["vdss >= 20 V"])
+    assert server.part_parameters("digikey", "100").startswith("Source: DigiKey")
+    assert "FAKE-FET-1" in server.find_parts("digikey", "100", ["vdss >= 20 V"])
 
 
 def _product(mpn, status="Active", stock=900):
@@ -263,8 +270,9 @@ def test_availability_with_digikey(api, store_home, tmp_path):
 def test_services_of_each_distributor(api, store_home):
     text = "\n".join(distributors.status_lines())
     assert "mouser: MPN search" in text and "Not available: parametric search" in text
-    assert "digikey: parametric search (part_parameters, find_parts)" in text
-    assert "mouser: MPN search" in text and text.count("Not enabled") == 1  # only DigiKey has a key
+    assert "digikey: parametric search (part_parameters, find_parts with source digikey)" in text
+    # Only DigiKey has a key, and the JLCPCB database is not on this machine.
+    assert text.count("Not enabled") == 2 and "jlcpcb: the local database is not on this machine" in text
 
 
 def test_stock_with_no_quantity_available():
@@ -297,9 +305,10 @@ def test_review_fixes(api, store_home, monkeypatch):
     """A name of more categories, a connection that ends before the headers, a
     token that the API does not accept, a short MPN start, the locale of the
     offer cache, a negative offset."""
-    with pytest.raises(LensError, match="Give the ID of one:\n30: Fans > Accessories") as e:
+    with pytest.raises(Choose) as e:
         digikey.find_category("Accessories")
-    assert "20: Cables > Accessories" in str(e.value)
+    assert '  "Accessories" (ID 30): Fans > Accessories, 5 parts [the name is not unique: give the ID]' in e.value.lines
+    assert e.value.lines[-1].startswith("For example: datasheet-lens pick digikey 30 -P")
     api["fail"] = [urllib.error.URLError(http.client.RemoteDisconnected("closed"))]
     assert digikey.parameter_lines("100")[0].startswith("Source: DigiKey")
     api["fail"] = [urllib.error.URLError(OSError("no route"))]
@@ -318,7 +327,7 @@ def test_review_fixes(api, store_home, monkeypatch):
     assert digikey.offers("FAKE-FET-1")[0].prices[0] == (1, "12.5 CZK")  # not the cached USD answer
     with pytest.raises(LensError, match="offset: 0 or more"):
         digikey.search("100", [], offset=-5)
-    assert main(["pick", "100", "-P", "vdss >= 20 V"]) == 2
+    assert main(["pick", "digikey", "100", "-P", "vdss >= 20 V"]) == 2
 
 
 def test_digikey_key_but_not_enabled(api, store_home):
@@ -326,7 +335,7 @@ def test_digikey_key_but_not_enabled(api, store_home):
 
     save_config({"distributors": ["mouser"]})
     with pytest.raises(LensError, match="DigiKey has a key but is not enabled") as e:
-        distributors.pick_lines("100", [])
+        distributors.pick_lines("digikey", "100", [])
     assert '"datasheet-lens dist mouser digikey"' in str(e.value) and "get a key" not in str(e.value)
 
 
@@ -359,3 +368,12 @@ def test_key_tells_when_the_distributor_is_not_in_the_list(store_home, monkeypat
     monkeypatch.setattr("sys.stdin", io.StringIO("id-1\nsecret-1\n"))
     assert main(["key", "digikey"]) == 0
     assert "not in the distributor list" not in capsys.readouterr().out
+
+
+def test_search_marks_parts_that_are_not_orderable(api):
+    """The parametric search gives the same marks as search_distributors."""
+    product = dict(PRODUCT, ProductStatus={"Status": "Obsolete"})
+    line = digikey.product_line(product, [], "USD")
+    assert "state: Obsolete [NOT ORDERABLE: Obsolete]" in line
+    line = digikey.product_line(dict(PRODUCT, ProductStatus={"Status": "Discontinued at Digi-Key"}), [], "USD")
+    assert "[DigiKey does not sell it now" in line and "NOT ORDERABLE" not in line

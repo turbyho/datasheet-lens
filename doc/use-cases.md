@@ -311,18 +311,26 @@ replacement with the same parameters.
 
 1. Make sure that DigiKey is enabled and has a key: `distributor_status` (CLI:
    `datasheet-lens dist`). It also tells the services of each distributor.
-2. Find the category and the names of its parameters: `part_parameters("278")` (CLI:
-   `datasheet-lens pick 278 -P`). A part of the category name gives a list of the
-   categories that fit.
-3. Find the candidates: `find_parts("278", ["channel = N-Channel", "vdss >= 20 V",
-   "drive <= 2.5V", "package has 3x3"])` (CLI: `datasheet-lens pick 278 ...`).
-4. For each candidate that the design can use, add its datasheet with `add_document`
+2. Find the category: `part_parameters("digikey", "mosfet")` (CLI: `datasheet-lens
+   pick digikey mosfet`). A part of a name that fits more categories gives the list of
+   these categories, with their names in quotes.
+3. Get the names of the parameters of the selected category: `part_parameters(
+   "digikey", "Single FETs, MOSFETs")` (CLI: `datasheet-lens pick digikey "Single FETs,
+   MOSFETs" -P`).
+4. Find the candidates: `find_parts("digikey", "Single FETs, MOSFETs", ["channel =
+   N-Channel", "vdss >= 20 V", "drive <= 2.5V", "package has 3x3"])` (CLI:
+   `datasheet-lens pick digikey "Single FETs, MOSFETs" ...`).
+5. For each candidate that the design can use, add its datasheet with `add_document`
    (the datasheet URL of the result). Read each value that the design needs, for
    example RDS(on) at a gate voltage of 2.5 V, with `get_page_image`. Save it with
    `save_fact`.
-5. Give the user the links to the symbol, the footprint and the 3D model of the
+6. Give the user the links to the symbol, the footprint and the 3D model of the
    selected part: `part_links(mpn)` (CLI: `datasheet-lens links MPN`).
-6. Add the selected part to the project with `project_add_part`.
+7. Add the selected part to the project with `project_add_part`.
+
+For a board that JLCPCB assembles, search in the JLCPCB parts library: give the source
+`jlcpcb` (CLI: `datasheet-lens pick jlcpcb ...`). The result gives the JLCPCB stock and the library class
+of each part. The user downloads the library one time with `datasheet-lens jlc update`.
 
 **Result.** A short list of candidates with stock, price and lifecycle state, and
 the values that the design needs, from the datasheets. The result marks a filter

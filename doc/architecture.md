@@ -27,7 +27,7 @@ work, not the size of the datasheet.
                   \                   /
                    library modules
    (indexer, elements, pages, knowledge, identify, project, distributors,
-    digikey, parametric, links)
+    digikey, jlcpcb, parametric, links)
                           |
              central store (store.py)
        SQLite database + content-addressed files
@@ -224,6 +224,11 @@ client credentials flow of OAuth2. It keeps the DigiKey data only in memory, bec
 the terms of DigiKey do not permit a local database of DigiKey data. `parametric.py` holds the filter
 model of the parametric search (`NAME OP VALUE`), for each source.
 
+`jlcpcb.py` downloads the database of the jlcparts project (a split zip of one SQLite
+file) on a command of the user. It reads the parts with a stream: zlib unpacks the
+data, and the tool checks the CRC-32 and the size. Then it adds its indexes and puts
+the file in place of the old one. The searches open the database read-only.
+
 `keys.py` reads a key (the API key of a distributor, or the token of the team server)
 from the environment variable, the key store of the system (the package keyring) or
 the file `keys.toml`. A key never goes into a message, a log
@@ -240,6 +245,7 @@ or the database.
 | `config.py` | The location of the central store (`DATASHEET_LENS_HOME`), `config.json`, and the data folder (key `data`). |
 | `distributors.py` | The part data from the distributor APIs: search, availability, distributor list, services. |
 | `digikey.py` | The DigiKey API: parametric search, offers, direct links. |
+| `jlcpcb.py` | The JLCPCB parts library: download of the split zip, parametric search, offers. |
 | `elements.py` | The element map: docling and text backends, page map, caption search. |
 | `errors.py` | `LensError`: a wrong input or a state that the user can repair. `Unavailable`: a distributor API that cannot answer now. |
 | `fetch.py` | The download of a PDF from a URL. |

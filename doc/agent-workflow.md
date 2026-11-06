@@ -191,11 +191,12 @@ then links the datasheet to each variant.
 
 ## Find a new part or a replacement part
 
-The parametric search finds candidates by their parameters (DigiKey):
+The parametric search finds candidates by their parameters. Each search names one
+source: `digikey`, or `jlcpcb` for a board that JLCPCB assembles.
 
-1. `part_parameters(category)`: the names of the parameters and examples of their
+1. `part_parameters(source, category)`: the names of the parameters and examples of their
    values.
-2. `find_parts(category, filters)`: the candidates, with each filter and its status.
+2. `find_parts(source, category, filters)`: the candidates, with each filter and its status.
 3. For each candidate that the design can use: `add_document` with its datasheet
    URL, then `get_page_image` and `save_fact` for each value that the design needs.
 

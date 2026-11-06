@@ -145,6 +145,7 @@ first four are in a different folder (see
 | `tmp/` | Temporary files of the downloads. |
 | `config.json` | The configuration: the element map backend, the global list of distributors, the country and the currency of the prices, and the data folder. |
 | `keys.toml` | The API keys, only on a system with no key store. See [distributors.md](distributors.md). |
+| `jlcpcb/` | The JLCPCB parts library (2.2 GB), only after `datasheet-lens jlc update`. See [distributors.md](distributors.md#jlcpcb-parts-library). |
 
 The tool makes a file in `render/` again when the file is not there.
 
@@ -153,7 +154,7 @@ The tool makes a file in `render/` again when the file is not there.
 The documents and the database can be on a different disk, for example a RAID
 array. The key `data` in `config.json` gives this data folder:
 
-- The data folder holds `db/`, `blobs/`, `render/` and `tmp/`.
+- The data folder holds `db/`, `blobs/`, `render/`, `tmp/` and `jlcpcb/`.
 - The store folder keeps `config.json`, `keys.toml` and `update_check.json`.
 - The CLI and the MCP server read the same `config.json`. They need no other
   setting.
@@ -274,19 +275,25 @@ or add `"update_check": false` to `config.json` in the store folder.
    datasheet-lens key team --delete
    ```
 
-2. Remove the package:
+2. Remove the JLCPCB parts library, if you downloaded it:
+
+   ```sh
+   datasheet-lens jlc remove
+   ```
+
+3. Remove the package:
 
    ```sh
    pipx uninstall datasheet-lens
    ```
 
-3. Remove the MCP server from your MCP client. For Claude Code:
+4. Remove the MCP server from your MCP client. For Claude Code:
 
    ```sh
    claude mcp remove --scope user datasheet-lens
    ```
 
-4. If you do not want the documents and the facts, delete the store folder
+5. If you do not want the documents and the facts, delete the store folder
    (`~/.datasheet-lens` or the folder in `DATASHEET_LENS_HOME`), and the data
    folder in the key `data` of `config.json`.
 

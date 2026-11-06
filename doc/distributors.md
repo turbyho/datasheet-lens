@@ -2,10 +2,11 @@
 
 datasheet-lens can ask a distributor for the data of a part through its official
 API. This document tells what the distributor data gives and how to set the API keys.
-It also tells how to select the distributors and how to find parts by their
-parameters.
+It also tells how to select the distributors, how to find parts by their parameters,
+and how to use the JLCPCB parts library on your machine.
 
-Supported now: Mouser and DigiKey. Not supported yet: Farnell and TME.
+Supported now: Mouser and DigiKey, and the JLCPCB parts library (a local database).
+Not supported yet: Farnell and TME.
 
 ## What the distributor data gives
 
@@ -161,20 +162,35 @@ make sure that it can be ordered. The start of an MPN must have 3 characters or 
 
 ## Find parts by their parameters
 
-The parametric search finds new parts or replacement parts by their parameters. It
-uses DigiKey, because Mouser gives no parameters through its API. It needs DigiKey in
-the enabled distributors, and the DigiKey key.
+The parametric search finds new parts or replacement parts by their parameters. Each
+search names its source, because the categories, the parameters and the stock differ
+between the sources:
+
+- `digikey`: the stock and the lifecycle state at DigiKey. It needs DigiKey in the
+  enabled distributors, and the DigiKey key. Mouser gives no parameters through its
+  API.
+- `jlcpcb`: the JLCPCB stock for the assembly and the library class. It needs the
+  JLCPCB parts library on your machine (see
+  [JLCPCB parts library](#jlcpcb-parts-library)).
+
+The tool does not search more sources in one search.
 
 ```sh
-datasheet-lens pick mosfet                     # an error with the categories that fit "mosfet"
-datasheet-lens pick 278 -P                     # the parameters of category 278, with examples of values
-datasheet-lens pick 278 "channel = N-Channel" "vdss >= 20 V" "drive <= 2.5V" "package has 3x3"
+datasheet-lens pick digikey mosfet                     # the categories that fit "mosfet", to select from
+datasheet-lens pick digikey "Single FETs, MOSFETs" -P   # the parameters of the category, with examples of values
+datasheet-lens pick digikey "Single FETs, MOSFETs" "channel = N-Channel" "vdss >= 20 V" "drive <= 2.5V" "package has 3x3"
 ```
 
-The MCP tools are `part_parameters(category)` and `find_parts(category, filters)`.
+Give the category by its name. A part of a name that fits more categories gives the
+list of these categories, with each name in quotes to copy, its ID and its place in
+the category tree. The DigiKey ID (for example `278`) also works. A name that more
+categories have (for example `Accessories`) needs the ID.
 
-A category with subcategories, or a name that fits more than one category, gives an
-error with a list of the categories. Select one ID from the list.
+The MCP tools are `part_parameters(source, category)` and `find_parts(source, category, filters)`.
+
+A category with subcategories, or a name that fits more than one category, gives the
+list of the categories to select from (not an error). Copy the name of one, with its
+quotes.
 
 A filter is `NAME OP VALUE`:
 
@@ -215,6 +231,72 @@ each value that the design needs in the datasheet, and save it with `save_fact`.
 
 DigiKey ends some large answers early. The tool then sends the request again. It
 sends a request 3 times at most.
+
+## JLCPCB parts library
+
+The JLCPCB parts library is an optional local database for the JLCPCB assembly
+service. It tells for each part the stock of JLCPCB for the assembly and the library
+class. Use it when JLCPCB assembles the board.
+
+### Download and update
+
+```sh
+datasheet-lens jlc update    # download or update the database
+datasheet-lens jlc           # show its age and its path
+datasheet-lens jlc remove    # delete it
+```
+
+The database comes from the [jlcparts](https://github.com/yaqwsx/jlcparts) project,
+which gets it from the official JLCPCB Components API. It has 3.8 million parts. The
+download is 276 MB, and the database needs 2.2 GB on the disk. The tool puts it into
+`jlcpcb/` in the data folder of the store. Each machine downloads it.
+
+The jlcparts project updates the data three times each day. The tool downloads it
+only on your command. A result tells you when the database is older than 1 day.
+
+> CAUTION: The data of jlcparts has no license statement. The values come from the
+> LCSC listings: some are typical values, not maximum values, and some parts copy the
+> values of other parts. Read each value that the design needs in the datasheet.
+
+### Stock and library class
+
+The result gives two different properties of each part:
+
+- **The JLCPCB stock.** A part with stock can go to the assembly now. A part with no
+  stock has the mark `NOT IN STOCK`: the assembly needs an order of the part first.
+- **The library class.** It sets the assembly fee: Basic and Preferred parts have no
+  loading fee, Extended parts have one. The class does not tell the stock.
+
+### Parametric search in the JLCPCB library
+
+```sh
+datasheet-lens pick jlcpcb mosfet -P
+datasheet-lens pick jlcpcb "MOSFET|MOSFETs" "channel = N-Channel" "vdss >= 20 V" "rds_on <= 10 mOhm at Vgs<=2.5V"
+datasheet-lens pick jlcpcb MOSFETs "library = Basic|Preferred"
+```
+
+The MCP tools are `part_parameters("jlcpcb", category)` and
+`find_parts("jlcpcb", category, filters)`.
+
+- **Category.** A subcategory name selects each category with that name, for example
+  `MOSFETs`. `CATEGORY > SUBCATEGORY` selects one. More names go with `|`. The result
+  also names the other categories with a name that holds the text.
+- **Parameters.** The parameters of the LCSC listings, and `Package`, `Manufacturer`
+  and `Library` (Basic, Preferred, Extended). `-P` shows them with examples.
+- **Conditions.** Some values have more points, for example `4mΩ@4.5V, 6mΩ@2.5V`. A
+  filter with a condition uses only the points with a condition that agrees. The
+  result tells the number of parts that give no value at that condition. Read that
+  value in their datasheet.
+- **Stock.** By default, only the parts with JLCPCB stock. `-a` (MCP: `in_stock=False`)
+  adds the parts with no stock.
+
+The result gives for each part: the LCSC number, the MPN, the manufacturer, the JLCPCB
+stock, the library class, the price of the first quantity (USD), the filtered
+parameters, the package, the datasheet URL, and the links to the part at JLCPCB and at
+LCSC.
+
+`find` (`search_distributors`) and `stock` (`project_availability`) also give the
+JLCPCB stock and the library class of a part, when the database is on your machine.
 
 ## Check the project parts
 
@@ -267,6 +349,9 @@ distributor for a task:
 |---|---|---|
 | Mouser | MPN search: stock, prices, lifecycle state, suggested replacement of an obsolete part, datasheet URL | Parametric search, package |
 | DigiKey | Parametric search. MPN search: stock, prices, lifecycle state, package, datasheet URL. Direct links to the CAD models and the datasheets | - |
+| JLCPCB library | Parametric search with more points of a value. MPN search: JLCPCB stock for the assembly, library class | Lifecycle state, values of a known quality |
+
+The status also tells if the JLCPCB database is on this machine, and its age.
 
 ## Notes for a missing key
 
@@ -326,3 +411,5 @@ the URL.
   tool keeps the DigiKey data only in the memory of the process, for one hour, and
   never writes it to a file.
 - Each user uses a personal key under the terms of the distributor.
+- The JLCPCB parts library comes from the jlcparts project. Its data has no license
+  statement. The tool downloads it only on a command of the user.

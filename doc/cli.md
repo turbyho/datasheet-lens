@@ -466,23 +466,42 @@ gives a note with the steps and the search links of `links`.
 ### pick
 
 ```text
-datasheet-lens pick [-P] [-a] [-s stock|price] [-n N] [-o N] [-k WORDS] [-p PATH] CATEGORY [FILTER ...]
+datasheet-lens pick [-P] [-a] [-s stock|price] [-n N] [-o N] [-k WORDS] [-p PATH] SOURCE CATEGORY [FILTER ...]
 ```
 
-Find parts by their parameters (a parametric search) at DigiKey. It needs DigiKey in
-the enabled distributors, and the DigiKey key. See
-[distributors.md](distributors.md#find-parts-by-their-parameters).
+Find parts by their parameters (a parametric search) at DigiKey or in the JLCPCB parts
+library. Each search names one source. DigiKey needs DigiKey in the enabled
+distributors, and the DigiKey key. The JLCPCB library needs `datasheet-lens jlc
+update`. See
+[distributors.md](distributors.md#find-parts-by-their-parameters) and
+[distributors.md](distributors.md#jlcpcb-parts-library).
 
 | Argument or option | Effect |
 |---|---|
-| `CATEGORY` | The DigiKey category: its ID or a part of its name. A category with subcategories, or a name that fits more than one category, gives an error with a list of the categories. |
+| `SOURCE` | `digikey` (the stock and the lifecycle state at DigiKey) or `jlcpcb` (the JLCPCB stock for the assembly and the library class). |
+| `CATEGORY` | The category name, or a part of it, for example `"Single FETs, MOSFETs"` or `mosfet`. DigiKey: also the ID. JLCPCB: a subcategory name or `CATEGORY > SUBCATEGORY`, more with `\|`. A DigiKey category with subcategories, or a name that fits more than one category, gives the list of the categories to select from, with each name in quotes. |
 | `FILTER` | `NAME OP VALUE [at CONDITION]`, for example `"vdss >= 20 V"` or `"package has 3x3"`. The tool does not apply a filter with a condition (after `at` or `@`): read that value in the datasheet. A filter with no value that agrees gives 0 parts and examples of the values. |
 | `-P`, `--params` | Show the parameters of the category, with their short names, the number of values and examples. Give no `FILTER` with it. |
-| `-a`, `--all` | Also the parts with no stock. |
+| `-a`, `--all` | Also the parts with no stock (JLCPCB: marked `NOT IN STOCK`). |
 | `-s`, `--sort` | `stock` (most first, the default) or `price` (lowest first). |
-| `-n`, `--limit` | The number of parts, 1 to 50 (default 20). |
+| `-n`, `--limit` | The number of parts, 1 to 50 (default 20). JLCPCB: 1 to 100. |
 | `-o`, `--offset` | Skip this number of parts (the next page). |
 | `-k`, `--keywords` | Words that the parts must have. |
+
+### jlc
+
+```text
+datasheet-lens jlc [update | status | remove]
+```
+
+Download, update, show or delete the JLCPCB parts library on this machine. With no
+action: `status`. See [distributors.md](distributors.md#jlcpcb-parts-library).
+
+| Action | Effect |
+|---|---|
+| `update` | Download the database (276 MB) and put it in place of the old one (2.2 GB on the disk). The old database stays when the download fails. |
+| `status` | Show the path and the age of the database. |
+| `remove` | Delete the database. |
 
 ### stock
 

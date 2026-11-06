@@ -636,8 +636,31 @@ def cmd_find(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_jlc(args: argparse.Namespace) -> int:
+    """The command jlc: the JLCPCB parts library on this machine."""
+    from . import jlcpcb
+
+    if args.action == "update":
+        print(jlcpcb.LIMITS)
+        print(f"download {jlcpcb.DATA_URL}/ into {jlcpcb.folder()} (276 MB, 2.2 GB on the disk)")
+        s = jlcpcb.update(progress=lambda line: print(line, flush=True))
+        print(f"done in {s['seconds']} s: {jlcpcb.db_path()} ({s['size'] // (1 << 20)} MB)")
+    elif args.action == "remove":
+        print("removed" if jlcpcb.remove() else "there is no JLCPCB database on this machine")
+        return 0
+    s = jlcpcb.state()
+    if not s:
+        print("there is no JLCPCB database on this machine: run \"datasheet-lens jlc update\"")
+        return 0
+    print(f"JLCPCB database: {s['path']}, {s['age_days']:.1f} days old")
+    note = jlcpcb.age_note()
+    if note:
+        print(note)
+    return 0
+
+
 def cmd_pick(args: argparse.Namespace) -> int:
-    """The command pick: the parametric search at a distributor (DigiKey)."""
+    """The command pick: the parametric search at DigiKey or in the JLCPCB parts library."""
     from .distributors import parameter_lines, pick_lines
     from .project import load_optional
 
@@ -645,10 +668,10 @@ def cmd_pick(args: argparse.Namespace) -> int:
     if args.params:
         if args.filters:
             raise LensError("-P shows the parameters of a category: give no FILTER with it")
-        lines = parameter_lines(args.category, project)
+        lines = parameter_lines(args.source, args.category, project)
     else:
-        lines = pick_lines(args.category, args.filters, args.keywords, not args.all, args.sort, args.limit,
-                           args.offset, project)
+        lines = pick_lines(args.source, args.category, args.filters, args.keywords, not args.all, args.sort,
+                           args.limit, args.offset, project)
     print("\n".join(lines))
     return 0
 
@@ -807,10 +830,14 @@ def build_parser() -> argparse.ArgumentParser:
     fd.add_argument("mpn", metavar="MPN", help="an MPN, or the start of the MPNs (a base part)")
     fd.add_argument("-x", "--exact", action="store_true", help="only this MPN")
     fd.set_defaults(func=cmd_find)
-    pk = sub.add_parser("pick", help="find parts by their parameters at a distributor (DigiKey; needs a key: "
-                                     "datasheet-lens key digikey)")
+    pk = sub.add_parser("pick", help="find parts by their parameters: at DigiKey (needs a key: datasheet-lens key "
+                                     "digikey) or in the JLCPCB parts library (needs: datasheet-lens jlc update)")
+    pk.add_argument("source", metavar="SOURCE", choices=("digikey", "jlcpcb"),
+                    help="digikey (stock and lifecycle at DigiKey) or jlcpcb (JLCPCB stock for the assembly and "
+                         "library class)")
     pk.add_argument("category", metavar="CATEGORY",
-                    help="the category: a part of its name or its ID, for example \"Single FETs, MOSFETs\" or 278")
+                    help="the category: its name or a part of it, for example \"Single FETs, MOSFETs\" or mosfet "
+                         "(a text that fits more categories gives the list to select from)")
     pk.add_argument("filters", nargs="*", metavar="FILTER",
                     help="NAME OP VALUE, with OP one of = < <= > >= has, for example \"Vdss >= 20 V\" or "
                          "\"package has 3x3\". With no FILTER and -P: the parameters of the category")
@@ -822,6 +849,11 @@ def build_parser() -> argparse.ArgumentParser:
     pk.add_argument("-n", "--limit", type=int, default=20, help="the number of parts (1 to 50, default 20)")
     pk.add_argument("-o", "--offset", type=int, default=0, help="skip this number of parts (the next page)")
     pk.set_defaults(func=cmd_pick)
+    jl = sub.add_parser("jlc", help="the JLCPCB parts library on this machine: download or update it, show its "
+                                    "state, or remove it")
+    jl.add_argument("action", nargs="?", default="status", choices=("update", "status", "remove"),
+                    help="default: status. update downloads 276 MB and needs 2.2 GB on the disk")
+    jl.set_defaults(func=cmd_jlc)
     ds = sub.add_parser("dist", help="show or set the distributors that datasheet-lens asks (global, or with "
                                      "--local for the project)")
     ds.add_argument("names", nargs="*", metavar="NAME", help="the distributors, for example mouser")

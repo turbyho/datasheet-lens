@@ -857,52 +857,64 @@ def search_distributors(
 
 
 Category = Annotated[str, Field(description=(
-    "The category at the distributor: its ID or a part of its name, for example 278 or \"Single FETs, "
-    "MOSFETs\". A name that fits more categories gives the list to select from."))]
+    "The category at the source: its name or a part of its name, for example \"mosfet\". A text that fits more "
+    "categories gives the list to select from, with the names in quotes. DigiKey: also its ID. JLCPCB: a "
+    "subcategory name or \"CATEGORY > SUBCATEGORY\", more with |, for example \"MOSFET|MOSFETs\"."))]
+Source = Annotated[str, Field(description=(
+    "The source of the search: digikey (stock and lifecycle state at DigiKey) or jlcpcb (the JLCPCB parts "
+    "library: JLCPCB stock for the assembly and library class Basic, Preferred or Extended; it applies a "
+    "condition such as \"rds_on <= 10 mOhm at Vgs<=2.5V\" to the points that the data lists). "
+    "distributor_status tells which source is available."))]
 
 
 @tool
 def find_parts(
+        source: Source,
         category: Category,
         filters: Annotated[list[str], Field(description=(
             "The filters, each \"NAME OP VALUE\". OP: = < <= > >= has. NAME: a parameter of part_parameters "
             "(full name, short name or a unique part of the name). = and has accept more values with | "
             "(one of them). Examples: \"vdss >= 20 V\", \"channel = N-Channel\", \"package has 3x3|3.3x3.3\", "
-            "\"drive <= 2.5V\". A condition after \"at\" (\"rds_on <= 10 mOhm at Vgs=2.5V\") is not "
-            "applied: read that value in the datasheet."))] = [],
+            "\"drive <= 2.5V\". A condition after \"at\" (\"rds_on <= 10 mOhm at Vgs<=2.5V\"): DigiKey "
+            "does not apply it; jlcpcb applies it to the points that the data lists. Read that value in the "
+            "datasheet."))] = [],
         keywords: Annotated[str, Field(description="Words that the parts must have. Usually empty.")] = "",
-        in_stock: Annotated[bool, Field(description="True: only parts with stock.")] = True,
+        in_stock: Annotated[bool, Field(description=(
+            "True: only parts with stock (jlcpcb: with JLCPCB stock for the assembly). False: also the parts "
+            "with no stock, marked NOT IN STOCK."))] = True,
         sort: Annotated[str, Field(description="stock (most first) or price (lowest first).")] = "stock",
-        limit: Annotated[int, Field(description="The number of parts, 1 to 50.")] = 20,
+        limit: Annotated[int, Field(description="The number of parts, 1 to 50 (jlcpcb: 1 to 100).")] = 20,
         offset: Annotated[int, Field(description="Skip this number of parts (the next page).")] = 0,
         path: ProjectPath = "") -> str:
     """Find new parts or replacement parts by their parameters (a parametric
-    search) at a distributor with an official parameter API (DigiKey). Call
-    part_parameters first to get the names and values of the parameters. Gives
-    each filter with its status, and for each part: MPN, manufacturer,
-    distributor number, lifecycle state, stock, price, the filtered parameters,
-    datasheet and product URL. A numeric filter compares the first number of a
-    value ("2.5V, 8V" gives 2.5 V). A distributor keeps one value of a
-    parameter at its own conditions (DigiKey: RDS(on) at the highest drive
-    voltage): read each value that the design needs in the datasheet
-    (add_document, get_page_image) and save it with save_fact. With no key, the
-    result has the steps for the user: give them to the user."""
+    search) at DigiKey (official API) or in the JLCPCB parts library (a local
+    database for the JLCPCB assembly). Call part_parameters first to get the
+    names and values of the parameters. Gives each filter with its status, and
+    for each part: MPN, manufacturer, distributor number, state or library
+    class, stock, price, the filtered parameters, datasheet and product URL.
+    A numeric filter compares the first number of a value ("2.5V, 8V" gives
+    2.5 V). A distributor keeps one or few values of a parameter at its own
+    conditions: read each value that the design needs in the datasheet
+    (add_document, get_page_image) and save it with save_fact. When the source
+    is not available, the result has the steps for the user: give them to the
+    user."""
     from .distributors import pick_lines
     from .project import load_optional
 
-    return "\n".join(pick_lines(category, filters, keywords, in_stock, sort, limit, offset,
+    return "\n".join(pick_lines(source, category, filters, keywords, in_stock, sort, limit, offset,
                                 load_optional(path or None)))
 
 
 @tool
-def part_parameters(category: Category, path: ProjectPath = "") -> str:
-    """The parameters of a part category at a distributor with a parameter API
-    (DigiKey), for the filters of find_parts: the full name, the short name,
-    the number of values and examples of the values. Use it before find_parts."""
+def part_parameters(source: Source, category: Category, path: ProjectPath = "") -> str:
+    """The parameters of a part category at a source of the parametric search
+    (DigiKey, or the JLCPCB parts library), for the filters of find_parts:
+    the full name, the short name, the number of values and examples of the
+    values. Use it before find_parts."""
     from .distributors import parameter_lines
     from .project import load_optional
 
-    return "\n".join(parameter_lines(category, load_optional(path or None)))
+    return "\n".join(parameter_lines(source, category, load_optional(path or None)))
 
 
 @tool

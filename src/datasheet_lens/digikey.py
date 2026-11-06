@@ -22,6 +22,7 @@ process for one hour, and each result names DigiKey.
 
 from __future__ import annotations
 
+import collections
 import http.client
 import json
 import time
@@ -30,7 +31,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 
-from .errors import LensError, Unavailable
+from .errors import Choose, LensError, Unavailable
 from .parametric import Filter, Parameter, matching_values, parse_filter, resolve
 
 TOKEN_URL = "https://api.digikey.com/v1/oauth2/token"
@@ -225,11 +226,23 @@ def find_category(text: str, credential=None) -> dict:
     return _choose(text, found)
 
 
-def _choose(text: str, found: list[dict]):
-    lines = [f"{c['id']}: {c['path']} ({c['products']} parts)" + ("" if c["leaf"] else " [has subcategories]")
-             for c in sorted(found, key=lambda c: -c["products"])[:30]]
-    what = "the ID" if len({c["name"] for c in found}) == 1 else "the ID or the full name"
-    raise LensError(f"the category {text!r} fits more DigiKey categories. Give {what} of one:\n" + "\n".join(lines))
+def _choose(text: str, found: list[dict], header: str = ""):
+    """A Choose with the categories that fit: the name in quotes (to copy), the
+    ID, the path and the number of parts, and an example command."""
+    names = collections.Counter(c["name"].lower() for c in _categories.get("list") or found)
+    found = sorted(found, key=lambda c: (not c["leaf"], -c["products"]))[:30]
+    lines = [header or f"The category {text!r} fits more DigiKey categories. Select one: give its name in quotes, "
+                       "or its ID:"]
+    for c in found:
+        unique = names[c["name"].lower()] == 1
+        lines.append(f"  \"{c['name']}\" (ID {c['id']}): {c['path']}, {c['products']} parts"
+                     + ("" if c["leaf"] else " [has subcategories: select one of them]")
+                     + ("" if unique else " [the name is not unique: give the ID]"))
+    first = next((c for c in found if c["leaf"]), found[0])
+    ref = f"\"{first['name']}\"" if names[first["name"].lower()] == 1 else first["id"]
+    lines.append(f"For example: datasheet-lens pick digikey {ref} -P (its parameters), then the same with filters. "
+                 "MCP: part_parameters(\"digikey\", ...), then find_parts.")
+    raise Choose(lines)
 
 
 def parameters(category: dict, credential=None) -> tuple[list[Parameter], int]:
@@ -283,7 +296,8 @@ def search(category: str, filters: list[str], keywords: str = "", in_stock: bool
     parsed = [parse_filter(f) for f in filters]  # a wrong filter: an error before a request
     cat = find_category(category, credential)
     if not cat["leaf"]:
-        _choose(category, [c for c in categories(credential) if c["parent"] == cat["id"]] or [cat])
+        _choose(category, [c for c in categories(credential) if c["parent"] == cat["id"]] or [cat],
+                f"The category \"{cat['name']}\" has subcategories. Select one: give its name in quotes, or its ID:")
     params, _ = parameters(cat, credential)
     results, groups = [], {}
     for f in parsed:
@@ -346,7 +360,13 @@ def product_line(product: dict, names: list[str], currency: str) -> str:
         parts.append(f"DigiKey {pn}")
     status = str((product.get("ProductStatus") or {}).get("Status") or "")
     if status:
-        parts.append(f"state: {status}")
+        from .distributors import not_orderable, restricted
+
+        offer = _offer(product, currency)  # the same marks as search_distributors
+        warn = not_orderable(offer)
+        parts.append(f"state: {status}" + (f" [NOT ORDERABLE: {warn}]" if warn else "")
+                     + (" [DigiKey does not sell it now; not a lifecycle state of the manufacturer]"
+                        if restricted(offer) else ""))
     count = stock(product)
     parts.append(f"stock: {count if count is not None else 'unknown'}")
     if product.get("UnitPrice"):
@@ -411,7 +431,8 @@ def parameter_lines(category: str, credential=None) -> list[str]:
     """The parameters of a category, with the number of values and examples."""
     cat = find_category(category, credential)
     if not cat["leaf"]:
-        _choose(category, [c for c in categories(credential) if c["parent"] == cat["id"]] or [cat])
+        _choose(category, [c for c in categories(credential) if c["parent"] == cat["id"]] or [cat],
+                f"The category \"{cat['name']}\" has subcategories. Select one: give its name in quotes, or its ID:")
     params, count = parameters(cat, credential)
     short: dict[str, str] = {}
     for alias, name in ALIASES.items():

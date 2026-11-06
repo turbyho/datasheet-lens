@@ -17,7 +17,8 @@ person and each AI agent of a project uses the same correct documents.
   project file, or each a project file with the same parts. The store identifies
   each PDF by its SHA-256, thus the two projects use the same document.
 - **Part selection.** datasheet-lens asks the official APIs of the distributors
-  (Mouser, DigiKey). A parametric search finds new parts and replacement parts by
+  (Mouser, DigiKey) and an optional local copy of the JLCPCB parts library. A
+  parametric search finds new parts and replacement parts by
   their parameters. For each part, the tool gives the stock, the prices, the
   lifecycle state and the links to the datasheet, the symbol, the footprint and the
   3D model. The values that the design needs come from the datasheet.
@@ -53,8 +54,11 @@ interfaces can change.
   the lifecycle state, the stock and the prices from the official APIs of Mouser and
   DigiKey. No scraping. `distributor_status` tells the services of each
   distributor, for example which one has a parametric search.
+- **JLCPCB assembly.** An optional local copy of the JLCPCB parts library: the
+  JLCPCB stock for the assembly and the library class (Basic, Preferred, Extended) of
+  each part. The tool marks a part with no stock `NOT IN STOCK`.
 - **Parametric search.** Find new parts and replacement parts by their parameters
-  at DigiKey, for example "N-channel MOSFET, Vdss 20 V to 40 V, gate drive 2.5 V,
+  at DigiKey or in the JLCPCB parts library, for example "N-channel MOSFET, Vdss 20 V to 40 V, gate drive 2.5 V,
   package 3x3". A distributor keeps one value of a parameter at its own conditions.
   Thus the result marks a filter that the distributor data cannot decide (RDS(on) at
   a gate voltage of 2.5 V) `NOT APPLIED`. The agent then reads that value in the
@@ -148,7 +152,8 @@ only the files that exist: make one of them first if you want the block.
 | `codes DOC` | Show the orderable codes of a datasheet |
 | `links MPN` | Show links to the datasheet, stock, symbol, footprint and 3D model (with DigiKey: direct links) |
 | `find MPN` | Find a part at the distributors (lifecycle, stock, prices) |
-| `pick CATEGORY FILTER ...` | Find parts by their parameters, for example `pick 278 "vdss >= 20 V"` |
+| `pick SOURCE CATEGORY FILTER ...` | Find parts by their parameters at `digikey` or in the `jlcpcb` library, for example `pick digikey "Single FETs, MOSFETs" "vdss >= 20 V"` |
+| `jlc update` | Download or update the JLCPCB parts library (276 MB) |
 | `stock` | Show the lifecycle state and the stock of each project part |
 | `key NAME` | Save the API key of a distributor (`key mouser`, `key digikey`), or the token of the team server (`key team`) |
 | `server connect URL` | Connect the store to a team server; `server sync`, `server` (state) |

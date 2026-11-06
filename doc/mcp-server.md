@@ -123,8 +123,8 @@ project folder. The other tools only read.
 | Tool | Function | Main parameters | Changes |
 |---|---|---|---|
 | `search_distributors` | Give the orderable parts at the enabled distributors: lifecycle state, stock, prices and datasheet URL. Mouser gives no package. | `mpn`, `exact`, `path` | no |
-| `part_parameters` | Give the parameters of a part category at DigiKey, with the number of values and examples of the values, for the filters of `find_parts`. | `category`, `path` | no |
-| `find_parts` | Find new parts or replacement parts by their parameters (a parametric search at DigiKey). | `category`, `filters`, `keywords`, `in_stock`, `sort`, `limit`, `offset`, `path` | no |
+| `part_parameters` | Give the parameters of a part category at DigiKey or in the JLCPCB parts library, with the number of values and examples of the values, for the filters of `find_parts`. | `category`, `source`, `path` | no |
+| `find_parts` | Find new parts or replacement parts by their parameters (a parametric search at DigiKey or in the JLCPCB parts library). | `category`, `filters`, `keywords`, `in_stock`, `sort`, `limit`, `offset`, `source`, `path` | no |
 | `project_availability` | Give the lifecycle state and the stock of each project part at each enabled distributor, with a warning for each problem. | `path` | no |
 | `distributor_status` | Give the enabled distributors, if each one has an API key (no key values), and the services of each distributor. | `path` | no |
 | `part_links` | Give search links for a part: datasheet, price, stock, symbol, footprint and 3D model. When DigiKey is in the global distributor list and has a key, also the direct links of DigiKey to the CAD models and the datasheets. | `mpn` | no |
