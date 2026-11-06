@@ -362,7 +362,7 @@ def product_line(product: dict, names: list[str], currency: str) -> str:
     if status:
         from .distributors import not_orderable, restricted
 
-        offer = _offer(product, currency)  # the same marks as search_distributors
+        offer = offer_of(product, currency)  # the same marks as search_distributors
         warn = not_orderable(offer)
         parts.append(f"state: {status}" + (f" [NOT ORDERABLE: {warn}]" if warn else "")
                      + (" [DigiKey does not sell it now; not a lifecycle state of the manufacturer]"
@@ -470,7 +470,7 @@ def stock(product: dict) -> int | None:
     return sum(counts) if counts else None
 
 
-def _offer(product: dict, currency: str):
+def offer_of(product: dict, currency: str):
     """An Offer of distributors.py for a DigiKey product: the cut tape packaging,
     else the first packaging, gives the DigiKey number and the prices."""
     from .distributors import Offer
@@ -491,6 +491,18 @@ def _offer(product: dict, currency: str):
         distributor_pn=str(chosen.get("DigiKeyProductNumber") or "").strip())
 
 
+def product(number: str, credential=None) -> dict | None:
+    """The DigiKey product of a DigiKey number or an MPN (productdetails), or
+    None when DigiKey has none."""
+    try:
+        data = call("GET", f"/search/{urllib.parse.quote(number.strip(), safe='')}/productdetails",
+                    credential=credential)
+    except NotFound:
+        return None
+    found = data.get("Product") if isinstance(data, dict) else None
+    return found if isinstance(found, dict) else None
+
+
 def offers(mpn: str, exact: bool = True, credential=None) -> list:
     """The DigiKey offers of an MPN: exact, or each part whose MPN starts with it
     (up to 50). An MPN that DigiKey does not have gives no offer."""
@@ -508,11 +520,8 @@ def offers(mpn: str, exact: bool = True, credential=None) -> list:
     if cached and cached[0] > now - CACHE_SECONDS:
         return list(cached[1])
     if exact:
-        try:
-            data = call("GET", f"/search/{urllib.parse.quote(mpn, safe='')}/productdetails", credential=credential)
-        except NotFound:
-            data = None
-        products = [data["Product"]] if isinstance(data, dict) and isinstance(data.get("Product"), dict) else []
+        found = product(mpn, credential)
+        products = [found] if found is not None else []
     else:
         data = call("POST", "/search/keyword", {"Keywords": mpn, "Limit": MAX_LIMIT},
                     query={"includes": "Products,ExactMatches,ProductsCount"}, credential=credential)
@@ -523,7 +532,7 @@ def offers(mpn: str, exact: bool = True, credential=None) -> list:
             if number.upper().startswith(mpn.upper()) and number not in seen:
                 seen.add(number)
                 products.append(p)
-    result = [_offer(p, currency) for p in products if p.get("ManufacturerProductNumber")]
+    result = [offer_of(p, currency) for p in products if p.get("ManufacturerProductNumber")]
     if len(_offers) > 500:
         _offers.clear()
     _offers[key] = (now, result)

@@ -320,13 +320,15 @@ replacement with the same parameters.
 4. Find the candidates: `find_parts("digikey", "Single FETs, MOSFETs", ["channel =
    N-Channel", "vdss >= 20 V", "drive <= 2.5V", "package has 3x3"])` (CLI:
    `datasheet-lens pick digikey "Single FETs, MOSFETs" ...`).
-5. For each candidate that the design can use, add its datasheet with `add_document`
-   (the datasheet URL of the result). Read each value that the design needs, for
-   example RDS(on) at a gate voltage of 2.5 V, with `get_page_image`. Save it with
+5. For each candidate that the design can use, take it with `adopt_part(source,
+   number)` (CLI: `datasheet-lens adopt SOURCE NUMBER`): it adds the datasheet, the
+   part and its purchase source. Read each value that the design needs, for example
+   RDS(on) at a gate voltage of 2.5 V, with `get_page_image`. Save it with
    `save_fact`.
 6. Give the user the links to the symbol, the footprint and the 3D model of the
    selected part: `part_links(mpn)` (CLI: `datasheet-lens links MPN`).
-7. Add the selected part to the project with `project_add_part`.
+7. Remove the candidates that the design does not use from the project
+   (`project_remove_part`).
 
 For a board that JLCPCB assembles, search in the JLCPCB parts library: give the source
 `jlcpcb` (CLI: `datasheet-lens pick jlcpcb ...`). The result gives the JLCPCB stock and the library class

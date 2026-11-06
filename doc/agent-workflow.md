@@ -197,8 +197,9 @@ source: `digikey`, or `jlcpcb` for a board that JLCPCB assembles.
 1. `part_parameters(source, category)`: the names of the parameters and examples of their
    values.
 2. `find_parts(source, category, filters)`: the candidates, with each filter and its status.
-3. For each candidate that the design can use: `add_document` with its datasheet
-   URL, then `get_page_image` and `save_fact` for each value that the design needs.
+3. For each candidate that the design can use: `adopt_part(source, number)`. It adds
+   the datasheet, the part and its purchase source. Then `get_page_image` and
+   `save_fact` for each value that the design needs.
 
 The distributor keeps one value of a parameter at its own conditions. Thus the tool
 marks a filter with a condition (`rds_on <= 10 mOhm at Vgs=2.5V`) `NOT APPLIED`. Read

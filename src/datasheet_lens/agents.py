@@ -69,7 +69,10 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
 - To find a new part or a replacement part by its parameters: part_parameters,
   then find_parts, with the source digikey or jlcpcb (CLI `datasheet-lens pick
   SOURCE CATEGORY FILTER ...`). For the JLCPCB assembly, use jlcpcb: it gives
-  the JLCPCB stock and the library class (Basic, Preferred, Extended). Read each value that the design needs in
+  the JLCPCB stock and the library class (Basic, Preferred, Extended). When the
+  user selects a candidate: adopt_part with the number of the source or the
+  MPN (CLI `datasheet-lens adopt SOURCE NUMBER`) adds its datasheet, the part
+  and its purchase source. Read each value that the design needs in
   the datasheet of the candidate. part_links
   (CLI `datasheet-lens links MPN`) gives the links to the datasheet, the symbol,
   the footprint and the 3D model: give them to the user.

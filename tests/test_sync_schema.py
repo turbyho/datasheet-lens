@@ -7,7 +7,7 @@ import sqlite3
 import pytest
 
 from datasheet_lens import knowledge, makers
-from datasheet_lens.store import SCHEMA_VERSION, Store, merge_duplicates, not_recorded
+from datasheet_lens.store import FULL_PULL, SCHEMA_VERSION, Store, merge_duplicates, not_recorded
 
 
 def _record(store: Store) -> None:
@@ -388,3 +388,209 @@ def test_background_sync_continues_after_an_error(store_home, monkeypatch, capsy
     monkeypatch.setattr(teamsync, "SYNC_INTERVAL", 0)
     teamsync.background(stop, Store)
     assert len(calls) == 2 and "ValueError: not JSON" in capsys.readouterr().err
+
+
+def test_outbox_of_part_sources(store_home):
+    """A purchase source goes into the outbox with the gid of its part, the
+    source and the number as its key. A new URL is an update; the same values
+    again write no row. The delete of the part writes one row: the server does
+    the FK cascade of its sources itself."""
+    with Store() as store:
+        _record(store)
+        part = store.add_part("CSD16340Q3", "TI")
+        gid, last = _gid(store, "parts", part), _last(store)
+        store.set_part_source(part, "digikey", "296-25646-1-ND", url="https://dk/a", found="2026-11-06")
+        store.set_part_source(part, "digikey", "296-25646-1-ND", url="https://dk/a", found="2026-11-06")
+        store.set_part_source(part, "digikey", "296-25646-1-ND", url="https://dk/b", found="2026-11-06")
+        store.set_part_source(part, "jlcpcb", "C47616", library="Extended", found="2026-11-06")
+        assert store.delete_part_source(part, "jlcpcb", "C47616")
+        assert not store.delete_part_source(part, "jlcpcb", "C47616")
+        dk, jlc = json.dumps([gid, "digikey", "296-25646-1-ND"]), json.dumps([gid, "jlcpcb", "C47616"])
+        rows = [(t, op, json.loads(k), v, d) for t, op, k, v, d in _outbox(store, last)]
+        assert rows == [
+            ("part_sources", "insert", json.loads(dk), None, {"url": "https://dk/a", "library": "", "found": "2026-11-06"}),
+            ("part_sources", "update", json.loads(dk), None, {"url": "https://dk/b", "library": "", "found": "2026-11-06"}),
+            ("part_sources", "insert", json.loads(jlc), None,
+             {"url": "", "library": "Extended", "found": "2026-11-06"}),
+            ("part_sources", "delete", json.loads(jlc), None, None)]
+        last = _last(store)
+        store.db.execute("DELETE FROM parts WHERE id = ?", (part,))
+        assert _outbox(store, last) == [("parts", "delete", gid, 0, None)]
+        assert store.db.execute("SELECT count(*) FROM part_sources").fetchone()[0] == 0
+
+
+def test_record_all_sends_the_part_sources(store_home):
+    """The first push of a store sends its purchase sources, after their parts."""
+    from datasheet_lens.store import record_all
+
+    with Store() as store:
+        part = store.add_part("CSD16340Q3", "TI")
+        store.set_part_source(part, "jlcpcb", "C47616", library="Extended", found="2026-11-06")
+        assert record_all(store.db) == 2
+        rows = _outbox(store)
+        assert [(t, op) for t, op, *_ in rows] == [("parts", "insert"), ("part_sources", "insert")]
+        assert json.loads(rows[1][2]) == [_gid(store, "parts", part), "jlcpcb", "C47616"]
+        assert rows[1][4] == {"url": "", "library": "Extended", "found": "2026-11-06"}
+
+
+def test_merge_moves_the_part_sources(store_home):
+    """A merge of two parts moves the purchase sources of the duplicate part to
+    the kept part, with no outbox row. A source that the kept part has already
+    keeps its values."""
+    with Store() as store:
+        keep = store.add_part("X100", "Proto Semi")
+        store.maker_relation("distinct", "Proto Semi", "Proto Semiconductor")
+        dup = store.add_part("X100", "Proto Semiconductor")
+        store.set_part_source(keep, "digikey", "X100-ND", url="https://dk/keep", found="2026-11-01")
+        store.set_part_source(dup, "digikey", "X100-ND", url="https://dk/dup", found="2026-11-02")
+        store.set_part_source(dup, "jlcpcb", "C100", library="Basic", found="2026-11-02")
+        store.db.execute("DELETE FROM manufacturer_distinct")
+        store.db.commit()
+        _record(store)
+        assert store.maker_relation("alias", "Proto Semiconductor", "Proto Semi") == [
+            "X100: Proto Semiconductor into Proto Semi"]
+        assert store.part(dup) is None
+        assert store.part_sources(keep) == [
+            {"source": "digikey", "number": "X100-ND", "url": "https://dk/keep", "library": "", "found": "2026-11-01"},
+            {"source": "jlcpcb", "number": "C100", "url": "", "library": "Basic", "found": "2026-11-02"}]
+        assert [(t, op) for t, op, *_ in _outbox(store)] == [("maker_relations", "insert")]
+
+
+def test_pulled_part_sources(store_home):
+    """The purchase sources of the server: an insert, an update of the values
+    and a delete, with no outbox row. A source of a part that the store does not
+    have is ignored."""
+    from datasheet_lens import teamsync
+
+    with Store() as store:
+        part = store.add_part("CSD16340Q3", "TI")
+        _record(store)
+        gid, last = _gid(store, "parts", part), _last(store)
+
+        def apply(number, deleted=False, url="", library="", other_gid=None):
+            row = {"tbl": "part_sources", "key": json.dumps([other_gid or gid, "jlcpcb", number]), "version": 1,
+                   "deleted": deleted, "data": {"url": url, "library": library, "found": "2026-11-06"}}
+            with store.db, not_recorded(store.db):
+                teamsync._apply(store.db, [row], {})
+
+        apply("C47616", library="Extended")
+        apply("C47616", url="https://jlc/C47616", library="Basic")
+        apply("C1", library="Basic")
+        apply("C2", other_gid="no-such-part")
+        assert store.part_sources(part) == [
+            {"source": "jlcpcb", "number": "C1", "url": "", "library": "Basic", "found": "2026-11-06"},
+            {"source": "jlcpcb", "number": "C47616", "url": "https://jlc/C47616", "library": "Basic",
+             "found": "2026-11-06"}]
+        apply("C1", deleted=True)
+        assert [s["number"] for s in store.part_sources(part)] == ["C47616"]
+        assert _last(store) == last
+
+
+def test_migration_from_version_5(store_home, make_pdf):
+    """A store of version 5 (no part_sources) gets the table and keeps its data.
+    The triggers of the table come with the migration. A connected store keeps its
+    cursor and gets the mark FULL_PULL: the older version ignored the purchase
+    sources of the server (see test_team_sync)."""
+    with Store() as store:
+        doc = store.add_document(make_pdf())
+        part = store.add_part("LM358", "TI")
+        store.link(part, doc.id)
+        knowledge.save_fact(store, doc.id, 1, "Vos", "3", unit="mV", part="LM358")
+        home = store.home
+    db = sqlite3.connect(home / "db" / "lens.db")
+    db.execute("DROP TABLE part_sources")  # also its triggers
+    db.execute("UPDATE meta SET value = '5' WHERE key = 'schema_version'")
+    db.execute("UPDATE meta SET value = 'version-5' WHERE key = 'sync_triggers'")
+    db.execute("UPDATE sync_state SET cursor = 42")
+    db.commit()
+    db.close()
+    with Store(home) as store:
+        db = store.db
+        assert db.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == str(SCHEMA_VERSION)
+        assert SCHEMA_VERSION == 6
+        assert [r["mpn"] for r in store.parts()] == ["LM358"]
+        assert [r["id"] for r in store.part_documents("LM358")] == [doc.id]
+        assert db.execute("SELECT value FROM knowledge").fetchone()[0] == "3"
+        assert store.part_sources(part) == []
+        assert db.execute("SELECT cursor FROM sync_state").fetchone()[0] == 42
+        assert db.execute("SELECT value FROM meta WHERE key = ?", (FULL_PULL,)).fetchone()[0] == "1"
+        _record(store)
+        store.set_part_source(part, "mouser", "595-LM358", found="2026-11-06")
+        assert [(t, op) for t, op, *_ in _outbox(store)] == [("part_sources", "insert")]
+
+
+def test_migration_from_version_5_with_no_server(store_home):
+    """A store with no cursor (not connected) gets no mark FULL_PULL: its first
+    pull is a full pull."""
+    with Store() as store:
+        home = store.home
+    db = sqlite3.connect(home / "db" / "lens.db")
+    db.execute("DROP TABLE part_sources")
+    db.execute("UPDATE meta SET value = '5' WHERE key = 'schema_version'")
+    db.commit()
+    db.close()
+    with Store(home) as store:
+        assert store.db.execute("SELECT 1 FROM meta WHERE key = ?", (FULL_PULL,)).fetchone() is None
+
+
+class _FakeServer:
+    """A fake team server. tables None: an older server, which does not give its
+    tables in /v1/account. It refuses the parts of refuse (a reader), has no rows
+    to pull, and records each change that it gets."""
+
+    def __init__(self, tables=None, refuse=()):
+        self.tables, self.refuse, self.sent = tables, refuse, []
+
+    def call(self, method, path, body=None, params=None, timeout=0):
+        if path == "/v1/account":
+            return {"name": "alice", "role": "contributor", "features": ["sync"]} | (
+                {"tables": list(self.tables)} if self.tables is not None else {})
+        if path == "/v1/sync/pull":
+            return {"rows": [], "more": False, "after": None, "cursor": 1}
+        assert (method, path) == ("POST", "/v1/sync/push")
+        results = []
+        for change in body["changes"]:
+            self.sent.append((change["tbl"], change["op"]))
+            if change["key"] in self.refuse:
+                results.append({"seq": change["seq"], "result": "rejected", "retry": False,
+                                "reason": "the account has the role reader"})
+            else:
+                results.append({"seq": change["seq"], "result": "applied", "version": 1})
+        return {"results": results}
+
+
+def test_changes_of_a_table_that_the_server_does_not_know_wait(store_home, monkeypatch):
+    """A server of an older version does not give its tables, and does not know
+    part_sources: the changes of part_sources stay in the outbox, are not sent and
+    get no attempt, and one note tells the user to upgrade the server. The next
+    sync after the upgrade sends them. A different refusal removes the change, as
+    before."""
+    from datasheet_lens import teamsync
+
+    with Store() as store:
+        _record(store)
+        store.db.execute("UPDATE sync_state SET server = 'https://team.example.com'")
+        store.db.commit()
+        part = store.add_part("CSD16340Q3", "TI")
+        refused = _gid(store, "parts", store.add_part("LM358", "TI"))
+        store.set_part_source(part, "jlcpcb", "C47616", library="Extended", found="2026-11-06")
+        store.set_part_source(part, "jlcpcb", "C47616", library="Basic", found="2026-11-06")
+        store.set_part_source(part, "digikey", "296-25646-1-ND", found="2026-11-06")
+        old = _FakeServer(refuse=(refused,))
+        monkeypatch.setattr(teamsync, "remote", lambda store: old)
+        for _ in range(teamsync.RETRY_LIMIT + 1):  # no attempt counts: the changes do not go away
+            report = teamsync.sync(store)
+            assert [n for n in report.notes if "does not know" in n] == [
+                "the team server does not know the table part_sources: upgrade the team server; the changes of this "
+                "table wait in the outbox"]
+        assert old.sent == [("parts", "insert"), ("parts", "insert")]  # the first sync: applied, and refused
+        rows = store.db.execute("SELECT tbl, op, attempts FROM outbox ORDER BY seq").fetchall()
+        assert [tuple(r) for r in rows] == [("part_sources", "insert", 0), ("part_sources", "update", 0),
+                                            ("part_sources", "insert", 0)]
+        assert any(f"refused by the server: parts insert {refused}" in n for n in teamsync.notes(store))
+        new = _FakeServer(tables=teamsync.BASE_TABLES + ("part_sources",))
+        monkeypatch.setattr(teamsync, "remote", lambda store: new)
+        report = teamsync.sync(store)
+        assert report.pushed == 3 and not [n for n in report.notes if "does not know" in n]
+        assert store.db.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
+        assert new.sent == [("part_sources", "insert"), ("part_sources", "update"), ("part_sources", "insert")]

@@ -5,7 +5,7 @@ data: PostgreSQL for the rows, and an S3 object store (Garage) for the files. Th
 clients do all processing.
 
 The server has the accounts, the tokens, the files, and the shared tables: parts,
-documents, links, facts and the relations of manufacturer names. Each person keeps a
+documents, links, purchase sources, facts and the relations of manufacturer names. Each person keeps a
 local store: the MCP server and the CLI read it, also with no connection. The store
 synchronizes with the server (see [Connect a store](#connect-a-store)).
 
@@ -149,9 +149,9 @@ On the computer of each person:
    datasheet-lens server connect https://dslens.example.com
    ```
 
-   The first sync sends all parts, documents (with their files), links, facts and
-   relations of manufacturer names of the local store to the server, and gets the rows
-   of the server.
+   The first sync sends all parts, documents (with their files), links, purchase
+   sources, facts and relations of manufacturer names of the local store to the
+   server, and gets the rows of the server.
 
 WARNING: THE FIRST START OF THIS VERSION CHANGES THE SCHEMA OF THE LOCAL STORE (VERSION
 3). AN OLDER VERSION OF DATASHEET-LENS CANNOT OPEN IT AFTER THIS. MAKE A BACKUP OF
@@ -213,7 +213,7 @@ not through the API.
 | Method and path | Role | Function |
 |---|---|---|
 | `GET /health` | none | `{"status": "ok", "version": ...}` |
-| `GET /v1/account` | `reader` | The name and the role of the account, the version of the server and of its built-in manufacturer names. |
+| `GET /v1/account` | `reader` | The name and the role of the account, the version of the server and of its built-in manufacturer names, and the shared tables of the server (`tables`). |
 | `POST /v1/blobs` | `contributor` | Body `{sha256, size, media_type}`. `{"exists": true}`, or a presigned PUT: `url`, and `headers` that the client must send. |
 | `POST /v1/blobs/{sha256}/done` | `contributor` | After the PUT: the server records the file. |
 | `GET /v1/blobs/{sha256}` | `reader` | A presigned GET: `url`, `size`, `media_type`. |
@@ -235,10 +235,13 @@ The rules of a push:
 - A fact that is not `unchecked`, or a new status of a fact, needs the role
   `reviewer`.
 - A delete of a part, a document, a fact or a relation needs the role `admin`.
+- A link of a part to a document and a purchase source of a part have no version:
+  an update keeps the last change. An insert of a link or a source that the server
+  has (the same key) sets its values, for example the role of the link.
 - Two parts with the same MPN and the same manufacturer (registry of the server):
-  the server keeps the older part (`created`, then gid), and moves the links and
-  facts of the other part to it. A relation of manufacturer names can merge parts in
-  the same way.
+  the server keeps the older part (`created`, then gid), and moves the links, the
+  purchase sources and the facts of the other part to it. A relation of
+  manufacturer names can merge parts in the same way.
 - The server applies one push at a time. A wrong change is `rejected`; the other
   changes of the push are applied.
 
@@ -270,6 +273,19 @@ the API when the package or the settings changed:
 ```sh
 ~/dslens-setup/bin/dslens-server setup --api dslens.example.com --wheel ./datasheet_lens-NEW-py3-none-any.whl
 ```
+
+Upgrade the server first, then the clients. A new version can add a shared table,
+for example `part_sources` (the purchase sources of the parts). `GET /v1/account`
+gives the shared tables of the server. A server of an older version does not give
+them, and does not know `part_sources`. A newer client does not send the changes of
+a table that the server does not know: they stay in its outbox, and each sync gives
+the note "the team server does not know the table ...: upgrade the team server". The
+first sync after the upgrade of the server sends these changes.
+
+An older client ignores the rows of a table that it does not know. Thus the first
+start of the client version with `part_sources` (store schema version 6) marks the
+store. Its next sync first gets the changes after its last sync, with the deleted
+rows. Then it gets all rows of the server again, one time.
 
 ## Backup
 

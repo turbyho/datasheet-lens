@@ -153,6 +153,7 @@ only the files that exist: make one of them first if you want the block.
 | `links MPN` | Show links to the datasheet, stock, symbol, footprint and 3D model (with DigiKey: direct links) |
 | `find MPN` | Find a part at the distributors (lifecycle, stock, prices) |
 | `pick SOURCE CATEGORY FILTER ...` | Find parts by their parameters at `digikey` or in the `jlcpcb` library, for example `pick digikey "Single FETs, MOSFETs" "vdss >= 20 V"` |
+| `adopt SOURCE NUMBER` | Take a found part: its datasheet, the part and its purchase source, for example `adopt jlcpcb C47616` or `adopt digikey --mpn CSD16340Q3` |
 | `jlc update` | Download or update the JLCPCB parts library (276 MB) |
 | `stock` | Show the lifecycle state and the stock of each project part |
 | `key NAME` | Save the API key of a distributor (`key mouser`, `key digikey`), or the token of the team server (`key team`) |

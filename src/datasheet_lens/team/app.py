@@ -232,9 +232,11 @@ def create_app(settings: Settings, *, db: Database | None = None, blobs: BlobSto
     async def whoami(request: Request):
         account = require(request, "reader")
         # The version of the built-in manufacturer names: the clients compare it
-        # with their own (the same registry on the server and the clients).
+        # with their own (the same registry on the server and the clients). tables:
+        # the shared tables of the server; a client keeps the changes of a different
+        # table in its outbox (an older server does not give tables).
         return {"name": account["name"], "role": account["role"], "server_version": VERSION,
-                "makers_version": SEED_VERSION, "features": ["sync", "bundles"]}
+                "makers_version": SEED_VERSION, "features": ["sync", "bundles"], "tables": list(sync.TABLES)}
 
     @app.post("/v1/blobs")
     async def blob_upload(request: Request, info: FileInfo):

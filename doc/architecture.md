@@ -72,6 +72,7 @@ The database tables:
 |---|---|
 | `parts` | MPN, manufacturer, category (column `family`), and `base_id` for a concrete part. |
 | `part_aliases` | More names of a part. |
+| `part_sources` | The purchase sources of a part: the source (`digikey`, `jlcpcb`, `mouser`), the part number of the source, the product URL, the JLCPCB library class and the date. No stock and no price. |
 | `documents` | SHA-256, file name, size, pages, title, source URL. |
 | `part_documents` | The links between parts and documents, with the role. |
 | `builds` | The format version (`indexer.INDEX_FORMAT`, `elements.ELEMENTS_FORMAT`) and the backend of each index and element map, the versions of its tools, and its bundle on a team server. A new release of the package does not build them again; a new format does. |
@@ -83,8 +84,8 @@ The database tables:
 | `manufacturers`, `manufacturer_aliases`, `manufacturer_distinct` | The manufacturer registry. Each store makes it from the built-in names and `maker_relations`. |
 | `sync_state`, `outbox` | The local changes for a team server (see below). |
 
-The tables `parts`, `part_aliases`, `documents`, `part_documents`, `knowledge` and
-`maker_relations` are shared tables. Each row has a global ID: the SHA-256 for a
+The tables `parts`, `part_aliases`, `part_sources`, `documents`, `part_documents`,
+`knowledge` and `maker_relations` are shared tables. Each row has a global ID: the SHA-256 for a
 document, a gid for the other rows. A gid is a UUID of version 7. Its text order is
 the order of the creation of the rows. The column `version` keeps the version of the
 row on a team server (0: not on a server).
@@ -95,6 +96,14 @@ from the server, and a change that a shared decision causes (the merge of two pa
 after a relation of manufacturer names), write no outbox row: each store and the
 server make these changes themselves (`store.not_recorded`). A merge keeps the
 oldest part: by `created`, then by gid. Thus each store keeps the same part.
+
+A push sends only the changes of the tables that the server gives in
+`/v1/account` (`tables`; an older server does not give them: `teamsync.BASE_TABLES`).
+The changes of a different table stay in the outbox until the server knows the
+table. A pull gets the changes after the cursor of the store, with the deleted rows.
+The key `sync_full_pull` in `meta` (from the migration to version 6) makes the next
+sync also get all live rows of the server one time, with no change of the cursor: an
+older version ignored the rows of `part_sources`.
 
 `bundles.py` puts the derived data of a document (index, element map) into a bundle
 for the team server, and takes the canonical bundle of the server before a build. A

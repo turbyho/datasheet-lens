@@ -144,6 +144,24 @@ come before the first `[[part]]`.
 | `role` | `datasheet` (default), `manual`, `errata`, `appnote` or `other`. |
 | `pinned` | `true` for a file that a person put into the folder. Sync does not move it, and a removal does not delete it. |
 
+### Keys of `[[part.source]]`
+
+A purchase source: a source that this project orders the part from. `datasheet-lens
+adopt` writes it (see [distributors.md](distributors.md#take-a-found-part)).
+
+| Key | Value |
+|---|---|
+| `source` | Necessary. `digikey`, `jlcpcb` or `mouser`. |
+| `number` | Necessary. The part number of the source: a DigiKey number, a JLCPCB C number or a Mouser number. |
+| `library` | JLCPCB: the library class, `Basic`, `Preferred` or `Extended`. |
+
+```toml
+[[part.source]]
+source = "jlcpcb"
+number = "C47616"
+library = "Extended"
+```
+
 A `[[part.document]]` block belongs to the `[[part]]` above it. If a person moves a
 block, the document goes to a different part. Sync finds this case when the store
 links the document to a different part, and reports it as a problem.

@@ -343,3 +343,233 @@ def test_wrong_page_position(db):
         sync.check_after([sync.TABLES.index("parts"), ["x"], 1])  # parts: two order values
     with pytest.raises(sync.BadPosition):
         call(db, sync.pull, None, [0, ["a"], 10 ** 15])  # after the current state
+
+
+def source(gid, number="C47616", op="insert", url="", library="Extended", found="2026-11-06"):
+    return {"tbl": "part_sources", "op": op, "key": json.dumps([gid, "jlcpcb", number]),
+            "data": None if op == "delete" else {"url": url, "library": library, "found": found}}
+
+
+def source_key(gid, number="C47616"):
+    return json.dumps([gid, "jlcpcb", number], separators=(",", ":"))
+
+
+def test_part_sources(db):
+    """A purchase source: insert, update of its values (no version), delete by a
+    contributor, and an insert of the same key again with new values."""
+    push(db, "alice", part("p1", "CSD16340Q3", "TI"))
+    _, cursor = pull_all(db)
+    assert results(push(db, "alice", source("p1"), source("p1", op="update", url="https://jlc/1"))) == [
+        "applied"] * 2
+    rows, cursor = pull_all(db, cursor)
+    assert [(r["key"], r["version"], r["data"]) for r in rows] == [
+        (source_key("p1"), 2, {"url": "https://jlc/1", "library": "Extended", "found": "2026-11-06"})]
+    # The same insert again: no change. An insert with new values: an update.
+    assert push(db, "rita", source("p1", url="https://jlc/1"))[0] == {"seq": 0, "result": "applied", "version": 2}
+    assert pull_all(db, cursor)[0] == []
+    assert push(db, "rita", source("p1", library="Basic"))[0] == {"seq": 0, "result": "applied", "version": 3}
+    rows, cursor = pull_all(db, cursor)
+    assert [r["data"] for r in rows] == [{"url": "", "library": "Basic", "found": "2026-11-06"}]
+    # A delete needs the role contributor; an insert after it makes the row live again, with its values.
+    assert results(push(db, "alice", source("p1", op="delete"))) == ["applied"]
+    rows, cursor = pull_all(db, cursor)
+    assert [(r["key"], r["deleted"]) for r in rows] == [(source_key("p1"), True)]
+    assert results(push(db, "alice", source("p1", library="Preferred"))) == ["applied"]
+    rows, cursor = pull_all(db, cursor)
+    assert [(r["deleted"], r["data"]["library"]) for r in rows] == [(False, "Preferred")]
+    # Wrong values and references.
+    answer = push(db, "alice", source("p1", library="Standard"), source("missing"),
+                  {**source("p1"), "data": {"url": "", "library": "Basic"}})
+    assert results(answer) == ["rejected"] * 3
+    assert "library" in answer[0]["reason"] and "not on the server" in answer[1]["reason"]
+    assert "found" in answer[2]["reason"]
+
+
+def test_part_sources_follow_the_part(db):
+    """The delete of a part deletes its sources. A merge of two parts moves the
+    sources of the newer part to the older part; a source that the older part has
+    keeps its values."""
+    push(db, "alice", part("p-old", "TPS7A02", "TI", created="2026-11-01T09:00:00+00:00"),
+         part("p-new", "TPS7A02", "Proto Semi", created="2026-11-02T09:00:00+00:00"),
+         source("p-old", "C1", url="https://jlc/old"), source("p-new", "C1", url="https://jlc/new"),
+         source("p-new", "C2"), part("p-del", "LM358", "TI"), source("p-del", "C3"))
+    _, cursor = pull_all(db)
+    assert results(push(db, "adam", {"tbl": "parts", "op": "delete", "key": "p-del", "base_version": 1})) == [
+        "applied"]
+    rows, cursor = pull_all(db, cursor)
+    assert by_key(rows, "part_sources")[source_key("p-del", "C3")]["deleted"]
+
+    async def alias(pool):  # the two names are one manufacturer: the parts merge
+        async with pool.acquire() as conn, conn.transaction():
+            registry = sync.Registry()
+            registry.check("alias", "Proto Semi", "TI")
+            return await sync.merge_duplicates(conn, registry, None)
+
+    assert call(db, alias) == 1
+    sources = by_key(pull_all(db, cursor)[0], "part_sources")
+    assert sources[source_key("p-new", "C1")]["deleted"] and sources[source_key("p-new", "C2")]["deleted"]
+    assert source_key("p-old", "C1") not in sources  # not changed: it keeps its URL
+    assert not sources[source_key("p-old", "C2")]["deleted"]
+    live = {r["key"]: r["data"]["url"] for r in pull_all(db)[0] if r["tbl"] == "part_sources"}
+    assert live == {source_key("p-old", "C1"): "https://jlc/old", source_key("p-old", "C2"): ""}
+
+
+def test_server_schema_of_version_3_gets_the_part_sources(db):
+    """A server database of version 3 (no part_sources) gets the table at the
+    next start, and keeps its rows."""
+    push(db, "alice", part("p1", "LM358", "TI"))
+
+    async def downgrade(pool):
+        async with pool.acquire() as conn:
+            await conn.execute("DROP TABLE part_sources")
+            await conn.execute("UPDATE meta SET value = '3' WHERE key = 'schema_version'")
+
+    async def start():
+        database = Database(db["url"])
+        await database.connect()
+        try:
+            await database.init_schema()
+            async with database.pool.acquire() as conn:
+                return await conn.fetchval("SELECT value FROM meta WHERE key = 'schema_version'")
+        finally:
+            await database.close()
+
+    call(db, downgrade)
+    assert run(start()) == "4"
+    assert results(push(db, "alice", source("p1"))) == ["applied"]
+    assert [r["tbl"] for r in pull_all(db)[0]] == ["parts", "part_sources"]
+
+
+class _Client:
+    """A client of the team server for teamsync.push and teamsync.pull: the
+    functions of sync, with no HTTP."""
+
+    def __init__(self, db, account):
+        self.db, self.account = db, account
+
+    def call(self, method, path, body=None, params=None, timeout=0):
+        if path == "/v1/sync/pull":
+            params = params or {}
+            after = json.loads(params["after"]) if "after" in params else None
+            return call(self.db, sync.pull, params.get("cursor"), after)
+        assert (method, path) == ("POST", "/v1/sync/push")
+        return {"results": call(self.db, sync.push, self.db[self.account], body["changes"])}
+
+
+def test_upgraded_client_gets_the_skipped_sources_and_the_deletes(db, tmp_path):
+    """An older version of a client ignored the purchase sources in its pulls. After
+    the upgrade (migration 6), the next sync gets the deletes after the cursor of
+    the store (incremental pull), then the sources (full pull of the live rows).
+    The cursor of the store stays the cursor of the incremental pull."""
+    import sqlite3
+
+    from datasheet_lens import teamsync
+    from datasheet_lens.store import FULL_PULL, Store
+
+    client = _Client(db, "rita")
+
+    def pull(store):
+        lease = teamsync.Lease(store)
+        assert lease.take()
+        try:
+            teamsync.pull(store, client, teamsync.Report(), lease)
+        finally:
+            lease.release()
+        return store.db.execute("SELECT cursor FROM sync_state").fetchone()[0]
+
+    push(db, "alice", part("p1", "CSD16340Q3", "TI"), part("p2", "LM358", "TI"))
+    store = Store(tmp_path / "client")
+    store.db.execute("UPDATE sync_state SET server = 'https://team.example.com', recording = 1")
+    store.db.commit()
+    pull(store)
+    # A newer client adds a source; this client pulls it (the older version ignores it).
+    push(db, "alice", source("p1"))
+    cursor = pull(store)
+    home = store.home
+    store.close()
+    old = sqlite3.connect(home / "db" / "lens.db")  # the store of the older version: schema 5
+    old.execute("DROP TABLE part_sources")
+    old.execute("UPDATE meta SET value = '5' WHERE key = 'schema_version'")
+    old.commit()
+    old.close()
+    # A delete on the server after the last pull of the older version.
+    assert results(push(db, "adam", {"tbl": "parts", "op": "delete", "key": "p2", "base_version": 1})) == [
+        "applied"]
+
+    store = Store(home)
+    assert store.db.execute("SELECT cursor FROM sync_state").fetchone()[0] == cursor
+    assert store.db.execute("SELECT 1 FROM meta WHERE key = ?", (FULL_PULL,)).fetchone()
+    new_cursor = pull(store)
+    assert [r["mpn"] for r in store.parts()] == ["CSD16340Q3"]  # the delete came
+    assert store.part_sources(store.find_part("CSD16340Q3")) == [
+        {"source": "jlcpcb", "number": "C47616", "url": "", "library": "Extended", "found": "2026-11-06"}]
+    assert new_cursor >= cursor and store.db.execute("SELECT 1 FROM meta WHERE key = ?", (FULL_PULL,)).fetchone() is None
+    assert store.db.execute("SELECT count(*) FROM outbox").fetchone()[0] == 0
+    # The next pulls are incremental again.
+    push(db, "alice", part("p3", "TPS7A02", "TI"))
+    assert pull(store) >= new_cursor and len(store.parts()) == 2
+
+
+def test_account_gives_the_tables(db):
+    """/v1/account gives the shared tables of the server: a client keeps the
+    changes of a different table in its outbox."""
+    from fastapi.testclient import TestClient
+
+    from datasheet_lens.team.app import create_app
+    from datasheet_lens.team.config import Settings
+
+    async def token():
+        database = Database(db["url"])
+        await database.connect()
+        try:
+            return (await database.create_token("alice"))[1]
+        finally:
+            await database.close()
+
+    bearer = run(token())
+    settings = Settings(db_url=db["url"], s3_endpoint="http://127.0.0.1:9", s3_public_url="http://127.0.0.1:9",
+                        s3_key_id="none", s3_secret="none")
+    with TestClient(create_app(settings, blobs=object(), cleanup=False)) as c:  # no object store: not used here
+        answer = c.get("/v1/account", headers={"Authorization": f"Bearer {bearer}"}).json()
+    assert answer["tables"] == list(sync.TABLES) and "part_sources" in answer["tables"]
+
+
+def test_link_insert_sets_the_role(db):
+    """An insert of a link that the server has, with a different role: the role of
+    the insert is kept (no version: the last change). The same for a deleted link
+    that the insert makes live again."""
+    push(db, "alice", document(), part("p1", "LM358"), link("p1"))
+    _, cursor = pull_all(db)
+    key = json.dumps(["p1", DOC], separators=(",", ":"))
+    errata = {**link("p1"), "data": {"role": "errata"}}
+    assert push(db, "rita", errata)[0] == {"seq": 0, "result": "applied", "version": 2}
+    rows, cursor = pull_all(db, cursor)
+    assert [(r["key"], r["version"], r["data"]["role"]) for r in rows] == [(key, 2, "errata")]
+    assert push(db, "rita", errata)[0]["version"] == 2  # the same insert again: no change
+    assert pull_all(db, cursor)[0] == []
+    assert results(push(db, "alice", link("p1", op="delete"))) == ["applied"]
+    _, cursor = pull_all(db, cursor)
+    assert push(db, "alice", {**link("p1"), "data": {"role": "manual"}})[0]["version"] == 4
+    rows, _ = pull_all(db, cursor)
+    assert [(r["deleted"], r["data"]["role"]) for r in rows] == [(False, "manual")]
+
+
+def test_merge_revives_a_link_with_the_role_of_the_duplicate(db):
+    """A merge moves a link of the newer part to the older part. When the older
+    part had that link and it was deleted, the link is live again with the role
+    of the newer part: as the merge of a store, which has no deleted link."""
+    push(db, "alice", document(), part("p-old", "TPS7A02", "TI", created="2026-11-01T09:00:00+00:00"),
+         part("p-new", "TPS7A02", "Proto Semi", created="2026-11-02T09:00:00+00:00"),
+         link("p-old"), {**link("p-new"), "data": {"role": "manual"}})
+    assert results(push(db, "alice", link("p-old", op="delete"))) == ["applied"]
+
+    async def alias(pool):  # the two names are one manufacturer: the parts merge
+        async with pool.acquire() as conn, conn.transaction():
+            registry = sync.Registry()
+            registry.check("alias", "Proto Semi", "TI")
+            return await sync.merge_duplicates(conn, registry, None)
+
+    assert call(db, alias) == 1
+    links = by_key(pull_all(db)[0], "part_documents")
+    assert list(links) == [json.dumps(["p-old", DOC], separators=(",", ":"))]
+    assert links[json.dumps(["p-old", DOC], separators=(",", ":"))]["data"]["role"] == "manual"

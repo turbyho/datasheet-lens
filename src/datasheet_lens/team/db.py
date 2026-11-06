@@ -13,7 +13,9 @@ from typing import Any
 from .config import ROLES
 from .sync import SCHEMA as SYNC_SCHEMA
 
-SCHEMA_VERSION = 3  # 2: the shared tables (sync.SCHEMA); 3: the bundles of derived data
+# 2: the shared tables (sync.SCHEMA); 3: the bundles of derived data; 4: the purchase
+# sources of the parts (sync.SCHEMA makes the new table on the next start).
+SCHEMA_VERSION = 4
 SCHEMA = [
     "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     f"""CREATE TABLE IF NOT EXISTS accounts (

@@ -1,0 +1,269 @@
+"""Take a part of a source into the store and the project in one step (adopt).
+
+The source is DigiKey, the JLCPCB parts library or Mouser. The caller gives
+either the part number of the source (a DigiKey number, a JLCPCB C number, a
+Mouser number) or the MPN, never a text that the tool must interpret. The tool
+gets the part from the source, adds its datasheet, adds the part, and saves the
+purchase source: in the store (part_sources, shared with the team server) and
+in the project file ([[part.source]]). It saves no stock and no price: the
+terms of DigiKey forbid an own database of DigiKey data.
+
+The datasheet: a datasheet of the part (or of its base part) in the store comes
+first: the tool does not download a second copy. Else the tool downloads one:
+a URL on the site of the manufacturer first, a copy at a distributor next. It
+asks the other sources for URLs only when it needs them (the APIs have daily
+limits). The result tells which URL it used, and the URLs that failed.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import re
+from collections.abc import Iterator
+from urllib.parse import urlparse
+
+from .errors import LensError, Unavailable
+from .store import SOURCES
+
+# The hosts of the distributors: a datasheet URL on a different host is on the
+# site of the manufacturer.
+DISTRIBUTOR_HOSTS = ("digikey.", "mouser.", "lcsc.", "jlcpcb.", "octopart.")
+JLCPCB_NUMBER = re.compile(r"C(\d+)", re.IGNORECASE)
+
+
+def _part(source: str, number: str, mpn: str) -> dict:
+    """The part at the source: mpn, manufacturer, package, number (of the
+    source), url (product page), library (JLCPCB), datasheet (URL)."""
+    if bool(number.strip()) == bool(mpn.strip()):
+        raise LensError("give the part number of the source (number) or the MPN (mpn), not both and not none")
+    if source == "jlcpcb":
+        return _jlcpcb(number.strip(), mpn.strip())
+    if source == "digikey":
+        return _digikey(number.strip(), mpn.strip())
+    if source == "mouser":
+        return _mouser(number.strip(), mpn.strip())
+    raise LensError(f"source: one of {', '.join(SOURCES)}")
+
+
+def _jlcpcb(number: str, mpn: str) -> dict:
+    from . import jlcpcb
+
+    if number:
+        match = JLCPCB_NUMBER.fullmatch(number)
+        if not match:
+            raise LensError(f"{number!r} is not a JLCPCB number: it is C and digits, for example C47616. Give an "
+                            "MPN as mpn")
+        db = jlcpcb.connect()
+        try:
+            row = db.execute("SELECT * FROM jlc_components WHERE lcsc = ? AND present = 1",
+                             (int(match[1]),)).fetchone()
+        finally:
+            db.close()
+        if row is None:
+            raise LensError(f"the JLCPCB parts library has no part C{match[1]}")
+        if not (row["mfr"] or "").strip():
+            raise LensError(f"the JLCPCB part C{match[1]} has no MPN in the library: take the part from a "
+                            "different source")
+        return {"mpn": row["mfr"], "manufacturer": row["manufacturer"] or "", "package": row["package"] or "",
+                "number": f"C{row['lcsc']}", "url": jlcpcb.PART_URL.format(lcsc=row["lcsc"]),
+                "library": jlcpcb.library(row), "datasheet": row["datasheet"] or ""}
+    return _one(jlcpcb.offers(mpn, exact=True), mpn, "the JLCPCB parts library")
+
+
+def _digikey(number: str, mpn: str) -> dict:
+    from . import digikey
+    from .keys import get_credential
+
+    credential = get_credential("digikey")
+    if not credential:
+        from .distributors import no_key_note
+
+        raise LensError(no_key_note("digikey"))
+    product = digikey.product(number or mpn, credential)
+    if product is None:
+        raise LensError(f"DigiKey has no part {number or mpn}")
+    _, currency = digikey.locale()
+    offer = digikey.offer_of(product, currency)
+    if number:
+        # The number names one packaging of the product (cut tape, reel): it stays.
+        numbers = {str(v.get("DigiKeyProductNumber") or "").lower(): str(v.get("DigiKeyProductNumber") or "")
+                   for v in product.get("ProductVariations") or []}
+        if number.lower() not in numbers:
+            raise LensError(f"{number!r} is not a DigiKey number of a product: give an MPN as mpn")
+        number = numbers[number.lower()]
+    elif offer.mpn.lower() != mpn.lower():
+        raise LensError(f"DigiKey gives {offer.mpn} for {mpn}, not the same MPN: give the DigiKey number")
+    return {"mpn": offer.mpn, "manufacturer": offer.manufacturer, "package": offer.package,
+            "number": number or offer.distributor_pn, "url": offer.product_url, "library": "",
+            "datasheet": offer.datasheet_url}
+
+
+def _mouser(number: str, mpn: str) -> dict:
+    from .distributors import mouser_search
+
+    offers = mouser_search(number or mpn, exact=True)
+    if number:
+        found = [o for o in offers if o.distributor_pn.lower() == number.lower()]
+        if not found:
+            raise LensError(f"{number!r} is not a Mouser number: give an MPN as mpn")
+        return _one(found, number, "Mouser")
+    return _one([o for o in offers if o.mpn.lower() == mpn.lower()], mpn, "Mouser")
+
+
+def _one(offers: list, text: str, where: str) -> dict:
+    if not offers:
+        raise LensError(f"{where} has no part {text}")
+    if len(offers) > 1:
+        raise LensError(f"{where} has more parts for {text}. Give the number of one: "
+                        + "; ".join(f"{o.distributor_pn} ({o.mpn}, {o.manufacturer})" for o in offers[:10]))
+    o = offers[0]
+    return {"mpn": o.mpn, "manufacturer": o.manufacturer, "package": o.package, "number": o.distributor_pn,
+            "url": o.product_url, "library": o.library, "datasheet": o.datasheet_url}
+
+
+def _is_distributor(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return any(h in host for h in DISTRIBUTOR_HOSTS)
+
+
+def _other_urls(c: dict, source: str, project=None) -> list[str]:
+    """The datasheet URLs of the other sources for the MPN. An error of a
+    source only leaves out its URL."""
+    from .distributors import jlcpcb_ready, keys_of, offers_of
+
+    urls: list[str] = []
+    keys, _ = keys_of(project)
+    for name, cred in keys.items():
+        if name == source:
+            continue
+        try:
+            urls += [o.datasheet_url for o in offers_of(name, c["mpn"], True, cred) if o.datasheet_url]
+        except (LensError, Unavailable):
+            continue
+    if source != "jlcpcb" and jlcpcb_ready():
+        from . import jlcpcb
+
+        with contextlib.suppress(LensError):
+            urls += [o.datasheet_url for o in jlcpcb.offers(c["mpn"], True) if o.datasheet_url]
+    return urls
+
+
+def datasheet_urls(c: dict, source: str, project=None) -> Iterator[str]:
+    """The datasheet URLs in their order: a URL on the site of the manufacturer
+    first. The other sources are asked only when the URL of the source is not
+    on the site of the manufacturer, or when it fails."""
+    seen: set[str] = set()
+    first = (c.get("datasheet") or "").strip()
+    if first and not _is_distributor(first):
+        seen.add(first)
+        yield first
+    others = [u.strip() for u in _other_urls(c, source, project) if u.strip()]
+    ordered = [u for u in others if not _is_distributor(u)] + ([first] if first else []) \
+        + [u for u in others if _is_distributor(u)]
+    for url in ordered:
+        if url not in seen:
+            seen.add(url)
+            yield url
+
+
+def _known_datasheet(store, mpn: str, base: str, manufacturer: str):
+    """A datasheet of the part or of its base part in the store, from the same
+    manufacturer (a second source of one MPN has its own datasheet), or None."""
+    for name in dict.fromkeys(n for n in (mpn, base) if n):
+        for part in store.match_parts(name):
+            if manufacturer and part["manufacturer"] and not store.same_maker(part["manufacturer"], manufacturer):
+                continue
+            # The documents of the part and of its base part.
+            rows = [r for r in store.documents_of_part(part["id"]) if r["role"] == "datasheet"]
+            if rows:
+                return store.document(rows[0]["sha256"])
+    return None
+
+
+def adopt(source: str, number: str = "", mpn: str = "", base: str = "", category: str = "", project=None,
+          lock=None) -> dict:
+    """Take a part of a source: the datasheet, the part, the purchase source.
+    lock: held only while the store and the project file change (the MCP server
+    gives its lock); the API calls and the downloads run before it. Gives a
+    dict: lines (the result for the user), document (the ID of a new document,
+    or None), part (the project part or None), project (the project as it is
+    now, or None)."""
+    from .store import Store
+
+    source = source.strip().lower()
+    if source not in SOURCES:
+        raise LensError(f"source: one of {', '.join(SOURCES)}")
+    c = _part(source, number, mpn)
+    lines = [f"{c['mpn']} ({c['manufacturer'] or 'manufacturer unknown'}) from {source}: {c['number']}"
+             + (f", library {c['library']}" if c["library"] else "")
+             + (f", package {c['package']}" if c["package"] else "")]
+    lock = lock or contextlib.nullcontext()
+    with Store() as store:
+        known = _known_datasheet(store, c["mpn"], base.strip(), c["manufacturer"])
+    if known is not None:
+        lines.append(f"datasheet: in the store already (document {known.sha256[:12]}, {known.filename})")
+        return _commit(c, source, base, category, project, lock, lines, known, new=False)
+    failed: list[str] = []
+    for url in datasheet_urls(c, source, project):
+        doc = _download(url, lock, failed)
+        if doc is not None:
+            lines.append(f"datasheet: {url} (document {doc.sha256[:12]}, {doc.pages} pages)"
+                         + (f"; failed before: {'; '.join(failed)}" if failed else ""))
+            return _commit(c, source, base, category, project, lock, lines, doc, new=True)
+    lines.append("datasheet: NOT ADDED. " + ("The URLs that failed: " + "; ".join(failed) if failed
+                                             else "No source gives a datasheet URL.")
+                 + " Find the datasheet (part_links) and add it with add_document.")
+    return _commit(c, source, base, category, project, lock, lines, None, new=False)
+
+
+def _download(url: str, lock, failed: list[str]):
+    """The document of a URL: the download (no lock), then the store (with the
+    lock) and its index. None, with a line in failed, when the URL gives no
+    file or a file that is not a readable PDF: the next URL can give one."""
+    import pypdfium2 as pdfium
+
+    from .config import store_home
+    from .fetch import downloaded
+    from .indexer import build_index
+    from .store import Store
+
+    try:
+        with downloaded(url, store_home()) as path:
+            with lock, Store() as store:
+                doc = store.add_document(path, source_url=url, move=True)
+                build_index(store, doc.id)
+                return doc
+    except (LensError, Unavailable, OSError, pdfium.PdfiumError) as e:
+        failed.append(f"{url}: {e}")
+        return None
+
+
+def _commit(c: dict, source: str, base: str, category: str, project, lock, lines: list[str], doc,
+            new: bool) -> dict:
+    """The changes of the store and of the project, under the lock. The project
+    file is read again under the lock: a different tool can change it during the
+    downloads."""
+    from .project import add_part_with_id, load, store_part
+    from .store import Store
+
+    with lock, Store() as store:
+        owner = base.strip() if base.strip().lower() != c["mpn"].lower() else ""
+        document = doc.sha256 if doc is not None else ""
+        part = None
+        if project is not None:
+            project = load(project.root)
+            source_entry = {"source": source, "number": c["number"], "library": c["library"]}
+            part, part_id = add_part_with_id(project, store, c["mpn"], c["manufacturer"], document, "datasheet",
+                                             category, base=owner, source=source_entry)
+            lines.append(f"project: {part['mpn']}" + (f" (base part {part['base']})" if part.get("base") else "")
+                         + f", source {source} {c['number']}")
+        else:
+            part_id, _ = store_part(store, c["mpn"], c["manufacturer"], document, "datasheet", category, owner)
+            lines.append("project: none (not in a project folder): the part is in the store only")
+        store.set_part_source(part_id, source, c["number"], url=c["url"], library=c["library"])
+    lines.append("Next: read each value that the design needs in the datasheet (get_page_image) and save it with "
+                 "save_fact.")
+    # document: a new document only (the caller builds its element map). project:
+    # the project as it is now (read again under the lock).
+    return {"lines": lines, "document": doc.id if doc is not None and new else None, "part": part,
+            "project": project}

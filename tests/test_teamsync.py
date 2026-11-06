@@ -410,6 +410,35 @@ def test_connect_sends_the_full_state(server, client, monkeypatch):
     assert {mpn, mpn + "B"} <= set(_parts(b))
 
 
+def test_part_sources_go_through_the_server(server, client, monkeypatch):
+    """A purchase source of a part goes to the other store: a new source, a
+    change of its URL and a delete."""
+    mpn = f"CSD{uuid.uuid4().hex[:6]}"
+    a = client("a", "alice")
+    part = a.add_part(mpn, "TI")
+    a.set_part_source(part, "jlcpcb", "C47616", library="Extended", found="2026-11-06")
+    teamsync.connect(a, server["url"])  # the first push sends the source with its part
+    b = client("b", "rita")
+    teamsync.connect(b, server["url"])
+    other = b.find_part(mpn)
+    assert b.part_sources(other) == [
+        {"source": "jlcpcb", "number": "C47616", "url": "", "library": "Extended", "found": "2026-11-06"}]
+    b.set_part_source(other, "jlcpcb", "C47616", url="https://jlcpcb.com/partdetail/C47616", library="Extended",
+                      found="2026-11-07")
+    b.set_part_source(other, "digikey", "296-25646-1-ND", found="2026-11-07")
+    assert teamsync.sync(b).pushed == 2
+    _as(server, monkeypatch, "alice")
+    teamsync.sync(a)
+    assert a.part_sources(part) == b.part_sources(other) and len(a.part_sources(part)) == 2
+    assert a.delete_part_source(part, "digikey", "296-25646-1-ND")
+    teamsync.sync(a)
+    _as(server, monkeypatch, "rita")
+    teamsync.sync(b)
+    assert [(s["source"], s["url"]) for s in b.part_sources(other)] == [
+        ("jlcpcb", "https://jlcpcb.com/partdetail/C47616")]
+    assert teamsync.state(a)["waiting"] == 0 and teamsync.state(b)["waiting"] == 0
+
+
 BUNDLE_PAGES = [[(72, 80, 16, "1 Features"), (72, 120, 10, "Output voltage 3.3 V"), (72, 140, 10, "Table 1. Ratings")],
                 [(72, 80, 16, "2 Electrical Characteristics"), (72, 120, 10, "Quiescent current 25 nA")]]
 

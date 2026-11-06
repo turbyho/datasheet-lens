@@ -34,8 +34,10 @@ from .fileutil import temp_path
 # (An update of the manufacturer registry needs no schema change: see
 # _update_registry.)
 # 4: the state of the client of the team server (teamsync.py). 5: the bundles of
-# derived data (bundles.py) and the bbox of each fact with an element.
-SCHEMA_VERSION = 5
+# derived data (bundles.py) and the bbox of each fact with an element. 6: the
+# purchase sources of the parts (part_sources). An older version cannot open the
+# store after this change: its merge of two parts would not move their sources.
+SCHEMA_VERSION = 6
 # A build records the version of its format (indexer.INDEX_FORMAT,
 # elements.ELEMENTS_FORMAT), not the version of the package. The builds of the
 # development versions recorded the package version 0.1.0.dev0: format 1. No
@@ -64,6 +66,18 @@ CREATE TABLE IF NOT EXISTS part_aliases (
     part_id INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
     alias   TEXT NOT NULL,
     PRIMARY KEY (part_id, alias)
+);
+-- Where a part is available: the part number of a distributor or of an assembly
+-- service. No stock and no price: the tools get them live (DigiKey does not permit
+-- an own database of its data, only a pointer to its product).
+CREATE TABLE IF NOT EXISTS part_sources (
+    part_id INTEGER NOT NULL REFERENCES parts(id) ON DELETE CASCADE,
+    source  TEXT NOT NULL,             -- SOURCES: digikey, jlcpcb, mouser
+    number  TEXT NOT NULL,             -- the part number of the source
+    url     TEXT NOT NULL DEFAULT '',  -- the product page
+    library TEXT NOT NULL DEFAULT '',  -- JLCPCB: Basic, Preferred or Extended
+    found   TEXT NOT NULL,             -- the date when the user took the source (ISO 8601)
+    PRIMARY KEY (part_id, source, number)
 );
 -- The manufacturer registry (makers.py): the names of each manufacturer, and
 -- the pairs that are two manufacturers.
@@ -348,6 +362,7 @@ _ROW_JSON = {
                                  {"part": _part_gid(f"{r}.part_id"), "document": _doc_sha(f"{r}.document_id")}),
     "maker_relations": lambda r: _json(r, ("relation", "name", "other", "created"), {}),
     "part_documents": lambda r: _json(r, ("role",), {}),
+    "part_sources": lambda r: _json(r, ("url", "library", "found"), {}),
 }
 _KEY = {
     "parts": lambda r: f"{r}.gid",
@@ -356,6 +371,7 @@ _KEY = {
     "documents": lambda r: f"{r}.sha256",
     "part_documents": lambda r: f"json_array({_part_gid(r + '.part_id')}, {_doc_sha(r + '.document_id')})",
     "part_aliases": lambda r: f"json_array({_part_gid(r + '.part_id')}, {r}.alias)",
+    "part_sources": lambda r: f"json_array({_part_gid(r + '.part_id')}, {r}.source, {r}.number)",
 }
 # A child row that the FK cascade (ON DELETE CASCADE) of a deleted parent removes:
 # no outbox row. The server does the same cascade. A reference with ON DELETE SET
@@ -365,6 +381,7 @@ _PARENTS = {
     "part_documents": ("EXISTS (SELECT 1 FROM parts WHERE id = OLD.part_id)",
                        "EXISTS (SELECT 1 FROM documents WHERE id = OLD.document_id)"),
     "part_aliases": ("EXISTS (SELECT 1 FROM parts WHERE id = OLD.part_id)",),
+    "part_sources": ("EXISTS (SELECT 1 FROM parts WHERE id = OLD.part_id)",),
     "knowledge": ("EXISTS (SELECT 1 FROM documents WHERE id = OLD.document_id)",),
 }
 _GID_TABLES = ("parts", "knowledge", "maker_relations")
@@ -373,7 +390,7 @@ RECORDING = "(SELECT recording FROM sync_state)"
 
 
 # The order of the tables for the team server: a row after the rows that it refers to.
-SYNC_ORDER = ("documents", "maker_relations", "parts", "part_documents", "part_aliases", "knowledge")
+SYNC_ORDER = ("documents", "maker_relations", "parts", "part_documents", "part_aliases", "knowledge", "part_sources")
 
 
 def record_all(db: sqlite3.Connection) -> int:
@@ -421,6 +438,24 @@ SYNC_VERSION = hashlib.sha256("\n".join(SYNC_STATEMENTS).encode()).hexdigest()[:
 
 MEDIA_TYPES = {".pdf": "application/pdf"}
 ROLES = ("datasheet", "manual", "errata", "appnote", "other")
+# The sources of a purchase source (part_sources), and the library classes of JLCPCB.
+SOURCES = ("digikey", "jlcpcb", "mouser")
+LIBRARIES = ("Basic", "Preferred", "Extended")
+
+
+def check_source(source: str, number: str, library: str = "") -> tuple[str, str]:
+    """The number and the library class of a purchase source, stripped, or a
+    LensError: the source must be one of SOURCES, the number must not be empty,
+    the library class must be one of LIBRARIES or empty. The store and the
+    project file use this one check."""
+    number, library = str(number).strip(), str(library).strip()
+    if source not in SOURCES:
+        raise LensError(f"source must be one of {', '.join(SOURCES)}")
+    if not number:
+        raise LensError("the part number of the source is empty")
+    if library and library not in LIBRARIES:
+        raise LensError(f"library must be one of {', '.join(LIBRARIES)}")
+    return number, library
 
 
 def _ulower(text):
@@ -466,10 +501,12 @@ def _common_document(db: sqlite3.Connection, a: int, b: int) -> bool:
 
 
 def _merge_part(db: sqlite3.Connection, keep: int, dup: int) -> None:
-    """Move the document links, the aliases, the concrete parts and the facts of
-    the part dup to the part keep, then delete dup. keep gets the category and
-    the base part of dup when it has none. Two levels only: when keep has a
-    base part, the concrete parts of dup go to that base part."""
+    """Move the document links, the aliases, the purchase sources, the concrete
+    parts and the facts of the part dup to the part keep, then delete dup. keep
+    gets the category and the base part of dup when it has none. A link, an
+    alias or a source that keep has already stays as keep has it. Two levels
+    only: when keep has a base part, the concrete parts of dup go to that base
+    part."""
     ids = {"keep": keep, "dup": dup}
     db.execute("UPDATE parts SET family = (SELECT family FROM parts WHERE id = :dup) WHERE id = :keep AND family = ''",
                ids)
@@ -479,6 +516,8 @@ def _merge_part(db: sqlite3.Connection, keep: int, dup: int) -> None:
                " SELECT :keep, document_id, role FROM part_documents WHERE part_id = :dup", ids)
     db.execute("INSERT OR IGNORE INTO part_aliases (part_id, alias)"
                " SELECT :keep, alias FROM part_aliases WHERE part_id = :dup", ids)
+    db.execute("INSERT OR IGNORE INTO part_sources (part_id, source, number, url, library, found)"
+               " SELECT :keep, source, number, url, library, found FROM part_sources WHERE part_id = :dup", ids)
     db.execute("UPDATE parts SET base_id = coalesce((SELECT base_id FROM parts WHERE id = :keep), :keep)"
                " WHERE base_id = :dup", ids)
     db.execute("UPDATE parts SET base_id = NULL WHERE base_id = id")
@@ -622,6 +661,11 @@ def alias_candidates(db: sqlite3.Connection) -> list[str]:
             for (x, y), mpns in pairs.items()]
 
 
+# The meta key of a store that needs the live rows of the team server again: the
+# next sync does a full pull after its incremental pull (teamsync.pull). The
+# incremental pull keeps the cursor: it gives the deleted rows (a full pull does not).
+FULL_PULL = "sync_full_pull"
+
 # Changes of a store of an older version, in sequence: {version: SQL}.
 MIGRATIONS = {
     # A concrete orderable part (TLV75533PDBVR) refers to the base part of its
@@ -635,6 +679,11 @@ MIGRATIONS = {
     # The bundles of derived data, and the bbox of each fact with an element: the
     # bbox is the reference of a fact; the element ID follows the build.
     5: _migrate_bundles,
+    # The purchase sources of the parts: SCHEMA makes the table part_sources. An
+    # older version ignored the rows of part_sources in a pull, and its cursor went
+    # past them: the next sync gets the live rows of the server again (FULL_PULL).
+    6: f"INSERT OR REPLACE INTO meta (key, value) SELECT '{FULL_PULL}', '1' FROM sync_state"
+       " WHERE cursor IS NOT NULL",
 }
 
 
@@ -1060,14 +1109,46 @@ class Store:
         return [(r[0], r[1]) for r in self.db.execute(
             "SELECT id, mpn FROM parts UNION SELECT part_id, alias FROM part_aliases").fetchall()]
 
+    def set_part_source(self, part_id: int, source: str, number: str, url: str = "", library: str = "",
+                        found: str = "") -> None:
+        """Record where the part is available: the part number of a source (SOURCES),
+        its product page, and for JLCPCB the library class (LIBRARIES). found is the
+        date when the user took the source (ISO 8601; default today). The same part,
+        source and number again changes the URL, the library class and the date."""
+        number, library = check_source(source, number, library)
+        if self.part(part_id) is None:
+            raise LensError(f"part not found: {part_id}")
+        found = found or datetime.now(timezone.utc).date().isoformat()
+        self.db.execute(
+            "INSERT INTO part_sources (part_id, source, number, url, library, found) VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT (part_id, source, number) DO UPDATE SET url = excluded.url, library = excluded.library,"
+            " found = excluded.found", (part_id, source, number, url.strip(), library, found))
+        self.db.commit()
+
+    def part_sources(self, part_id: int) -> list[dict]:
+        """The purchase sources of the part: source, number, url, library, found."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT source, number, url, library, found FROM part_sources WHERE part_id = ?"
+            " ORDER BY source, number", (part_id,))]
+
+    def delete_part_source(self, part_id: int, source: str, number: str) -> bool:
+        """Remove a purchase source of the part. False if the part does not have it."""
+        cur = self.db.execute("DELETE FROM part_sources WHERE part_id = ? AND source = ? AND number = ?",
+                              (part_id, source, number.strip()))
+        self.db.commit()
+        return cur.rowcount > 0
+
     def part_documents(self, mpn: str) -> list[sqlite3.Row]:
         """The documents of the parts with this MPN or alias, and of their base
-        parts (a concrete orderable MPN finds the datasheet of its base part)."""
+        parts (a concrete orderable MPN finds the datasheet of its base part).
+        Each row has the columns of the document, the role, and the MPN and the
+        manufacturer of the part (part_manufacturer: "manufacturer" is the
+        column of the document)."""
         return self.db.execute(
             "WITH found AS (SELECT id, base_id FROM parts WHERE mpn = ? COLLATE NOCASE OR id IN"
             " (SELECT part_id FROM part_aliases WHERE alias = ? COLLATE NOCASE)),"
             " ids AS (SELECT id FROM found UNION SELECT base_id FROM found WHERE base_id IS NOT NULL)"
-            " SELECT d.*, pd.role, p.mpn, p.manufacturer FROM parts p"
+            " SELECT d.*, pd.role, p.mpn, p.manufacturer AS part_manufacturer FROM parts p"
             " JOIN part_documents pd ON pd.part_id = p.id JOIN documents d ON d.id = pd.document_id"
             " WHERE p.id IN (SELECT id FROM ids) ORDER BY d.id",
             (mpn, mpn)).fetchall()

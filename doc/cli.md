@@ -488,6 +488,29 @@ update`. See
 | `-o`, `--offset` | Skip this number of parts (the next page). |
 | `-k`, `--keywords` | Words that the parts must have. |
 
+### adopt
+
+```text
+datasheet-lens adopt [-m MPN] [-b BASE] [-c CATEGORY] [-p PATH] SOURCE [NUMBER]
+```
+
+Take a part of a source into the store and the project: download its datasheet, add
+the part, and save the purchase source. See
+[distributors.md](distributors.md#take-a-found-part).
+
+| Argument or option | Effect |
+|---|---|
+| `SOURCE` | `digikey`, `jlcpcb` or `mouser`. |
+| `NUMBER` | The part number of the source: a DigiKey number, a JLCPCB C number (`C47616`) or a Mouser number. |
+| `-m`, `--mpn` | The MPN, in place of `NUMBER`. The source must have one part for it. |
+| `-b`, `--base` | The base part of the datasheet, for example `TLV755P`. |
+| `-c`, `--category` | The function of the part, for example `MOSFET`. |
+
+Give `NUMBER` or `--mpn`, not both. The command does not guess if a text is a number
+of the source or an MPN. Outside a project folder, the command adds the part to the
+store only. In a project folder, it copies the datasheet into the document folder
+(as `sync`).
+
 ### jlc
 
 ```text

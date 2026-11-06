@@ -305,6 +305,47 @@ LCSC.
 `find` (`search_distributors`) and `stock` (`project_availability`) also give the
 JLCPCB stock and the library class of a part, when the database is on your machine.
 
+## Take a found part
+
+When you select a part of a search, take it in one step:
+
+```sh
+datasheet-lens adopt jlcpcb C47616 -c MOSFET
+datasheet-lens adopt digikey 296-25646-1-ND -b CSD16340
+datasheet-lens adopt mouser --mpn CSD16340Q3
+```
+
+The MCP tool is `adopt_part(source, number, mpn, base, category)`. Give one of two
+inputs:
+
+- `number`: the part number of the source, as the search gives it: a DigiKey number,
+  a JLCPCB C number (`C` and digits) or a Mouser number.
+- `mpn`: the MPN. The source must have one part for it. With more parts, the result
+  gives their numbers to select from.
+
+The tool does not guess if a text is a number of the source or an MPN. The command
+does these steps:
+
+1. It gets the part from the source: the MPN, the manufacturer, the package and the
+   product page.
+2. It gets the datasheet. A datasheet of the part, or of its base part, in the store
+   comes first: the tool does not download a second copy. Else it downloads one: a
+   URL on the site of the manufacturer comes first, a copy at a distributor next. The
+   tool asks the other sources for URLs only when it needs them. The result tells the
+   URL that it used, and the URLs that failed. When no URL gives a PDF, the part comes
+   with no datasheet: find it with `links`.
+3. It adds the document and the part to the store, and in a project folder to the
+   project. The CLI copies the datasheet into the document folder of the project. With
+   the MCP tool, run `project_sync` after it.
+4. It saves the purchase source: in the store (the team server shares it) and in the
+   project file (`[[part.source]]`, see [projects.md](projects.md)). The purchase
+   source has the source, the part number, the product page, the date, and for
+   JLCPCB the library class. It has no stock and no price: these change, and the
+   terms of DigiKey do not permit an own database of DigiKey data.
+
+Then read the values that the design needs in the datasheet, and save them with
+`save_fact`.
+
 ## Check the project parts
 
 ```sh

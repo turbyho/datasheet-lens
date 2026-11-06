@@ -160,10 +160,10 @@ When you change the database schema of `store.py`:
    one SQL statement, or a function for more steps (`_add_columns` adds the columns
    that a table does not have).
 4. A new column of a shared table (`parts`, `documents`, `part_documents`,
-   `part_aliases`, `knowledge`, `maker_relations`): add it to `_ROW_JSON` when the
-   team server must have it, and to `team/sync.py` (`SCHEMA`, `VALUES`, `TYPES`). The
-   triggers come from `SYNC_STATEMENTS`: a change of them gives a new `SYNC_VERSION`,
-   and each store makes its triggers again.
+   `part_aliases`, `part_sources`, `knowledge`, `maker_relations`): add it to
+   `_ROW_JSON` when the team server must have it, and to `team/sync.py` (`SCHEMA`,
+   `VALUES`, `TYPES`). The triggers come from `SYNC_STATEMENTS`: a change of them
+   gives a new `SYNC_VERSION`, and each store makes its triggers again.
 
 When a change of the code changes the index or the element map, increase its format
 version (`indexer.INDEX_FORMAT`, `elements.ELEMENTS_FORMAT`): a store builds a map of

@@ -11,7 +11,7 @@ import pypdfium2 as pdfium
 from . import __version__
 from .config import data_lines, store_home
 from .errors import LensError
-from .store import ROLES, Store
+from .store import ROLES, SOURCES, Store
 
 
 def cmd_info(_args: argparse.Namespace) -> int:
@@ -630,6 +630,27 @@ def cmd_find(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_adopt(args: argparse.Namespace) -> int:
+    """The command adopt: a part of a source, with its datasheet and its purchase source."""
+    from .adopt import adopt
+    from .elements import build_elements
+    from .project import load_optional, sync
+    from .setup import element_backend
+
+    project = load_optional(args.path)
+    result = adopt(args.source, args.number, args.mpn, args.base, args.category, project)
+    print("\n".join(result["lines"]))
+    with Store() as store:
+        if result["project"] is not None:  # as the command add: the copy in the document folder
+            for text in sync(result["project"], store)["problems"]:
+                print(f"problem: {text}")
+        if result["document"] is not None:
+            built = build_elements(store, result["document"], element_backend())
+            if not built["skipped"]:
+                print(f"element map: {built['elements']} elements ({built['backend']})")
+    return 0
+
+
 def cmd_jlc(args: argparse.Namespace) -> int:
     """The command jlc: the JLCPCB parts library on this machine."""
     from . import jlcpcb
@@ -745,6 +766,8 @@ def cmd_set(args: argparse.Namespace) -> int:
                            args.category, args.manufacturer or "")
     print(f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'})"
           + (f", base part {part['base']}" if part.get("base") else ""))
+    for text in part.pop("notes", []):
+        print(text)
     print("run 'datasheet-lens sync' to move the copies to the subfolders of the layout")
     return 0
 
@@ -843,6 +866,19 @@ def build_parser() -> argparse.ArgumentParser:
     pk.add_argument("-n", "--limit", type=int, default=20, help="the number of parts (1 to 50, default 20)")
     pk.add_argument("-o", "--offset", type=int, default=0, help="skip this number of parts (the next page)")
     pk.set_defaults(func=cmd_pick)
+    ad = sub.add_parser("adopt", help="take a part of a source into the store and the project: its datasheet, "
+                                      "the part and its purchase source. Give NUMBER or --mpn")
+    ad.add_argument("source", metavar="SOURCE", choices=SOURCES,
+                    help="digikey, jlcpcb or mouser")
+    ad.add_argument("number", metavar="NUMBER", nargs="?", default="",
+                    help="the part number of the source: a DigiKey number, a JLCPCB C number (C47616) or a Mouser "
+                         "number")
+    ad.add_argument("-m", "--mpn", default="", help="the MPN, in place of NUMBER")
+    ad.add_argument("-b", "--base", default="", help="the base part of the datasheet (for example TLV755P)")
+    ad.add_argument("-c", "--category", default="", help="the function of the part, for example MOSFET")
+    ad.add_argument("-p", "--path", "--project", dest="path",
+                    help="the project folder (default: the current folder or a parent folder)")
+    ad.set_defaults(func=cmd_adopt)
     jl = sub.add_parser("jlc", help="the JLCPCB parts library on this machine: download or update it, show its "
                                     "state, or remove it")
     jl.add_argument("action", nargs="?", default="status", choices=("update", "status", "remove"),

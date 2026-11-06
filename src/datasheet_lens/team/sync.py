@@ -26,7 +26,9 @@ from ..bundles import BUNDLE_BACKENDS, canonical_key
 from ..store import _VERSION_TABLES as VERSIONED
 
 # The tables in the order of a pull: a row comes after the rows that it refers to.
-TABLES = ("documents", "bundles", "maker_relations", "parts", "part_documents", "part_aliases", "knowledge")
+# A new table comes at the end: a page position of a pull has the index of its table.
+TABLES = ("documents", "bundles", "maker_relations", "parts", "part_documents", "part_aliases", "knowledge",
+          "part_sources")
 # The derived data of a document (index, element map) as a bundle file. A client
 # adds a bundle with POST /v1/bundles (register_bundle), not with a push. For a
 # document, a kind and a format, the canonical bundle comes first in
@@ -90,6 +92,14 @@ SCHEMA = [
         part_gid TEXT NOT NULL REFERENCES parts(gid),
         alias    TEXT NOT NULL,{_COMMON},
         PRIMARY KEY (part_gid, alias))""",
+    f"""CREATE TABLE IF NOT EXISTS part_sources (
+        part_gid TEXT NOT NULL REFERENCES parts(gid),
+        source   TEXT NOT NULL,
+        number   TEXT NOT NULL,
+        url      TEXT NOT NULL DEFAULT '',
+        library  TEXT NOT NULL DEFAULT '',
+        found    TEXT NOT NULL,{_COMMON},
+        PRIMARY KEY (part_gid, source, number))""",
     f"""CREATE TABLE IF NOT EXISTS knowledge (
         gid            TEXT PRIMARY KEY,
         part_gid       TEXT REFERENCES parts(gid),
@@ -141,6 +151,7 @@ KEY = {
     "documents": ("sha256",), "bundles": ("document_sha", "kind", "format", "backend"),
     "maker_relations": ("gid",), "parts": ("gid",),
     "part_documents": ("part_gid", "document_sha"), "part_aliases": ("part_gid", "alias"), "knowledge": ("gid",),
+    "part_sources": ("part_gid", "source", "number"),
 }
 VALUES = {
     "documents": {c: c for c in ("filename", "media_type", "size", "pages", "title", "manufacturer", "doc_number",
@@ -154,12 +165,13 @@ VALUES = {
     "knowledge": {c: c for c in ("page", "element_id", "bbox", "subject", "value", "unit", "conditions",
                                  "column_name", "note", "source_kind", "model", "prompt_version", "author",
                                  "created", "status")} | {"part": "part_gid", "document": "document_sha"},
+    "part_sources": {c: c for c in ("url", "library", "found")},
 }
 ORDER = {table: list(KEY[table]) for table in TABLES}
 ORDER["parts"] = ["(base_gid IS NOT NULL)", "gid"]  # the base parts first (two levels only)
 # The references of a row to parts (translated through gid_map) and to documents.
 PART_REFS = {"parts": ("base_gid",), "part_documents": ("part_gid",), "part_aliases": ("part_gid",),
-             "knowledge": ("part_gid",)}
+             "knowledge": ("part_gid",), "part_sources": ("part_gid",)}
 # The type of each value of the JSON of a row (a tuple: also None), and the values
 # with a fixed set. A change with a wrong value is rejected, before the database.
 _TEXT = str
@@ -175,14 +187,19 @@ TYPES = {
                   "conditions": _TEXT, "column_name": _TEXT, "note": _TEXT, "source_kind": _TEXT, "model": _TEXT,
                   "prompt_version": _TEXT, "author": _TEXT, "created": _TEXT, "status": _TEXT,
                   "part": (_TEXT, type(None)), "document": _TEXT},
+    "part_sources": {"url": _TEXT, "library": _TEXT, "found": _TEXT},
 }
 CHOICES = {"relation": ("alias", "distinct"), "source_kind": ("model", "person"),
-           "status": ("unchecked", "checked", "disputed"), "role": ("datasheet", "manual", "errata", "appnote", "other")}
+           "status": ("unchecked", "checked", "disputed"), "role": ("datasheet", "manual", "errata", "appnote", "other"),
+           "library": ("", "Basic", "Preferred", "Extended")}
 # The tables with a version in the local store (VERSIONED): an update of a different
 # table has no base version (the last change is kept).
 ROLE_DELETE = {"documents": "admin", "bundles": "admin", "parts": "admin", "knowledge": "admin",
                "maker_relations": "admin",
-               "part_documents": "contributor", "part_aliases": "contributor"}
+               "part_documents": "contributor", "part_aliases": "contributor", "part_sources": "contributor"}
+# The links of a part: a delete is a tombstone, and an insert of the same key makes
+# the row live again.
+LINKS = ("part_documents", "part_aliases", "part_sources")
 
 
 class Rejected(Exception):
@@ -430,11 +447,16 @@ class Pusher:
         if old is not None:
             if table == "parts" and old["merged_into"]:
                 return {"result": "merged", "gid": await self.mapped(old["gid"])}
-            if old["deleted"] and table in ("part_documents", "part_aliases"):
+            # A link with values (the role of a document link, the values of a
+            # purchase source): an insert of its key sets them, as an update (no
+            # version: the last change is kept).
+            changed = {c: v for c, v in values.items() if old.get(c) != v} if table in LINKS else {}
+            if (old["deleted"] and table in LINKS) or changed:
                 await self.check_refs(table, values)  # a link of a deleted part or document stays deleted
-                await self.conn.execute(f"UPDATE {table} SET deleted = false, changed_by = $1"
-                                        f" WHERE {self.where(table)}", self.account["id"], *key)
-                await self.audit(table, _key_text(table, old), "insert", old, values)
+                sets = "".join(f", {c} = ${i + 2 + len(key)}" for i, c in enumerate(changed))
+                await self.conn.execute(f"UPDATE {table} SET deleted = false{sets}, changed_by = $1"
+                                        f" WHERE {self.where(table)}", self.account["id"], *key, *changed.values())
+                await self.audit(table, _key_text(table, old), "insert" if old["deleted"] else "update", old, values)
                 return {"result": "applied", "version": old["version"] + 1}
             if old["deleted"]:
                 raise Rejected(f"the row of {table} is deleted on the server")
@@ -534,7 +556,7 @@ async def tombstone(conn, table: str, key: list, account_id: int | None) -> None
     await conn.execute(f"UPDATE {table} SET deleted = true, changed_by = $1 WHERE {where}", account_id, *key)
     if table == "parts":
         gid = key[0]
-        for child in ("part_documents", "part_aliases"):
+        for child in ("part_documents", "part_aliases", "part_sources"):
             await conn.execute(f"UPDATE {child} SET deleted = true, changed_by = $1 WHERE part_gid = $2"
                                " AND NOT deleted", account_id, gid)
         await conn.execute("UPDATE parts SET base_gid = NULL, changed_by = $1 WHERE base_gid = $2", account_id, gid)
@@ -550,8 +572,9 @@ async def tombstone(conn, table: str, key: list, account_id: int | None) -> None
 
 
 async def merge_part(conn, keep: str, dup: str, account_id: int | None) -> None:
-    """Move the links, aliases, concrete parts and facts of the part dup to the
-    part keep, then delete dup (merged_into keep): the steps of store._merge_part."""
+    """Move the links, aliases, purchase sources, concrete parts and facts of the
+    part dup to the part keep, then delete dup (merged_into keep): the steps of
+    store._merge_part."""
     p = {"keep": keep, "dup": dup}
     await conn.execute("UPDATE parts k SET family = d.family, changed_by = $3 FROM parts d"
                        " WHERE k.gid = $1 AND d.gid = $2 AND k.family = '' AND d.family != ''", keep, dup, account_id)
@@ -561,18 +584,24 @@ async def merge_part(conn, keep: str, dup: str, account_id: int | None) -> None:
                        keep, dup, account_id)
     await conn.execute("INSERT INTO part_documents (part_gid, document_sha, role, changed_by)"
                        " SELECT $1, document_sha, role, $3 FROM part_documents WHERE part_gid = $2 AND NOT deleted"
-                       " ON CONFLICT (part_gid, document_sha) DO UPDATE SET deleted = false, changed_by = $3"
-                       " WHERE part_documents.deleted", keep, dup, account_id)
+                       " ON CONFLICT (part_gid, document_sha) DO UPDATE SET deleted = false, role = excluded.role,"
+                       " changed_by = $3 WHERE part_documents.deleted", keep, dup, account_id)
     await conn.execute("INSERT INTO part_aliases (part_gid, alias, changed_by)"
                        " SELECT $1, alias, $3 FROM part_aliases WHERE part_gid = $2 AND NOT deleted"
                        " ON CONFLICT (part_gid, alias) DO UPDATE SET deleted = false, changed_by = $3"
                        " WHERE part_aliases.deleted", keep, dup, account_id)
+    # A source that keep has stays as it is; a deleted one takes the values of dup.
+    await conn.execute("INSERT INTO part_sources (part_gid, source, number, url, library, found, changed_by)"
+                       " SELECT $1, source, number, url, library, found, $3 FROM part_sources"
+                       " WHERE part_gid = $2 AND NOT deleted ON CONFLICT (part_gid, source, number) DO UPDATE"
+                       " SET deleted = false, url = excluded.url, library = excluded.library, found = excluded.found,"
+                       " changed_by = $3 WHERE part_sources.deleted", keep, dup, account_id)
     await conn.execute("UPDATE parts SET base_gid = coalesce((SELECT base_gid FROM parts WHERE gid = $1), $1),"
                        " changed_by = $3 WHERE base_gid = $2 AND NOT deleted", keep, dup, account_id)
     await conn.execute("UPDATE parts SET base_gid = NULL, changed_by = $1 WHERE base_gid = gid", account_id)
     await conn.execute("UPDATE knowledge SET part_gid = $1, changed_by = $3 WHERE part_gid = $2", keep, dup,
                        account_id)
-    for child in ("part_documents", "part_aliases"):
+    for child in ("part_documents", "part_aliases", "part_sources"):
         await conn.execute(f"UPDATE {child} SET deleted = true, changed_by = $2 WHERE part_gid = $1 AND NOT deleted",
                            dup, account_id)
     await conn.execute("UPDATE parts SET deleted = true, merged_into = $1, changed_by = $3 WHERE gid = $2",

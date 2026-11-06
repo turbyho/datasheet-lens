@@ -32,7 +32,7 @@ from tomlkit.items import AoT, Comment, Whitespace
 from . import PROJECT_URL, makers
 from .errors import LensError
 from .fileutil import temp_path, write_atomic
-from .store import ROLES, Document, Store, sha256_file
+from .store import LIBRARIES, ROLES, Document, Store, check_source, sha256_file
 
 PROJECT_FILE = "datasheet-lens.toml"
 DEFAULT_FOLDER = "datasheets"
@@ -222,8 +222,33 @@ def _parse_data(data: dict, path: Path) -> tuple[str, str, list[dict]]:
             raise LensError(f"{path}: part {p['mpn']}: base must be an MPN")
         if base.strip():  # mpn is a concrete orderable part of this base part
             part["base"] = base.strip()
+        sources = _parse_sources(p.get("source", []), f"{path}: part {p['mpn']}")
+        if sources:  # the sources that this project orders the part from
+            part["sources"] = sources
         out.append(part)
     return folder, layout, out
+
+
+def _parse_sources(sources, where: str) -> list[dict]:
+    """The purchase sources of a project part: [{"source", "number", "library"}]."""
+    if not isinstance(sources, list) or not all(isinstance(s, dict) for s in sources):
+        raise LensError(f"{where}: 'source' must be a list of tables ([[part.source]])")
+    out = []
+    for s in sources:
+        name, number, library = s.get("source"), s.get("number"), s.get("library", "")
+        if not isinstance(number, str) or not number.strip():
+            raise LensError(f"{where}: a source needs its part number (number)")
+        if not isinstance(library, str):
+            raise LensError(f"{where}: library must be one of {', '.join(LIBRARIES)}")
+        try:
+            number, library = check_source(name, number, library)
+        except LensError as e:
+            raise LensError(f"{where}: {e}") from None
+        entry = {"source": name, "number": number}
+        if library:
+            entry["library"] = library
+        out.append(entry)
+    return out
 
 
 def load(start: Path | str | None = None) -> Project:
@@ -274,8 +299,11 @@ def set_distributors(project: Project, names: list[str] | None) -> None:
 def _summary(folder: str, layout: str, parts: list[dict]):
     """The data of a project with no order, to compare two projects."""
     return folder, layout, sorted((p["mpn"], p["manufacturer"], p.get("category", ""), p.get("base", ""),
-                                   tuple(p.get("variants", [])), tuple(sorted(p.get("exclude", []))), tuple(sorted((d["sha256"], d["file"], d["role"], d.get("pinned", False))
-                                                for d in p["documents"]))) for p in parts)
+                                   tuple(p.get("variants", [])), tuple(sorted(p.get("exclude", []))),
+                                   tuple(sorted((d["sha256"], d["file"], d["role"], d.get("pinned", False))
+                                                for d in p["documents"])),
+                                   tuple(sorted((s["source"], s["number"], s.get("library", ""))
+                                                for s in p.get("sources", [])))) for p in parts)
 
 
 def _strip(value) -> str:
@@ -294,6 +322,7 @@ def _norm_rel(value) -> str:
 ROOT_KEYS = ("folder", "layout")
 PART_KEYS = ("mpn", "manufacturer", "base", "category", "variants", "exclude")
 DOCUMENT_KEYS = ("sha256", "file", "role", "pinned")
+SOURCE_KEYS = ("source", "number", "library")
 
 
 def _reorder(table, order: tuple[str, ...]) -> None:
@@ -501,6 +530,19 @@ def save(project: Project) -> None:
             _set(dt, "pinned", d.get("pinned", False), default=False, norm=bool, order=DOCUMENT_KEYS)
             _reorder(dt, DOCUMENT_KEYS)
         _set_tables(table, "document", old_docs, doc_tables)
+        old_sources = _tables(table, "source")
+        free = list(old_sources)
+        source_tables = []
+        for s in part.get("sources", []):
+            st = next((x for x in free if x.get("source") == s["source"] and _strip(x.get("number", ""))
+                       == s["number"]), None) or tomlkit.table()
+            free = [x for x in free if x is not st]
+            _set(st, "source", s["source"], order=SOURCE_KEYS)
+            _set(st, "number", s["number"], norm=_strip, order=SOURCE_KEYS)
+            _set(st, "library", s.get("library", ""), norm=_strip, order=SOURCE_KEYS)
+            _reorder(st, SOURCE_KEYS)
+            source_tables.append(st)
+        _set_tables(table, "source", old_sources, source_tables)
         tables.append(table)
     _set_tables(doc, "part", old_parts, tables)
     text = tomlkit.dumps(doc)
@@ -688,6 +730,14 @@ def add_part(project: Project, store: Store, mpn: str, manufacturer: str = "", d
     category: the function of the part (for example ADC), for the layout.
     base: mpn is a concrete orderable part (TLV75533PDBVR) of this base part
     (TLV755P); the document is then linked to the base part."""
+    return add_part_with_id(project, store, mpn, manufacturer, document, role, category, base)[0]
+
+
+def store_part(store: Store, mpn: str, manufacturer: str = "", document: str = "", role: str = "datasheet",
+               category: str = "", base: str = ""):
+    """The store part of add_part (made if necessary), with its base part, its
+    category and the link of the document (to the base part when there is
+    one). Gives (part ID, the document or None)."""
     if role not in ROLES:
         raise LensError(f"role must be one of {', '.join(ROLES)}")
     doc = store.document(document) if document else None
@@ -714,6 +764,21 @@ def add_part(project: Project, store: Store, mpn: str, manufacturer: str = "", d
         store.set_category(part_id, category.strip())
     if doc is not None:
         store.link(owner, doc.id, role)
+    return part_id, doc
+
+
+def add_part_with_id(project: Project, store: Store, mpn: str, manufacturer: str = "", document: str = "",
+                     role: str = "datasheet", category: str = "", base: str = "",
+                     source: dict | None = None) -> tuple[dict, int]:
+    """add_part, and the ID of the store part: the caller gets the same store
+    part as the project part (adopt saves its purchase source there). source:
+    a purchase source ({"source", "number", "library"}) of the project part, in
+    the same save of the project file."""
+    if project.text is not None and (not project.path.exists()
+                                     or project.path.read_text(encoding="utf-8") != project.text):
+        # The check of save, before the store changes.
+        raise LensError(f"{project.path} changed after datasheet-lens read it: run the command again")
+    part_id, doc = store_part(store, mpn, manufacturer, document, role, category, base)
     part = _entry(project, store, part_id, manufacturer)
     if category.strip():
         part["category"] = category.strip()
@@ -723,8 +788,27 @@ def add_part(project: Project, store: Store, mpn: str, manufacturer: str = "", d
         if not part["exclude"]:
             del part["exclude"]
     _refresh(project, store, part, part_id, _folder_files(project))
+    if source is not None:
+        _put_source(part, source["source"], source["number"], source.get("library", ""))
     save(project)
-    return part
+    return part, part_id
+
+
+def set_source(project: Project, part: dict, source: str, number: str, library: str = "") -> None:
+    """Add or change a purchase source of a project part ([[part.source]]): the
+    source that this project orders the part from. Saves the project file."""
+    _put_source(part, source, number, library)
+    save(project)
+
+
+def _put_source(part: dict, source: str, number: str, library: str = "") -> None:
+    """Add or change a purchase source in a project part (no save)."""
+    number, library = check_source(source, number, library)
+    entry = {"source": source, "number": number}
+    if library:
+        entry["library"] = library
+    sources = [s for s in part.get("sources", []) if (s["source"], s["number"]) != (source, number)]
+    part["sources"] = sources + [entry]
 
 
 def _prune_empty(project: Project, folder: Path) -> None:
@@ -852,6 +936,12 @@ def update_part(project: Project, store: Store, mpn: str, manufacturer: str = ""
     if category is not None:  # also in the store, else sync fills an empty category again
         store.set_category(part_id, category.strip())
         part["category"] = category.strip()
+    if target.lower() != part["mpn"].lower() and part.get("sources"):
+        # A purchase source names one orderable part: it is not a source of the new MPN.
+        removed = part.pop("sources")
+        part["notes"] = [f"removed the purchase sources of {part['mpn']}: "
+                         + ", ".join(f"{s['source']} {s['number']}" for s in removed)
+                         + f". Take {target} from a source again (adopt)."]
     # save finds the table of the part in the file by the old MPN and manufacturer.
     part["was"] = (part["mpn"], part["manufacturer"])
     part["mpn"], part["manufacturer"] = target, maker

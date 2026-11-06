@@ -950,6 +950,43 @@ def distributor_status(path: ProjectPath = "") -> str:
 
 
 @tool
+def adopt_part(
+        source: Annotated[str, Field(description="digikey, jlcpcb or mouser.")],
+        number: Annotated[str, Field(description=(
+            "The part number of the source: a DigiKey number, a JLCPCB C number (C47616) or a Mouser number, "
+            "as find_parts or search_distributors give it. Give number or mpn, not both."))] = "",
+        mpn: Annotated[str, Field(description=(
+            "The MPN, in place of number: the source must have one part for it."))] = "",
+        base: Annotated[str, Field(description=(
+            "The base part of the datasheet, for example TLV755P for TLV75533PDBVR. Empty: the MPN."))] = "",
+        category: Annotated[str, Field(description="The function of the part, for example MOSFET or LDO.")] = "",
+        path: ProjectPath = "") -> str:
+    """Take a part that find_parts or search_distributors found: add its
+    datasheet (one in the store, else a download: the site of the manufacturer
+    first), add the part to the store and to the user project, and save the
+    purchase source (the source and its part number; for JLCPCB the library
+    class) in the store and in the project file. Use it when the user selects a
+    candidate. Then project_sync copies the datasheet into the project folder.
+    The element map builds in the background. Read the values that the design
+    needs in the datasheet and save them with save_fact."""
+    from .adopt import adopt
+    from .project import load_optional
+
+    project = load_optional(path or None)
+    result = adopt(source, number, mpn, base, category, project, lock=_add_lock)
+    if project is not None:
+        result["lines"].append("Run project_sync: it copies the datasheet into the project folder.")
+    with _add_lock:
+        job = _build_elements(result["document"]) if result["document"] is not None else None
+    if job is not None:
+        job["thread"].join(ELEMENT_WAIT)
+        state, text = _state(job)
+        result["lines"].append(f"element map: {text}"
+                               + ("; get_page_map tells when the map is complete" if state == "running" else ""))
+    return "\n".join(result["lines"])
+
+
+@tool
 def set_price_locale(
         site: Annotated[str, Field(description=(
             "The country of the prices and the stock: a code of 2 letters, for example CZ, DE or US. Empty: no "
@@ -1153,11 +1190,12 @@ def project_update_part(
     with _add_lock, Store() as store:
         project = load(path or None)
         part = update_part(project, store, mpn, manufacturer, new_mpn, base, category, new_manufacturer)
+    notes = part.pop("notes", [])
     return "\n".join([f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'})"
                       + (f", base part {part['base']}" if part.get("base") else "")
                       + f": {len(part['documents'])} documents"]
                      + [f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}"
-                        for d in part["documents"]])
+                        for d in part["documents"]] + notes)
 
 
 def _removal(result: dict, folder: str, dry_run: bool, what: str) -> str:

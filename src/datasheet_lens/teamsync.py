@@ -33,7 +33,7 @@ from pathlib import Path
 from . import makers
 from .errors import LensError
 from .fileutil import temp_path
-from .store import (_VERSION_TABLES, Document, Store, _merge_part, merge_duplicates, not_recorded, now,
+from .store import (_VERSION_TABLES, FULL_PULL, Document, Store, _merge_part, merge_duplicates, not_recorded, now,
                     record_all)
 
 PUSH_BATCH = 500
@@ -44,6 +44,9 @@ TIMEOUT = 60
 SYNC_INTERVAL = 600        # seconds between two syncs in the background (MCP server)
 NOTES_KEPT = 50
 VERSIONED = _VERSION_TABLES  # the tables whose rows have a version of the server
+# The shared tables of a team server that does not give its tables in /v1/account
+# (an older version): the tables before part_sources.
+BASE_TABLES = ("documents", "bundles", "maker_relations", "parts", "part_documents", "part_aliases", "knowledge")
 
 
 class Offline(LensError):
@@ -354,13 +357,14 @@ def sync(store: Store, wait: float = 0, send: bool = True) -> Report:
         try:
             client = remote(store)
             report = Report()
+            account = client.call("GET", "/v1/account") if send else {}
             if send:
-                push(store, client, report, lease)
+                push(store, client, report, lease, set(account.get("tables", BASE_TABLES)))
             pull(store, client, report, lease)
             if send:  # the bundles of derived data: uploads and downloads, not in a tool call
                 from .bundles import reconcile
 
-                features = client.call("GET", "/v1/account").get("features", [])
+                features = account.get("features", [])
                 lines = reconcile(store, client, lease) if "bundles" in features else [
                     "error: the team server has no bundles of derived data: update the server"]
                 for line in lines:
@@ -417,9 +421,16 @@ def _batch(db: sqlite3.Connection, skip: set[int]) -> list[sqlite3.Row]:
     return rows
 
 
-def push(store: Store, client: Remote, report: Report, lease: Lease) -> None:
+def push(store: Store, client: Remote, report: Report, lease: Lease, tables: set[str]) -> None:
+    """Send the outbox to a server that knows the shared tables tables (/v1/account).
+    A change of a different table stays in the outbox, is not sent and gets no
+    attempt: the next push after an upgrade of the server sends it. One note for
+    each such table."""
     db = store.db
-    retried: set[int] = set()  # rows that wait for a row of the server: one attempt in each sync
+    unknown = sorted({r[0] for r in db.execute("SELECT DISTINCT tbl FROM outbox")} - tables)
+    # The rows that wait (see _batch): one attempt in each sync, and the rows of the unknown tables.
+    retried = {r[0] for r in db.execute(f"SELECT seq FROM outbox WHERE tbl IN ({', '.join('?' * len(unknown))})",
+                                        unknown)} if unknown else set()
     while rows := _batch(db, retried):
         lease.renew()
         for r in rows:  # the files first: the server takes a document only with its file
@@ -464,6 +475,12 @@ def push(store: Store, client: Remote, report: Report, lease: Lease) -> None:
                     report.notes.append(note(db, f"refused by the server: {r['tbl']} {r['op']} {r['key']}: "
                                                   f"{result.get('reason', '')}"))
             _set_supersedes(db, supersedes)
+    with db:
+        for table in unknown:
+            # One text for each table: note() keeps one note for one text, and a count in
+            # the text would give a new note at each push.
+            report.notes.append(note(db, f"the team server does not know the table {table}: upgrade the team "
+                                         "server; the changes of this table wait in the outbox"))
 
 
 def _adopt_part(db: sqlite3.Connection, local_gid: str, server_gid: str) -> None:
@@ -479,8 +496,23 @@ def _adopt_part(db: sqlite3.Connection, local_gid: str, server_gid: str) -> None
 
 
 def pull(store: Store, client: Remote, report: Report, lease: Lease) -> None:
+    """Get the changes after the cursor of the store. A store with the meta key
+    FULL_PULL then gets all live rows of the server again, with no change of the
+    cursor (an older version ignored the rows of a table that it did not know)."""
     db = store.db
     cursor = db.execute("SELECT cursor FROM sync_state").fetchone()[0]
+    _pull(db, client, report, lease, cursor, record_cursor=True)
+    if db.execute("SELECT 1 FROM meta WHERE key = ?", (FULL_PULL,)).fetchone():
+        if cursor is not None:  # with no cursor, the pull above was a full pull
+            _pull(db, client, report, lease, None, record_cursor=False)
+        with db:
+            db.execute("DELETE FROM meta WHERE key = ?", (FULL_PULL,))
+
+
+def _pull(db: sqlite3.Connection, client: Remote, report: Report, lease: Lease, cursor: int | None,
+          record_cursor: bool) -> None:
+    """All pages of a pull from cursor (None: all live rows). record_cursor: record
+    the cursor of the last page as the cursor of the store."""
     after = None
     supersedes: dict[str, str] = {}
     while True:
@@ -497,7 +529,8 @@ def pull(store: Store, client: Remote, report: Report, lease: Lease) -> None:
                 merge_duplicates(db)
             if not page["more"]:
                 _set_supersedes(db, supersedes)
-                db.execute("UPDATE sync_state SET cursor = ?", (page["cursor"],))
+                if record_cursor:
+                    db.execute("UPDATE sync_state SET cursor = ?", (page["cursor"],))
         report.pulled += len(page["rows"])
         if not page["more"]:
             return
@@ -530,6 +563,8 @@ def _apply(db: sqlite3.Connection, rows: list[dict], supersedes: dict[str, str])
             _apply_link(db, table, key, row, data)
         elif table == "knowledge":
             _apply_fact(db, key, row, data)
+        elif table == "part_sources":
+            _apply_source(db, key, row, data)
     return relations
 
 
@@ -651,6 +686,22 @@ def _apply_link(db, table, key, row, data) -> None:
             db.execute("DELETE FROM part_aliases WHERE part_id = ? AND alias = ?", (part, second))
         else:
             db.execute("INSERT OR IGNORE INTO part_aliases (part_id, alias) VALUES (?, ?)", (part, second))
+
+
+def _apply_source(db, key, row, data) -> None:
+    """A purchase source of the server: the server row replaces the values of the
+    local row (a table with no version: the last change is kept)."""
+    gid, source, number = json.loads(key)
+    part = _local_id(db, "parts", gid)
+    if part is None:
+        return  # deleted with its part
+    if row["deleted"]:
+        db.execute("DELETE FROM part_sources WHERE part_id = ? AND source = ? AND number = ?", (part, source, number))
+    else:
+        db.execute("INSERT INTO part_sources (part_id, source, number, url, library, found) VALUES (?, ?, ?, ?, ?, ?)"
+                   " ON CONFLICT (part_id, source, number) DO UPDATE SET url = excluded.url,"
+                   " library = excluded.library, found = excluded.found",
+                   (part, source, number, data["url"], data["library"], data["found"]))
 
 
 FACT_COLUMNS = ("page", "element_id", "bbox", "subject", "value", "unit", "conditions", "column_name", "note",
