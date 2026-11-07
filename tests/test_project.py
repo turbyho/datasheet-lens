@@ -292,7 +292,7 @@ def test_removed_tables_leave_one_gap(setup):
     # A new document in place of the only document of a part, and an array of
     # purchase sources after it: the comment above the next part stays there.
     sha_old, sha_new = "1" * 64, "2" * 64
-    a = (f'[[part]]\nmpn = "A"\nmanufacturer = "M"\n\n[[part.document]]\nsha256 = "{{}}"\nfile = "{{}}.pdf"\n'
+    a = ('[[part]]\nmpn = "A"\nmanufacturer = "M"\n\n[[part.document]]\nsha256 = "{}"\nfile = "{}.pdf"\n'
          '\n[[part.source]]\nsource = "jlcpcb"\nnumber = "C1"\n\n# above B\n')
     project.path.write_text(a.format(sha_old, "old") + part("B"), encoding="utf-8")
     loaded = prj.load(project.root)
