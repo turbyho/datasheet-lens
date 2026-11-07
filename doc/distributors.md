@@ -209,7 +209,7 @@ A filter is `NAME OP VALUE`:
 
 | Part | Values |
 |---|---|
-| `NAME` | The full name of a parameter, its short name, or a part of the name that only one parameter has. The short names for the FET categories: `vdss`, `rds_on`, `vgs_th`, `id`, `qg`, `drive`, `channel`. For all categories: `package`, `case`, `mounting`. `-P` shows the short names. |
+| `NAME` | The full name of a parameter, its short name, or a part of the name that only one parameter has. A part of the name that more parameters have gives a list of these parameters (full name in quotes, short name, number of parts), and the search does not run. This is not an error: select one, and give its full name or short name. The short names for the FET categories: `vdss`, `rds_on`, `vgs_th`, `id`, `qg`, `drive`, `channel`. For all categories: `package`, `case`, `mounting`. `-P` shows the short names. |
 | `OP` | `=`, `<`, `<=`, `>`, `>=`, `has` (the value holds the text). |
 | `VALUE` | A number with its unit (`20 V`, `10 mOhm`, `5A`), or a text. `=` and `has` accept more values with `\|` (one of them), for example `package has 3x3\|3.3x3.3`. |
 

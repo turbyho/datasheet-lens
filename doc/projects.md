@@ -145,7 +145,7 @@ come before the first `[[part]]`.
 |---|---|
 | `sha256` | Necessary. The SHA-256 of the document (64 hexadecimal digits). It identifies the document in the central store. |
 | `file` | Necessary. The path of the copy, relative to the document folder. |
-| `role` | `datasheet` (default), `manual`, `errata`, `appnote` or `other`. |
+| `role` | `datasheet` (default), `manual`, `errata`, `appnote`, `package` (a package drawing in its own document) or `other`. |
 | `pinned` | `true` for a file of a person. Sync does not move it, and a removal does not delete it. See [Copies and pinned files](#copies-and-pinned-files). |
 
 ### Keys of `[[part.source]]`
@@ -285,8 +285,9 @@ changes nothing. `datasheet-lens sync` does these steps:
 3. It copies each missing copy from the store into the document folder.
 4. It moves each copy to the subfolder of the layout. It does not move a pinned file.
 5. It imports each new PDF file of the document folder into the store.
-6. It builds the index of each project document that has none.
-7. It writes the project file, and removes the inbox files that the project has now.
+6. It writes the project file, and removes the inbox files that the project has now.
+7. It builds the index of each project document that has none. A file of the inbox
+   gets its index in step 1, because sync reads it to find its parts.
 8. The CLI builds the element map of each document. The MCP tool builds them in the
    background.
 
@@ -472,8 +473,12 @@ a number), the agent asks the user.
      and removes it only when the user agrees.
 
    The line `project folder` tells when the folder does not agree with the project
-   file and the store (new references, missing copies, copies to move, new files):
-   run `project_sync`, and `project_status` gives the files. When the two hold the
+   file and the store (new references, missing copies, copies to move, files of the
+   inbox to take): run `project_sync`, and `project_status` gives the files. A second
+   line `project folder` gives the files that need a step of the user, because
+   `project_sync` cannot do it: files of the folder or of the inbox with no part,
+   changed copies, and documents that the store does not have. The agent tells the
+   user. When the two hold the
    same parts and no symbol needs a step of the user, the last line gives the next
    steps: `project_sync` and then `project_availability`, or only
    `project_availability` when the folder agrees.

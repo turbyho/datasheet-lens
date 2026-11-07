@@ -287,6 +287,17 @@ start of the client version with `part_sources` (store schema version 6) marks t
 store. Its next sync first gets the changes after its last sync, with the deleted
 rows. Then it gets all rows of the server again, one time.
 
+Version 0.5.0 adds the document role `package` (a package drawing). Upgrade the
+server before a client of version 0.5.0 links a document with this role:
+
+- A server of version 0.4.0 refuses the link with the role `package`. The client
+  removes the refused change from its outbox and gives the note "refused by the
+  server". It does not send the change again after the upgrade of the server.
+- A client of version 0.4.0 refuses a project file with the role `package`. It
+  also gets the links with this role through its pull, and its sync then writes the
+  role into its own project files. Upgrade all clients of the team, also the clients
+  of a different project.
+
 ## Backup
 
 Make a backup of the two stores:

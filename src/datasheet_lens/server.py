@@ -96,21 +96,22 @@ signs, units, subscripts and the structure of tables. When a tool tells about a
 newer release or a restart of the client, tell the user one time.
 
 User project: the project file datasheet-lens.toml must hold the same parts as
-the CAD project (schematic, BOM): the team uses it as the list of the
-datasheets. At the start of the work, and after each change of the CAD project,
-do these steps:
+the CAD project (schematic, BOM). At the start of the work, and after each
+change of the CAD project, do these steps:
 1. Get the parts of the CAD project (MPN, Value, Value_Confirmed, Datasheet,
-   the field names) from the CAD tool: a BOM file (CSV, for example
-   export_bom of kicad-workbench) or a list from its MCP server. A general value with no MPN (10k) has no selected
-   part. MPN = '-' tells that the symbol needs no part (a test point).
+   DNP, the field names) from the CAD tool: a BOM file (CSV, for example
+   export_bom of kicad-workbench) or a list from its MCP server. A general
+   value with no MPN (10k) has no selected part. MPN = '-' tells that the
+   symbol needs no part (a test point).
 2. project_check(bom=<CSV file>) or project_check(parts) with all parts: it
    gives the parts that are missing, extra or different, with the next call.
    Give path when the working folder of the server is not in the project.
 3. For each missing part: find its datasheet (list_documents), or add it with
-   add_document (a URL or a local PDF). Then project_add_part(mpn, base, document). mpn is the concrete
-   orderable MPN of the BOM (TLV75533PDBVR, get_ordering_codes gives them), base
-   is the part of the datasheet (TLV755P). If you cannot get the datasheet, tell
-   the user the MPN, the reason and the search links of part_links(mpn).
+   add_document (a URL or a local PDF). Then project_add_part(mpn, base,
+   document). mpn is the concrete orderable MPN of the BOM (TLV75533PDBVR,
+   get_ordering_codes gives them), base is the part of the datasheet (TLV755P).
+   If you cannot get the datasheet, tell the user the MPN, the reason and the
+   search links of part_links(mpn).
 4. Tell the user about each change, different or extra part, and when a CAD MPN
    and its datasheet do not agree (value, package, variant). A change is valid
    only when the user confirms it. The CAD BOM is the master: write each new or
@@ -120,17 +121,18 @@ do these steps:
    (project_update_part, adopt_part). Remove a part only when the user agrees.
 5. project_sync: it copies the documents into the project folder. Then
    project_check again: it must give no missing, extra or different part.
-6. project_availability: tell the user about each part that is not orderable
-   or has no stock, and give the user each note about a missing API key.
+6. project_availability, as the next steps of project_check give it: tell the
+   user each WARNING (not orderable, no stock, lifecycle risk) and each note
+   about a missing API key.
    search_distributors gives the concrete MPNs of a part. find_parts finds new
    parts and replacements; adopt_part takes one.
 
 The store identifies a document by its SHA-256: add_document of a file that it
 has copies nothing and gives the reference. Do not match a file to a document
 by its name only. Use add_document only for the documents of the parts.
-project_sync imports only the PDF files
-of the folder that the project file names. If the repository keeps its
-datasheets in a different folder, tell the user.
+project_sync imports only the PDF files of the folder that the project file
+names. If the repository keeps its datasheets in a different folder, tell the
+user.
 
 Find the content step by step:
 1. The document: project_status, list_documents(part), list_parts (the central
@@ -1262,8 +1264,12 @@ def project_check(
       the documents of the store or the Datasheet field, and the next call) or
       extra.
     - project folder: the folder does not agree with the project file and the
-      store (new references, missing copies, copies to move, new files): run
-      project_sync; project_status gives the files.
+      store (new references, missing copies, copies to move, files of the
+      inbox to take): run project_sync; project_status gives the files.
+    - project folder (a second line): the files that need a step of the user,
+      because project_sync cannot do it (files of the folder or of the inbox
+      with no part, changed copies, documents that the store does not have):
+      tell the user.
     - next steps: when the two hold the same parts and no symbol needs a step
       of the user: project_sync (when the folder needs it), then
       project_availability.

@@ -56,9 +56,10 @@ interfaces can change.
   distributor, for example which one has a parametric search.
 - **JLCPCB assembly.** An optional local copy of the JLCPCB parts library: the
   JLCPCB stock for the assembly and the library class (Basic, Preferred, Extended) of
-  each part. The tool marks a part with no stock `NOT IN STOCK`, and gives
-  replacements with stock and no loading fee (the same MPN; resistors, capacitors
-  and inductors with the same parameters). `project_check` compares the JLCPCB (LCSC)
+  each part. The tool marks a part with no stock `NOT IN STOCK`. For a part with no
+  stock, with a loading fee or with a lifecycle risk, it gives replacements with
+  stock, Basic and Preferred first (the same MPN; resistors, capacitors and inductors
+  with the same parameters). `project_check` compares the JLCPCB (LCSC)
   number of each symbol with the purchase source and with the library.
 - **Parametric search.** Find new parts and replacement parts by their parameters
   at DigiKey or in the JLCPCB parts library, for example "N-channel MOSFET, Vdss 20 V to 40 V, gate drive 2.5 V,

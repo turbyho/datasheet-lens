@@ -21,7 +21,7 @@ each value from the original page: a PNG image (`get_page_image`) or the PDF pag
 | Tool | Use |
 |---|---|
 | `project_status` | The parts and documents of the user project. |
-| `list_documents(part)` | The documents of one part in the store. A part can have a datasheet, a manual, errata and application notes. |
+| `list_documents(part)` | The documents of one part in the store. A part can have a datasheet, a manual, errata, application notes and a package drawing. |
 | `list_parts` | All parts in the store. |
 | `add_document` | A new document from a local PDF or a URL, when the store does not have it. |
 

@@ -197,6 +197,26 @@ its header and one blank-line gap (`_remove_tables`). Before a write, it parses 
 text and compares it with the data. When the file changed after the read, it writes
 nothing. All writes are atomic (`fileutil.py`): a temporary file, then a replace.
 
+The CLI and the MCP server can work on one project at the same time. `lock.py` gives
+an exclusive lock of the project folder, between processes and between threads. A
+command takes it before it reads the project file (`open_project`), and holds it
+until the folder and the project file are done. The functions that write the project
+file or change the folder also take it (`locked`). The order of the locks is always
+the same, so that no two calls wait for each other:
+
+1. The lock of the project folder.
+2. The lock of the MCP server (`_add_lock`).
+3. A write transaction of the store.
+
+A call does not take the lock of the folder when it holds the lock of the MCP server
+or a write transaction of the store. An open connection to the store with no write is
+no problem: `project_sync` opens the store before it takes the lock of the folder.
+
+The lock is a file in the store folder (`locks/`), not in the project. Its name is
+the hash of the path of the project folder. The index of a new document comes after
+the lock (`build_indexes`). Only a file of the inbox gets its index in the lock,
+because sync reads it to find its parts.
+
 `sync` compares the project with the store and the document folder. First it takes
 the PDF files of the inbox `_inbox`: it imports each one, and links it to the project
 parts that it agrees with (their MPN is an ordering code of the document, or their
@@ -284,6 +304,7 @@ or the database.
 | `keys.py` | The API keys: environment, key store, key file. |
 | `knowledge.py` | The facts: save, find, state. |
 | `links.py` | The search links for a part. |
+| `lock.py` | The lock of a project folder between processes and threads. |
 | `makers.py` | The manufacturer registry: the names of each manufacturer, the built-in names. |
 | `pages.py` | Page images, region images and PDF extracts. |
 | `parametric.py` | The filter model of the parametric search, for each source. |

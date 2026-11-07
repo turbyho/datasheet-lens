@@ -54,8 +54,9 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
   part_links (CLI `datasheet-lens links MPN`; also for symbols, footprints and
   3D models). The user saves a downloaded datasheet into the inbox
   (`_inbox` in the folder of the copies): project_sync (CLI
-  `datasheet-lens sync`) gives it to its parts. Tell the user about each change, different or extra part, and when
-  the MPN of the CAD project and the datasheet do not agree. Remove a part only
+  `datasheet-lens sync`) gives it to its parts. Tell the user about each
+  change, different or extra part, and when the MPN of the CAD project and the
+  datasheet do not agree. Remove a part only
   when the user agrees: project_remove_part (CLI `datasheet-lens rm MPN`). The
   MCP server instructions give the full procedure.
 - To add a datasheet: add_document with a file or a URL and the base part of the
@@ -64,10 +65,11 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
   `datasheet-lens codes DOC`, gives the codes) and base. CLI:
   `datasheet-lens add PATH|URL -m MPN -b BASE` (BASE: the part of the datasheet;
   the MPN itself when the datasheet is of this MPN).
-- project_availability (CLI `datasheet-lens stock`) gives the lifecycle state
-  and the stock of each part at the distributors; tell the user about each
-  warning. search_distributors (CLI `datasheet-lens find MPN`) gives the
-  concrete orderable MPNs of a part. They ask the enabled distributors
+- project_availability (CLI `datasheet-lens stock`) gives one verdict for each
+  part from all sources (the distributors and the JLCPCB parts library): the
+  lifecycle state and the stock. Tell the user about each warning.
+  search_distributors (CLI `datasheet-lens find MPN`) gives the concrete
+  orderable MPNs of a part. They ask the enabled distributors
   (distributor_status; the user sets them with `datasheet-lens dist`, globally
   or with `--local` for the project). Each needs a personal API key, which the
   user saves with `datasheet-lens key mouser` or `datasheet-lens key digikey`:

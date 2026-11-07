@@ -86,8 +86,8 @@ and build its element map. See [projects.md](projects.md).
 | `--no-project` | Add the document to the store only, not to the project. |
 | `-M MANUFACTURER`, `--manufacturer` | The manufacturer of the part. |
 | `-c CATEGORY`, `--category` | The function of the part, for example `ADC`, for the layout of the project. |
-| `--role ROLE` | The role of the document: `datasheet` (default), `manual`, `errata`, `appnote` or `other`. |
-| `--title TITLE` | The title. Default: the title in the PDF metadata. |
+| `--role ROLE` | The role of the document: `datasheet` (default), `manual`, `errata`, `appnote`, `package` (a package drawing in its own document) or `other`. |
+| `--title TITLE` | The title. Default: the title in the PDF metadata. A document that the store has already keeps its title. If it has no title, it gets this title. |
 | `--url URL` | The source URL of a local file. A downloaded file records its URL itself. |
 
 When the input is not a terminal, the command does not ask. Then give `-b` or `-y`.
@@ -99,7 +99,9 @@ A file that is in the store already (the same SHA-256) is not copied again.
 datasheet-lens parts
 ```
 
-List the parts of the store, with the manufacturer and the number of documents.
+List the parts of the store, with the manufacturer and the number of documents. A concrete part
+also gets the documents of its base part. Thus it shows two numbers, for example
+`0 own documents, 1 of the base part AP63203`.
 
 ### maker
 
@@ -440,7 +442,9 @@ the next command for each one:
   [projects.md](projects.md#the-jlcpcb-number-of-a-symbol). A finding of a symbol
   that is not fitted (DNP) is information only.
 - The state of the project folder (line `project folder`), when `sync` would change
-  it.
+  it. A second line `project folder` gives the files that need a step of the user,
+  because `sync` cannot do it (files with no part, changed copies, documents that the
+  store does not have).
 - The next steps (`sync`, then `stock`), when the project holds the parts of the
   CAD project and no symbol needs a step.
 
@@ -505,7 +509,7 @@ update`. See
 | `SOURCE` | `digikey` (the stock and the lifecycle state at DigiKey) or `jlcpcb` (the JLCPCB stock for the assembly and the library class). |
 | `CATEGORY` | The category name, or a part of it, for example `"Single FETs, MOSFETs"` or `mosfet`. DigiKey: also the ID. JLCPCB: a subcategory name or `CATEGORY > SUBCATEGORY`, more with `\|`. A DigiKey category with subcategories, or a name that fits more than one category, gives the list of the categories to select from, with each name in quotes. |
 | `FILTER` | `NAME OP VALUE [at CONDITION]`, for example `"vdss >= 20 V"` or `"package has 3x3"`. A condition (after `at` or `@`, for example `at Vgs<=2.5V`): `jlcpcb` applies it to the points that the data lists; `digikey` does not apply it (`NOT APPLIED`): read that value in the datasheet. DigiKey: a filter with no value that agrees gives 0 parts and examples of the values. |
-| `-P`, `--params` | Show the parameters of the category, with their short names, the number of values and examples. Give no `FILTER` with it. |
+| `-P`, `--params` | Show the parameters of the category, with their short names, the number of parts (`parts unknown` when the source gives no count), the number of values and examples. The parameters that most parts have come first. Give no `FILTER` with it. |
 | `-a`, `--all` | Also the parts with no stock (JLCPCB: marked `NOT IN STOCK`). |
 | `-s`, `--sort` | `stock` (most first, the default) or `price` (lowest first). |
 | `-n`, `--limit` | The number of parts, 1 to 50 (default 20). JLCPCB: 1 to 100. |

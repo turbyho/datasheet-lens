@@ -114,14 +114,22 @@ be bought.
    the same parameters with `find_parts` (see use 15). Then change the part with
    `project_update_part`.
 
-**Result.** One section for each enabled distributor, with one line for each part:
-its lifecycle state and its stock. A part with a purchase source (`[[part.source]]`,
-see use 15) gets the offer of its number: the packaging that the project orders. A
-`WARNING` shows a part that is obsolete or discontinued, a part that the distributor
-does not have (often a base part or a wrong MPN), or a part with no stock. Mouser
-also gives the suggested replacement, the quantities on order and the lead time.
-With the JLCPCB parts library, a JLCPCB section gives the JLCPCB stock and the
-library class, and replacements (see use 16). See [distributors.md](distributors.md).
+**Result.** One verdict for each part, from all sources (the enabled distributors
+with a key, and the JLCPCB parts library), then the details of each source. A part
+with a purchase source (`[[part.source]]`, see use 15) gets the offer of its number:
+the packaging that the project orders. A `WARNING` shows:
+
+- A lifecycle risk of the manufacturer (obsolete, last time buy, not for new
+  designs), also when a source has stock.
+- A part with no stock or not orderable at any source.
+- A part that no source has (often a base part or a wrong MPN). A source that does
+  not have the MPN gives no warning alone: a different source can sell it.
+
+Mouser also gives the suggested replacement, the quantities on order and the lead
+time. With the JLCPCB parts library, the details give the JLCPCB stock and the
+library class, and replacements (see use 16). A part that no symbol fits (DNP) gets
+a verdict that is information only, with no `WARNING`. See
+[distributors.md](distributors.md#check-the-project-parts).
 
 ## 5. Review the design against the datasheets
 
@@ -365,10 +373,10 @@ JLCPCB must have the part in stock, and the team wants few parts with a loading 
    `adopt_part(source="jlcpcb", number="C47616")` (CLI:
    `datasheet-lens adopt jlcpcb C47616`).
 3. Check the availability: `project_availability` (CLI: `datasheet-lens stock`). The
-   JLCPCB section gives the stock and the library class of each part, and up to 3
-   replacements for a part with no stock or with a loading fee: the same MPN, and
-   resistors, capacitors and inductors with the same parameters. Read the datasheet
-   of a replacement before you propose it.
+   JLCPCB details give the stock and the library class of each part, and up to 3
+   replacements for a part with no stock, with a loading fee, or with a lifecycle
+   risk: the same MPN, and resistors, capacitors and inductors with the same
+   parameters. Read the datasheet of a replacement before you propose it.
 4. Check the CAD project: `project_check` with the BOM. The lines `LCSC:` compare the
    JLCPCB number of each symbol (the LCSC column of the BOM) with the purchase source
    and with the library: the number to write into a symbol, a number with no
