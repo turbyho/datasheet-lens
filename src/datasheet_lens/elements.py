@@ -263,6 +263,23 @@ def list_items(store: Store, doc_id: int, kind: str | None = None) -> list:
         " ORDER BY page, page_order", (doc_id, *codes)).fetchall()
 
 
+def _label_rx(label: str) -> re.Pattern:
+    """A text that starts with the caption label: "Table 5" is not "Table 57"
+    and not "Table 5-1"."""
+    return re.compile(rf"^{re.escape(label)}(?![0-9]|[.\-][0-9])", re.I)
+
+
+def caption_label(store: Store, doc_id: int, row) -> str:
+    """The caption label of a table or figure element ("Table 57"): a label of
+    the caption index of its page that starts the text of the element. Empty
+    when the index has no such label."""
+    for (label,) in store.db.execute("SELECT label FROM captions WHERE document_id = ? AND page = ? ORDER BY seq",
+                                     (doc_id, row["page"])):
+        if _label_rx(label).match(row["text"]):
+            return label
+    return ""
+
+
 CONTINUED_PAGES = 5  # a table that continues: the pages before and after that find_caption looks at
 EDGE = 0.3  # a part of a table that continues starts in the top or ends in the bottom part of its page
 
@@ -284,7 +301,7 @@ def find_caption(store: Store, doc_id: int, caption: str) -> list[dict]:
     label = re.sub(r"\s+", " ", caption).strip()
     if not label:
         raise LensError("the caption is empty")
-    rx = re.compile(rf"^{re.escape(label)}(?![0-9]|[.\-][0-9])", re.I)
+    rx = _label_rx(label)
     rows = store.db.execute("SELECT * FROM elements WHERE document_id = ? AND code IN ('T', 'F', 'C')"
                             " ORDER BY page, page_order", (doc_id,)).fetchall()
     found = next((r for r in rows if r["code"] in ("T", "F") and rx.match(r["text"])), None)

@@ -499,8 +499,11 @@ def get_element_text(
             "Element IDs from get_page_map or list_items, for example [\"p7.T1\", \"p7.P3\"]."))]) -> str:
     """The full text of elements from the text layer, with their type, page and
     region. Use it for headings and paragraphs. Read table values, figures and
-    formulas from get_page_image: the text layer can lose their structure."""
-    from .elements import element
+    formulas from get_page_image: the text layer can lose their structure. For a
+    table, figure or formula, the result gives only its caption, and the call of
+    get_page_image for its image (with the caption label of a table, the call
+    that gives each page of a table that continues on the next pages)."""
+    from .elements import caption_label, element
 
     with Store() as store:
         doc = _doc(store, document)
@@ -510,6 +513,14 @@ def get_element_text(
             e = element(store, doc.id, eid)
             out.append(f"{eid} ({e['type']}, p.{e['page']}, [{e['x0']:.0f}, {e['y0']:.0f}, "
                        f"{e['x1']:.0f}, {e['y1']:.0f}]): {e['text']}")
+            if e["code"] in ("T", "F", "Q"):
+                ref = doc.sha256[:12]
+                line = f"  The values are in the image: get_page_image(document='{ref}', element='{eid}')."
+                label = caption_label(store, doc.id, e) if e["code"] == "T" else ""
+                if label:
+                    line += (f" The table can continue on the next pages: get_page_image(document='{ref}', "
+                             f"caption='{label}') gives one image for each page.")
+                out.append(line)
         return "\n".join(out)
 
 

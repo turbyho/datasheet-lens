@@ -389,3 +389,33 @@ def test_a_part_with_no_document(store_home):
     assert "The store has no document of the part NO-PART: nothing to search" in text_of(
         call("search_text", text="VDD", part="NO-PART"))
     assert "The store has no document of the part NO-PART: no facts" in text_of(call("find_facts", part="NO-PART"))
+
+
+def test_element_text_of_a_table_gives_the_image_call(store_home, text_pdf):
+    """A table, figure or formula has only its caption as text: the result gives
+    the call of get_page_image. A table with a caption label also gets the
+    caption call (a table that continues gives one image for each page)."""
+    from datasheet_lens.store import Store
+
+    path = text_pdf("opa.pdf", [PAGE])
+    call("add_document", path=str(path), part="OPA2134", manufacturer="TI")
+    for job in list(server._builds.values()):
+        job["thread"].join(10)
+    with Store() as store:
+        doc = store.document(text_of(call("list_documents", part="opa2134")).split()[0])
+        rows = [("p1.T9", "table", "T", "Table 7-1. Pin Functions"), ("p1.T8", "table", "T", ""),
+                ("p1.F9", "picture", "F", "Figure 9. Block Diagram"), ("p1.Q9", "formula", "Q", "")]
+        for n, (eid, type_, code, text) in enumerate(rows):
+            store.db.execute("INSERT INTO elements VALUES (?, ?, 1, ?, ?, ?, 40, 400, 500, 700, ?)",
+                             (doc.id, eid, type_, code, 100 + n, text))
+        store.db.execute("INSERT INTO captions VALUES (?, 99, 'table', 'Table 7-1', 'Pin Functions', 1, 50, 390,"
+                         " 1, 1)", (doc.id,))
+        store.db.commit()
+    ref = doc.sha256[:12]
+    lines = text_of(call("get_element_text", document=ref, element_ids=[r[0] for r in rows] + ["p1.P1"])).splitlines()
+    image = "  The values are in the image: get_page_image(document='{}', element='{}')."
+    assert lines[1] == (image.format(ref, "p1.T9") + f" The table can continue on the next pages: "
+                        f"get_page_image(document='{ref}', caption='Table 7-1') gives one image for each page.")
+    assert lines[3] == image.format(ref, "p1.T8")  # no caption label: no caption call
+    assert lines[5] == image.format(ref, "p1.F9") and lines[7] == image.format(ref, "p1.Q9")
+    assert lines[8].startswith("p1.P1 (") and len(lines) == 9  # a paragraph: its text only
