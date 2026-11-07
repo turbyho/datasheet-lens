@@ -1116,6 +1116,9 @@ class CadPart(BaseModel):
         "The hidden field Value_Confirmed of the symbol, as it is: a copy of the Value of the last "
         "confirmation. Null when the symbol has no such field."))
     datasheet: str = Field("", description="The Datasheet field: a URL or a path. Empty if there is none.")
+    dnp: bool = Field(False, description=(
+        "True when the symbol is not fitted (DNP). Its parts stay parts of the CAD project, with their "
+        "datasheets."))
     reference: str = Field("", description="The reference of the symbol, for example U3.")
     variant: str = Field("", description=(
         "The name of an other variant of the product (KiCad 10) when the fields are the fields of this variant. "
@@ -1149,7 +1152,8 @@ def project_check(
             "the CSV file of 'kicad-cli sch export bom' (the MCP server kicad-workbench writes it with "
             "export_bom and output_path). A .csv, .tsv or .txt file: an absolute path, or a path relative to "
             "the project folder (the folder of datasheet-lens.toml). The tool finds the columns by their names (MPN, Value, Reference, "
-            "Datasheet, DNP); a line with DNP is not fitted. Give parts or bom, not the two."))] = "",
+            "Datasheet, DNP); a line with DNP is not fitted, and its parts stay parts of the project. Give parts "
+            "or bom, not the two."))] = "",
         bom_column: Annotated[str, Field(description=(
             "The column of the MPN in the BOM file. Empty: each column with a usual MPN name (MPN, "
             "Manufacturer Part Number, MP ...). The tool always reads the Value column too."))] = "",
@@ -1179,10 +1183,13 @@ def project_check(
     - complete the fields: the MPN is only in the field MPN. Write the given
       Value (the MPN in parentheses) and fields; the parts do not change.
     - no field Value_Confirmed, no part selected (a general value and no MPN).
-    - CAD lines with a part, the number of the same parts, and one line for
-      each part that is different (one part with two MPNs), missing (with the
-      documents of the store or the Datasheet field, and the next call) or
+    - CAD lines with a part, the symbols that are not fitted (DNP: their parts
+      stay parts of the project), the number of the same parts, and one line
+      for each part that is different (one part with two MPNs), missing (with
+      the documents of the store or the Datasheet field, and the next call) or
       extra.
+    - next steps: when the two hold the same parts and no symbol needs a step
+      of the user: project_sync, then project_availability.
     A message of an other variant names it. A message names the fields to
     write by the columns of the BOM (the BOM must name its columns as the
     fields of the symbols: export_bom of kicad-workbench does), or by

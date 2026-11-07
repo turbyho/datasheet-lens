@@ -449,8 +449,9 @@ options (see [projects.md](projects.md#a-bom-file) for the rules). It reads UTF-
 UTF-16 with its byte order mark, or cp1252 when the file is not UTF-8. It does not
 read XLSX files. It
 compares the column names with no regard to case, spaces, `_`, `.` and `-`. It finds
-the reference, Datasheet and DNP columns by their names, and ignores the lines that
-are not fitted. The Value column holds a general value and the MPNs in parentheses,
+the reference, Datasheet and DNP columns by their names. The parts of a line that is
+not fitted (DNP) stay parts of the project, and the line `not fitted (DNP)` names
+their symbols. The Value column holds a general value and the MPNs in parentheses,
 the fitted part first and then the alternatives, with the separators `,` and `;`
 (see [projects.md](projects.md#mpn-and-value-fields)). **It is tested only with BOM exports of
 KiCad and Eagle.** A BOM of a different CAD tool (for example Altium) can work when

@@ -266,9 +266,11 @@ def test_project_check_reads_a_bom_file(store_home, tmp_path):
         '"U3","LM358N","DIP-8","","1","DNP","","LM358P"\n', encoding="utf-8")
     out = text_of(call("project_check", bom=str(bom), path=str(project.root)))
     assert f"{bom}: MPN from MPN; Value from Value; references from Reference; no column Value_Confirmed" in out
-    assert "CAD lines with a part: 2" in out
+    # U3 is not fitted (DNP): its part stays a part of the CAD project.
+    assert "CAD lines with a part: 3" in out and "not fitted (DNP): U3 (LM358P)" in out
     assert "the same in the CAD project and in the project file: 1 parts" in out
-    assert "missing: TLV75533PDBVR (U2)" in out and "extra: LM358" in out
+    assert "missing: TLV75533PDBVR (U2)" in out and "different: CAD LM358P, project LM358" in out
+    assert "extra:" not in out
     # Value is always Value, not the column of the MPN.
     assert "is the column Value, which the tool always reads as Value" in tool_error(
         "project_check", bom=str(bom), bom_column="Value", path=str(project.root))

@@ -608,13 +608,63 @@ def test_check_with_the_cad_project(store_home, text_pdf, tmp_path, capsys):
     assert main(["check", str(bom), "-p", str(project.root)]) == 0
     out = capsys.readouterr().out
     assert "MPN from (no column); Value from Value; references from Reference; no column Value_Confirmed" in out
-    assert "CAD lines with a part: 3" in out
+    # A DNP line is a part of the CAD project, with its datasheet (decision D1 of
+    # plans/session-review-plan.md).
+    assert "CAD lines with a part: 4" in out
+    assert "not fitted (DNP): U9 (XYZ123). DNP is a setting of the CAD tool" in out
     assert "the same in the CAD project and in the project file: 2" in out
     assert "extra: NRF9151-LACA-R7" in out and "missing: LM3580DR/NOPB (U8)" in out
+    assert "missing: XYZ123 (U9)" in out and "next steps" not in out
     assert "no part selected (a general value and no MPN): C1, C2, J2." in out
     # One column: the sniffer cannot find a delimiter.
     bom.write_text("MPN\nOPA2134\n", encoding="utf-8")
     assert main(["check", str(bom), "-p", str(project.root)]) == 0
+
+
+def test_check_dnp_and_next_steps(store_home, tmp_path):
+    """A symbol that is not fitted (DNP) is a part of the CAD project: not
+    missing, not extra. A symbol is not fitted only when no variant fits it. With
+    no step left, the last line gives the next steps."""
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        for mpn in ("XQ1001", "YQ2002", "ZQ3003"):
+            prj.add_part(project, store, mpn)
+        cad = [{"mpn": "XQ1001", "reference": "U1"}, {"mpn": "YQ2002", "reference": "U2", "dnp": True},
+               {"mpn": "ZQ3003", "reference": "R1, R2", "dnp": True}]
+        result = prj.check_parts(project, store, cad)
+        assert result["extra"] == [] and result["missing"] == [] and result["lines"] == 3
+        assert result["not_fitted"] == ["U2 (YQ2002)", "R1, R2 (ZQ3003)"]
+        text = prj.format_check(result)
+        assert text[-1].startswith("next steps: project_sync copies the documents into the project folder. "
+                                   "Then project_availability gives the lifecycle state")
+        assert prj.format_check(result, cli=True)[-1].startswith("next steps: datasheet-lens sync copies")
+        # A variant that fits U2 and R1: only R2 is not fitted in each variant.
+        variant = [{"mpn": "YQ2002", "reference": "U2", "variant": "b"},
+                   {"mpn": "ZQ3003", "reference": "R1", "variant": "b"},
+                   {"mpn": "ZQ3003", "reference": "R2", "variant": "b", "dnp": True}]
+        assert prj.check_parts(project, store, cad + variant)["not_fitted"] == ["R2 (ZQ3003)"]
+        # Not fitted is a state of a part of a symbol: a variant that fits U2 with no
+        # part, or with an other part, does not fit YQ2002.
+        for other in ("-", "XQ1001"):
+            lines = [{"mpn": other, "reference": "U1"}, {"mpn": "YQ2002", "reference": "U2", "dnp": True},
+                     {"mpn": other, "reference": "U2", "variant": "b"}]
+            assert prj.check_parts(project, store, lines)["not_fitted"] == ["U2 (YQ2002)"]
+        lines = [{"mpn": "XQ1001", "reference": "U2"}, {"mpn": "YQ2002", "reference": "U2", "variant": "b", "dnp": True}]
+        assert prj.check_parts(project, store, lines)["not_fitted"] == ["U2 (YQ2002)"]
+        # The references in the order of the schematic.
+        lines = [{"mpn": "ZQ3003", "reference": "R2, R10, R11", "dnp": True},
+                 {"mpn": "ZQ3003", "reference": "R11", "variant": "b"}]
+        assert prj.check_parts(project, store, lines)["not_fitted"] == ["R2, R10 (ZQ3003)"]
+        # A symbol that is not fitted gets the check of its fields: the user can fit it.
+        lines = [{"value": "op amp (YQ2002)", "mpn": "", "value_confirmed": "", "reference": "U2", "dnp": True}]
+        assert "not confirmed: U2:" in "\n".join(prj.format_check(prj.check_parts(project, store, lines)))
+        # A part that the CAD project does not have: no next steps.
+        result = prj.check_parts(project, store, cad[:2])
+        assert result["extra"] == ["ZQ3003"] and "next steps" not in "\n".join(prj.format_check(result))
+    # No part at all (an empty BOM and an empty project): no next steps.
+    with Store() as store:
+        empty = prj.init_project(tmp_path / "empty")
+        assert "next steps" not in "\n".join(prj.format_check(prj.check_parts(empty, store, [])))
 
 
 def test_near_parts():
@@ -1181,8 +1231,10 @@ def test_bom_formats(tmp_path):
     # Synonyms of one role, a header with no names, a quote that is a delimiter of
     # the list, and the line "sep=" with spaces before it or a letter.
     # A line is not fitted only when each DNP column says so; a conflict is fitted.
+    # A line that is not fitted still gives its part.
     assert parts_of("syn.csv", "Ref,MPN,DNP,Do not populate\nU1,XQ1001,,1\nU2,YQ2002,DNP,1\n") == [
-        (["XQ1001"], "DNP (empty), Do not populate 1")]
+        (["XQ1001"], "DNP (empty), Do not populate 1"), (["YQ2002"], "")]
+    assert [s.fitted for s in bom_parts(str(tmp_path / "syn.csv")).cad] == [True, False]
     assert parts_of("syn2.csv", "Reference,Designator,MPN\nU1,U1,XQ1001\nU2,R2,YQ2002\n") == [
         (["XQ1001"], ""), (["YQ2002"], "Reference U2, Designator R2")]
     # A line with only delimiters is an empty line, also before the header.

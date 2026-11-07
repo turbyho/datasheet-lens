@@ -1505,6 +1505,10 @@ class CadSymbol:
     # the field to write.
     lcsc: str | None = None
     lcsc_fields: list[str] = field(default_factory=lambda: [LCSC_FIELD])
+    # False: the symbol is not fitted (DNP). DNP is a setting of the CAD tool that the
+    # user can change at any time, and the symbol stays in the schematic: its parts
+    # stay parts of the CAD project, with their datasheets.
+    fitted: bool = True
 
 
 @dataclass
@@ -1667,6 +1671,12 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
     - no_value_confirmed: the number of symbols with no field Value_Confirmed in a
       BOM file of one or more variants (a change of a general value is not found
       for them).
+    - not_fitted: "references (parts)" of the parts of the symbols that are not
+      fitted (DNP), when no BOM file of a variant fits the symbol with this part.
+      They stay parts of the CAD project (see CadSymbol.fitted): they are not
+      missing or extra. A symbol that is not fitted gets the same check of its
+      fields (changes, confirmation, LCSC) as a fitted symbol: the user can fit it
+      at any time.
     An alternative is a CAD part too, and needs its own datasheet: the Datasheet
     field of the symbol belongs to the fitted part. With more variants, each line
     needs its reference (LensError)."""
@@ -1700,8 +1710,14 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
         mpn_fields=_field_names(item.get("mpn_fields"), "MPN"),
         confirmed_fields=_field_names([item.get("confirmed_field")], "Value_Confirmed"),
         lcsc=None if item.get("lcsc") is None else str(item["lcsc"]),
-        lcsc_fields=_field_names([item.get("lcsc_field")], LCSC_FIELD))
+        lcsc_fields=_field_names([item.get("lcsc_field")], LCSC_FIELD),
+        fitted=not item.get("dnp"))
         for item in cad]
+    # The parts (_norm) of the fitted symbols of each reference, and (references,
+    # label, parts) of the symbols that are not fitted: a part of a symbol is not
+    # fitted when no BOM file of a variant fits the symbol with this part.
+    fitted_parts: dict[str, set[str]] = {}
+    dnp_symbols: list[tuple[frozenset[str], str, list[str]]] = []
     lcsc_symbols: list[tuple[str, CadSymbol, str]] = []  # (label, symbol, the fitted MPN)
     lcsc_seen: set = set()
     # The tool finds the line of the default variant of a variant line by its
@@ -1716,7 +1732,8 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
     for symbol in sorted(symbols, key=lambda s: bool(s.variant)):
         reference = symbol.reference.strip()
         refs = _references(reference)
-        if (symbol.value_confirmed is None and not reference.startswith("#")
+        power = reference.startswith("#")  # a power symbol (#PWR01) has no part
+        if (symbol.value_confirmed is None and not power
                 and (_filled(symbol.value) or _filled(symbol.mpn))
                 and (not refs or not refs <= unconfirmed_refs)):
             unconfirmed_refs |= refs
@@ -1726,6 +1743,12 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
         if state.parts and (not refs or not refs <= counted):
             counted |= refs
             lines += 1
+        has_part = bool(state.parts) and not state.no_part and not power
+        if has_part and symbol.fitted:
+            for ref in refs:
+                fitted_parts.setdefault(ref, set()).update(_norm(m) for m in state.parts)
+        elif has_part:
+            dnp_symbols.append((refs, label, state.parts))
         for c in state.conflicts:
             add("conflicts", symbol, c, f"{label}: {c}")
         # The fields that a confirmation writes: the MPNs of the parentheses of Value.
@@ -1740,8 +1763,8 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
         # duplicate.
         target = (tuple(symbol.mpn_fields), symbol.mpn_known, has_field, tuple(symbol.confirmed_fields),
                   symbol.confirmed_known)
-        if reference.startswith("#"):
-            pass  # a power symbol (#PWR01) has no part to confirm
+        if power:
+            pass  # no part to confirm
         elif state.change:
             add("changes", symbol, (state.change, target), {**write, "change": state.change, "new": state.new,
                                                             "removed": state.removed, "select": state.select})
@@ -1752,12 +1775,12 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
             add("complete", symbol, (state.complete, target),
                 {**write, "value": state.complete,
                  "value_confirmed": state.complete if has_field else None})
-        if state.no_mpn and not reference.startswith("#"):  # not a power symbol (#PWR01)
+        if state.no_mpn and not power:
             add("no_mpn", symbol, "", label)
         # The JLCPCB number of the fitted part (a variant line with the same number
         # and part as its default line gives no second message).
         key = (frozenset(refs) or label, (symbol.lcsc or "").strip().upper(), state.parts[0] if state.parts else "")
-        if state.parts and not state.no_part and not reference.startswith("#") and key not in lcsc_seen:
+        if has_part and key not in lcsc_seen:
             lcsc_seen.add(key)
             lcsc_symbols.append((label, symbol, state.parts[0]))
         # The Datasheet field of a variant line that is the field of the default variant
@@ -1782,7 +1805,21 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
             if i == 0 and not state.change and not state.removed and not entry["datasheet"] and datasheet:
                 entry["datasheet"] = datasheet
     out = {"ok": [], "different": [], "missing": [], "extra": [], **out_lists, "no_value_confirmed": no_confirmed,
-           "lines": lines}
+           "lines": lines, "not_fitted": []}
+    for refs, label, parts in dnp_symbols:
+        # The references of each part that no variant fits on them (a line of a group,
+        # R1,R2, can have a symbol that a variant fits), and the parts of the same
+        # references in one text: "R1, R2 (XQ1001)".
+        groups: dict[tuple[str, ...], list[str]] = {}
+        for mpn in parts:
+            left = tuple(sorted((r for r in refs if _norm(mpn) not in fitted_parts.get(r, set())), key=_natural)
+                         ) if refs else (label,)
+            if left:
+                groups.setdefault(left, []).append(mpn)
+        for left, mpns in groups.items():
+            text = f"{', '.join(left)} ({', '.join(mpns)})"
+            if text not in out["not_fitted"]:
+                out["not_fitted"].append(text)
     # First the exact matches, then the near matches of the other parts: a part
     # that is the same is not also "different".
     cad_mpns = {e["mpn"].lower() for e in merged.values()}
@@ -1998,6 +2035,11 @@ def _references(text: str) -> frozenset[str]:
         elif word:
             out.add(word)
     return frozenset(out)
+
+
+def _natural(reference: str) -> list:
+    """The sort key of a reference in the order of the schematic: R2 before R10."""
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", reference)]
 
 
 def _option_names(options: dict[str, str] | None) -> dict[str, str]:
@@ -2297,14 +2339,14 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
     line, and the others must hold the same MPNs (also more
     columns of one name, for example MPN and mpn of symbols from different
     libraries). The Value column is always read (alternatives, conflicts). A line
-    with a value in the DNP column is not fitted: it gives no part. The values
-    empty, 0, no and false mean fitted.
+    with a value in the DNP column is not fitted (CadSymbol.fitted): its parts
+    stay parts of the CAD project. The values empty, 0, no and false mean fitted.
 
     More Value, DNP, Reference or Datasheet columns (also with different names of
     one list, for example DNP and "Do not populate"): the first filled one gives
     the value, and a line in which they are different gets a conflict. A line is
-    not fitted only when each DNP column says so; thus the line of a conflict
-    needs its datasheet. All MPNs of more Value columns count (see
+    not fitted only when each DNP column says so; thus the line of a conflict is
+    fitted. All MPNs of more Value columns count (see
     CadSymbol.other_values).
 
     delimiter, quote: the values of the options of the interface (see
@@ -2383,8 +2425,6 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
     cad = []
     for row in rows:
         states = [fitted(row[i]) for i in found["DNP"]]
-        if states and not any(states):
-            continue  # not fitted
         # Two Value columns with different values are a conflict, also two codes of
         # one part (TLV755P, TLV75533PDBVR): the user corrects the columns.
         values = [(labels[i], _filled(row[i])) for i in value_columns if _filled(row[i])]
@@ -2416,6 +2456,7 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
             other_values=[text for _, text in values[1:]], variant=variant,
             lcsc=lcsc if found["LCSC"] else None,
             lcsc_fields=list(dict.fromkeys(names[i] for i in found["LCSC"])) or [LCSC_FIELD],
+            fitted=not states or any(states),
             conflict="; ".join(c for c in (value_conflict, mark_conflict, dnp_conflict, reference_conflict,
                                            datasheet_conflict, confirmed_conflict, lcsc_conflict) if c))
         group = len(_references(reference)) > 1
@@ -2510,6 +2551,9 @@ def format_check(result: dict, cli: bool = False) -> list[str]:
                      "symbol that needs no part (a test point, a generic resistor): MPN = '-'.")
     if "lines" in result:
         lines.append(f"CAD lines with a part: {result['lines']}")
+    if result.get("not_fitted"):
+        lines.append(f"not fitted (DNP): {'; '.join(result['not_fitted'])}. DNP is a setting of the CAD tool that "
+                     "the user can change at any time: these parts stay parts of the project, with their datasheets.")
     lines.append(f"the same in the CAD project and in the project file: {len(result['ok'])} parts")
     for d in result["different"]:
         cad, own, maker = d["cad"], d["mpn"], d["manufacturer"] if d["ambiguous"] else ""
@@ -2539,6 +2583,15 @@ def format_check(result: dict, cli: bool = False) -> list[str]:
         lines.append(f"extra: {mpn}: the CAD project does not have it. Tell the user; remove it only when the "
                      "user agrees.")
     lines += _lcsc_lines(result, cli)
+    # The project file holds the parts of the CAD project, and no symbol needs a
+    # step of the user: the next steps of the project (the server instructions).
+    # Not with no part at all (an empty BOM, or a BOM with no MPN or Value column).
+    if result["ok"] and not any(result.get(kind) for kind in (
+            "conflicts", "changes", "unconfirmed", "complete", "no_mpn", "different", "missing", "extra", "lcsc")):
+        sync, stock = ("datasheet-lens sync", "datasheet-lens stock") if cli else ("project_sync", "project_availability")
+        lines.append(f"next steps: {sync} copies the documents into the project folder. Then {stock} gives the "
+                     "lifecycle state and the stock of each part: tell the user about each part that is not "
+                     "orderable or has no stock.")
     return lines
 
 

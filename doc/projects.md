@@ -421,7 +421,9 @@ a number), the agent asks the user.
 3. The result gives one line for each conflict and each change in the CAD project
    (see "MPN and Value fields"), one line for each symbol that is not confirmed or
    that needs the completion of its fields, one line with the symbols that have no
-   selected part, the number of the same parts, and one line for each part that is:
+   selected part, one line with the symbols that are not fitted (DNP: their parts
+   stay parts of the project), the number of the same parts, and one line for each
+   part that is:
    - `different`: probably one part with two MPNs (for example the base part in the
      project and the concrete MPN in the CAD project). The line gives the
      `project_update_part` call.
@@ -431,6 +433,9 @@ a number), the agent asks the user.
      a part is a missing part too, with the note `[alternative of MPN]`.
    - `extra`: in the project file, not in the CAD project. The agent tells the user
      and removes it only when the user agrees.
+
+   When the two hold the same parts and no symbol needs a step of the user, the
+   last line `next steps` gives `project_sync` and then `project_availability`.
 4. After the changes, the agent runs `project_sync` and `project_check` again.
 
 ### MPN and Value fields
@@ -641,7 +646,7 @@ The reader uses these rules:
   as a set (`R1 R2`, `R1, R2` and the range `R1-R2` are the same). A datasheet is
   compared as text.
 - A line is not fitted only when each DNP column says so. Thus the line of a DNP
-  conflict needs its datasheet. `~` is an empty value (KiCad).
+  conflict is fitted. `~` is an empty value (KiCad).
 - A preset of KiCad can have a delimiter and a quote of more characters. Give them
   with `--delimiter` and `--quote`.
 - The file must be UTF-8 text, or UTF-16 with its byte order mark (Excel "Unicode
@@ -663,8 +668,15 @@ The reader uses these rules:
 - The Datasheet column is the first of: `Datasheet`, `Datasheet URL`,
   `Datasheet Link`.
 - The DNP column is the first of: `DNP`, `Do not populate`, `Do not place`,
-  `Not fitted`. A line with a value in this column is not fitted, and the reader
-  ignores it. The values empty, `0`, `no` and `false` mean "fitted".
+  `Not fitted`. A line with a value in this column is not fitted. The values
+  empty, `0`, `no` and `false` mean "fitted". DNP is a setting of the CAD tool
+  that the user can change at any time, and the symbol stays in the schematic.
+  Thus the parts of a line that is not fitted stay parts of the CAD project, with
+  their datasheets. The line `not fitted (DNP)` of the result names these symbols
+  and their parts. A part that a BOM file of a different variant fits on the same
+  symbol is not in this line. A symbol that is not fitted gets the same check of
+  its fields (changes, confirmation, LCSC number) as a fitted symbol, because the
+  user can fit it at any time.
 
 The first line of the result gives the MPN, Value and reference columns of each BOM
 file. The other lines are the lines of `project_check`, with the number of CAD

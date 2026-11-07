@@ -73,8 +73,10 @@ project file must hold the same parts as the CAD project.
 finds one part with two MPNs: the base part in one place and the concrete MPN in the
 other, or a variant of the same datasheet. A CAD MPN with placeholders at its end
 (`nRF9151-LAXX`, `STM32F103C8Tx`) also gives a `different` line for the project part
-that it matches. The CLI command `check` ignores a line of the BOM file with a DNP
-mark.
+that it matches. A line of the BOM file with a DNP mark is a part of the project
+too: the user can change DNP at any time. The line `not fitted (DNP)` names these
+symbols. With no step left, the line `next steps` gives `project_sync` and then
+`project_availability`.
 
 ## 3. Select the concrete orderable MPN
 
