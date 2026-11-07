@@ -953,17 +953,28 @@ def part_parameters(source: Source, category: Category, path: ProjectPath = "") 
 @tool
 def project_availability(path: ProjectPath = "") -> str:
     """The lifecycle state and the stock of each part of the user project at
-    the enabled distributors (official APIs). Gives one line for each part, and
-    a warning for a part that is not orderable (obsolete, discontinued, with the
-    replacement), that the distributor does not have, or that has no stock. A
-    part with a purchase source ([[part.source]]): the offer of its number. For
-    a part with no JLCPCB stock or with a loading fee (Extended), the JLCPCB
-    section gives replacements (the same MPN; resistors, capacitors, inductors
-    with the same parameters), Basic and Preferred first: read the datasheet of
-    a replacement before you propose it. To use a replacement: the user agrees,
-    the CAD project changes, then project_update_part(mpn, new_mpn) and
-    adopt_part. Tell the user about each warning, and
-    give the user each note about a missing API key (see
+    the enabled distributors (official APIs) and in the JLCPCB parts library.
+    Gives one verdict for each part from all sources:
+    - A lifecycle risk of the manufacturer at any distributor (OBSOLETE, LAST
+      TIME BUY, NOT FOR NEW DESIGNS), with the state of each distributor: select
+      a replacement also when a source has stock.
+    - A part with a purchase source ([[part.source]]): the offer of its number.
+      "orderable at the purchase source", or a warning with the reasons (not
+      checked, the number is not there or is an other MPN, not orderable, no
+      stock) and the other sources with stock.
+    - A part with no purchase source: "orderable" (the sources with stock), or
+      no stock, not orderable, or no source has the MPN.
+    A part with no warning gets one line with the details of each source. A
+    part with a warning gets one indented line for each source. For a part with
+    a lifecycle risk, no JLCPCB stock, or a loading fee (Extended), the lines
+    "replacement" give parts of the JLCPCB library (the same MPN; resistors,
+    capacitors, inductors with the same parameters), Basic and Preferred first:
+    read the datasheet of a replacement before you propose it. To use a
+    replacement: the user agrees, the CAD project changes, then
+    project_update_part(mpn, new_mpn) and adopt_part. After the parts: the
+    lines of the sources (parts with no purchase source, a source that does not
+    answer, the age of the JLCPCB library). Tell the user about each warning,
+    and give the user each note about a missing API key (see
     search_distributors)."""
     from .distributors import availability
     from .project import load
@@ -1006,7 +1017,10 @@ def adopt_part(
     first), add the part to the store and to the user project, and save the
     purchase source (the source and its part number; for JLCPCB the library
     class) in the store and in the project file. Use it when the user selects a
-    candidate. Then project_sync copies the datasheet into the project folder.
+    candidate. The result gives the lifecycle state of the manufacturer from
+    the distributors with a key: a WARNING (obsolete, last time buy, not for
+    new designs) goes to the user, also when the source has stock. Then
+    project_sync copies the datasheet into the project folder.
     The element map builds in the background. Read the values that the design
     needs in the datasheet and save them with save_fact. When no URL gives the
     datasheet (a login, a captcha), the result gives the URLs and the inbox

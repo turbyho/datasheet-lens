@@ -32,7 +32,8 @@ DISTRIBUTOR_HOSTS = ("digikey.", "mouser.", "lcsc.", "jlcpcb.", "octopart.")
 
 def _part(source: str, number: str, mpn: str) -> dict:
     """The part at the source: mpn, manufacturer, package, number (of the
-    source), url (product page), library (JLCPCB), datasheet (URL)."""
+    source), url (product page), library (JLCPCB), datasheet (URL), offer (the
+    Offer of the source, for its lifecycle state)."""
     if bool(number.strip()) == bool(mpn.strip()):
         raise LensError("give the part number of the source (number) or the MPN (mpn), not both and not none")
     if source == "jlcpcb":
@@ -60,7 +61,7 @@ def _jlcpcb(number: str, mpn: str) -> dict:
                             "different source")
         return {"mpn": offer.mpn, "manufacturer": offer.manufacturer, "package": offer.package,
                 "number": offer.distributor_pn, "url": offer.product_url, "library": offer.library,
-                "datasheet": offer.datasheet_url}
+                "datasheet": offer.datasheet_url, "offer": offer}
     return _one(jlcpcb.offers(mpn, exact=True), mpn, "the JLCPCB parts library")
 
 
@@ -88,7 +89,7 @@ def _digikey(number: str, mpn: str) -> dict:
     offer = digikey.offer_of(product, currency)
     return {"mpn": offer.mpn, "manufacturer": offer.manufacturer, "package": offer.package,
             "number": numbers[number.lower()], "url": offer.product_url, "library": "",
-            "datasheet": offer.datasheet_url}
+            "datasheet": offer.datasheet_url, "offer": offer}
 
 
 def _mouser(number: str, mpn: str) -> dict:
@@ -118,7 +119,50 @@ def _one(offers: list, text: str, where: str) -> dict:
                                     for o in offers))
     o = offers[0]
     return {"mpn": o.mpn, "manufacturer": o.manufacturer, "package": o.package, "number": o.distributor_pn,
-            "url": o.product_url, "library": o.library, "datasheet": o.datasheet_url}
+            "url": o.product_url, "library": o.library, "datasheet": o.datasheet_url, "offer": o}
+
+
+def _lifecycle_lines(c: dict, source: str, project=None) -> list[str]:
+    """The lifecycle state of the manufacturer for the part: the offer of the
+    source, and the offer of each other enabled distributor with a key, of the
+    manufacturer of the part (distributors._of_maker, as project_availability).
+    A risk (obsolete, last time buy, not for new designs) gives a warning: the
+    part is a risk for the design also when the source has stock (the JLCPCB
+    library has no lifecycle state). With no state from any distributor: a
+    line that tells it, with the reasons. Then the notes about the missing
+    keys."""
+    from .distributors import SUPPORTED, _worst, keys_of, lifecycle_of, maker_lifecycle
+    from .store import Store
+
+    states = []  # (label, state, risk)
+    offer = c.get("offer")
+    if offer is not None and source != "jlcpcb":
+        risk, text, _ = lifecycle_of([offer])
+        states.append((offer.source, text or "no state", risk))
+    reasons = []
+    keys, notes = keys_of(project)
+    with Store() as store:
+        for name, credential in keys.items():
+            if name == source:
+                continue
+            found, reason = maker_lifecycle(name, credential, c["mpn"], c["manufacturer"], store)
+            if found is None:
+                reasons.append(reason)
+            else:
+                states.append((SUPPORTED[name][0], found[1] or "no state", found[0]))
+    shown = "; ".join(f"{label}: {text}" for label, text, _ in states)
+    risk = _worst(r for _, _, r in states)
+    if risk:
+        line = (f"WARNING: {risk.upper()} at the manufacturer ({shown}). Tell the user, and select a replacement "
+                "with the user (find_parts with the values of the datasheet); project_availability gives the "
+                "replacements in the JLCPCB library")
+    elif states:
+        line = f"lifecycle: {shown}"
+    else:
+        line = ("lifecycle: not checked" + (" (the JLCPCB library has no lifecycle state)" if source == "jlcpcb"
+                                            else "") + (f": {'; '.join(reasons)}" if reasons else
+                                                        ": no enabled distributor with a key"))
+    return [line] + notes
 
 
 def _is_distributor(url: str) -> bool:
@@ -217,6 +261,7 @@ def adopt(source: str, number: str = "", mpn: str = "", base: str = "", category
     lines = [f"{c['mpn']} ({c['manufacturer'] or 'manufacturer unknown'}) from {source}: {c['number']}"
              + (f", library {c['library']}" if c["library"] else "")
              + (f", package {c['package']}" if c["package"] else "")]
+    lines += _lifecycle_lines(c, source, project)
     lock = lock or contextlib.nullcontext()
     with Store() as store:
         known = _known_datasheet(store, c["mpn"], base.strip(), c["manufacturer"])

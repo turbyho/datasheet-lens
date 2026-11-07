@@ -699,7 +699,8 @@ def _same_parameters(rules, mine: dict, other) -> bool:
     return True
 
 
-def replacements(number: str, limit: int = 3, db=None) -> list[tuple]:
+def replacements(number: str, limit: int = 3, db=None, obsolete: bool = False,
+                 same_maker: Callable[[str], bool] | None = None) -> list[tuple]:
     """The replacements in the JLCPCB library for the part of a C number, with
     JLCPCB stock: (Offer, reason). The same MPN with a different C number (an
     other manufacturer or an other listing), and for a resistor, a capacitor or
@@ -708,7 +709,14 @@ def replacements(number: str, limit: int = 3, db=None) -> list[tuple]:
     stock, only Basic and Preferred parts: an other Extended part does not help.
     The values come from the LCSC listings: read the datasheet of a replacement
     before you use it. No replacement of semiconductors and ICs (decision of the
-    user): the agent uses find_parts with the values of the datasheet."""
+    user): the agent uses find_parts with the values of the datasheet.
+
+    obsolete: the manufacturer of the part gives a lifecycle risk (obsolete, last
+    time buy, not for new designs). Then the same MPN of the manufacturer of the
+    part is no replacement: the same name as the row of the number (no regard to
+    case), or a name for which same_maker is true (the manufacturer registry of
+    the store knows the other names). The same MPN of an other manufacturer has
+    its own lifecycle state (not checked). An Extended part helps too."""
     number_id(number)  # a LensError for a text that is not a JLCPCB number
     own = db is None
     db = connect() if own else db
@@ -716,9 +724,16 @@ def replacements(number: str, limit: int = 3, db=None) -> list[tuple]:
         row = row_of_number(db, number)
         if row is None:
             return []
-        found = [(r, "the same MPN") for r in db.execute(
-            "SELECT * FROM jlc_components WHERE present = 1 AND stock > 0 AND mfr = ? COLLATE NOCASE AND lcsc != ?",
-            (row["mfr"], row["lcsc"]))]
+        maker = (row["manufacturer"] or "").casefold()
+
+        def of_part(name: str) -> bool:
+            return name.casefold() == maker or bool(same_maker and same_maker(name))
+
+        rows = db.execute("SELECT * FROM jlc_components WHERE present = 1 AND stock > 0 AND mfr = ? COLLATE NOCASE "
+                          "AND lcsc != ?", (row["mfr"], row["lcsc"]))
+        found = ([(r, f"the same MPN, manufacturer {r['manufacturer'] or 'unknown'}: its lifecycle state is not "
+                      "checked") for r in rows if not of_part(r["manufacturer"] or "")] if obsolete
+                 else [(r, "the same MPN") for r in rows])
         rules = PASSIVE_RULES.get(row["subcategory"])
         mine = _attributes(row)
         value = rules[0][0] if rules else ""  # the value of the part (resistance, capacitance, inductance)
@@ -737,7 +752,7 @@ def replacements(number: str, limit: int = 3, db=None) -> list[tuple]:
     finally:
         if own:
             db.close()
-    if row["stock"]:  # the part has stock: only a part with no loading fee helps
+    if row["stock"] and not obsolete:  # the part has stock: only a part with no loading fee helps
         found = [(r, why) for r, why in found if library(r) != "Extended"]
     found.sort(key=lambda item: (LIBRARY_RANK[library(item[0])], -(item[0]["stock"] or 0)))
     return [(_offer(r), why) for r, why in found[:limit]]

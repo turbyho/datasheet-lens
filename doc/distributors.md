@@ -333,18 +333,27 @@ JLCPCB stock and the library class of a part, when the database is on your machi
 (`[[part.source]]`, see [Take a found part](#take-a-found-part)): it asks for its
 number (the JLCPCB C number, the DigiKey number, the Mouser number), thus for the
 packaging that the project orders. A part with no purchase source gets the offers of
-its MPN. A number of a different MPN gives a warning.
+its MPN. A number of a different MPN gives a warning, and its stock is not the stock
+of the part.
 
-For a part with no JLCPCB stock, or with a loading fee (Extended), the JLCPCB
-section gives up to 3 replacements with JLCPCB stock, Basic and Preferred first:
+For a part with no JLCPCB stock, with a loading fee (Extended), or with a lifecycle
+risk of its manufacturer (see [Check the project parts](#check-the-project-parts)),
+the lines `replacement` give up to 3 replacements with JLCPCB stock, Basic and
+Preferred first:
 
-- The same MPN with a different C number (an other manufacturer or listing).
+- The same MPN with a different C number (an other manufacturer or listing). For a
+  part with a lifecycle risk, the same MPN of the manufacturer of the part is not a
+  replacement: the manufacturer registry compares the names of the library and of
+  the project file. The same MPN of an other manufacturer is one, with the note
+  that its lifecycle state is not checked.
 - For a resistor, a capacitor (MLCC) or an inductor: a part with the same package,
   the same value, and parameters that are not worse (tolerance, power, voltage,
   dielectric, current, DC resistance). A part that does not give a parameter is not
   a replacement: the tool cannot verify it.
 
-For a part with stock, only Basic and Preferred parts are replacements. The tool
+For a part with stock, only Basic and Preferred parts are replacements, because an
+other Extended part does not decrease the fee. For a part with a lifecycle risk, an
+Extended part is a replacement too. The tool
 does not replace semiconductors and ICs: find them with `pick jlcpcb`
 (`find_parts`) and the values of the datasheet. The values of a replacement come
 from the LCSC listings: read its datasheet before you use it.
@@ -372,7 +381,13 @@ does these steps:
 
 1. It gets the part from the source: the MPN, the manufacturer, the package (not
    from Mouser) and the product page.
-2. It gets the datasheet. A datasheet of the part, or of its base part, in the store
+2. It gives the lifecycle state of the manufacturer: the state of the source, and
+   the state at each other enabled distributor with a key (only the offers of the
+   manufacturer of the part). A lifecycle risk (obsolete, last time buy, not for new
+   designs) gives a `WARNING`, also when the source has stock: the JLCPCB library has
+   no lifecycle state. With no distributor that gives a state, the line
+   `lifecycle: not checked` gives the reasons.
+3. It gets the datasheet. A datasheet of the part, or of its base part, in the store
    comes first: the tool does not download a second copy. Else it downloads one: a
    URL on the site of the manufacturer comes first, a copy at a distributor next. The
    tool asks the other sources for URLs only when it needs them. It uses only the
@@ -386,10 +401,10 @@ does these steps:
    with no datasheet. The result then gives the URLs to open in a web browser and,
    in a project, the path of its inbox: save the file there, and run `sync` (see
    [projects.md](projects.md#the-inbox)).
-3. It adds the document and the part to the store, and in a project folder to the
+4. It adds the document and the part to the store, and in a project folder to the
    project. The CLI copies the datasheet into the document folder of the project. With
    the MCP tool, run `project_sync` after it.
-4. It saves the purchase source: in the store (the team server shares it) and in the
+5. It saves the purchase source: in the store (the team server shares it) and in the
    project file (`[[part.source]]`, see [projects.md](projects.md)). The purchase
    source has the source, the part number, and for JLCPCB the library class. The
    store also keeps the product page and the date. It has no stock and no price:
@@ -407,15 +422,52 @@ Then read the values that the design needs in the datasheet, and save them with
 datasheet-lens stock
 ```
 
-The MCP tool is `project_availability`. The result has one section for each enabled
-distributor with a key (`Source: Mouser`, `Source: DigiKey`), and a section of the
-JLCPCB parts library when it is on the machine (see
-[Purchase sources and replacements](#purchase-sources-and-replacements)). Each section gives one
-line for each project part with its lifecycle state and its stock. It gives a
-`WARNING` for a part that:
+The MCP tool is `project_availability`. The sources are the enabled distributors with
+a key and the JLCPCB parts library when it is on the machine (see
+[Purchase sources and replacements](#purchase-sources-and-replacements)). The result
+gives one verdict for each project part, from all sources:
+
+```text
+CAP-OLD (C1001, the purchase source): WARNING: OBSOLETE at the manufacturer (Mouser: End of Life; DigiKey: Obsolete). Orderable at the purchase source (JLCPCB). Select a replacement with the user (find_parts with the values of the datasheet)
+  Mouser: End of Life, stock 0. WARNING: not orderable: End of Life
+  DigiKey: Obsolete, stock 0. WARNING: not orderable: Obsolete
+  JLCPCB: stock 12000, library Basic (C1001)
+  replacement: C1002 CAP-NEW (Maker A), library Basic, JLCPCB stock 50000, 0805 (the same package and parameters): read its datasheet before you use it
+RES-10K (C2001, the purchase source): orderable at the purchase source (JLCPCB). Mouser: does not have this MPN; DigiKey: does not have this MPN; JLCPCB: stock 400000, library Basic (C2001)
+```
+
+The verdict has these parts:
+
+1. A lifecycle risk of the manufacturer at any distributor: `OBSOLETE`, `LAST TIME
+   BUY` or `NOT FOR NEW DESIGNS`, with the state of each distributor, thus a
+   difference between the distributors shows. The verdict asks for a replacement
+   also when a source has stock.
+2. For a part with a purchase source: `orderable at the purchase source`, or a
+   `WARNING` with the reasons of each number (not checked, the number is not there,
+   the number is an other MPN, not orderable, no stock) and the other sources with
+   stock. A purchase source at a source that the tool cannot ask (a distributor that
+   is not enabled or has no key, or the JLCPCB library that is not on the machine)
+   is not checked: the verdict tells it.
+3. For a part with no purchase source: `orderable` with the sources that have stock,
+   or a `WARNING`: no stock at any source, not orderable at any source, no offer of
+   the manufacturer of the part, or no source has the MPN (a base part, or a wrong
+   MPN).
+4. The sources that the tool did not check (`Not checked: DigiKey`).
+
+The offers of a different manufacturer (when the MPN has offers of two or more
+manufacturers), and a purchase source number of a different MPN, are not offers of
+the part: they give no stock and no lifecycle risk to the verdict. The details show
+their data with a warning.
+
+A part with no warning gets one line, with the details of each source after the
+verdict. A part with a warning gets one indented line for each source. A source that
+does not have an MPN gives only `does not have this MPN`: a different source can
+sell it (for example a part of a Chinese manufacturer at JLCPCB). The details of a
+source give a `WARNING` for a part that:
 
 - Is not orderable (obsolete or discontinued), with the replacement (Mouser).
-- The distributor does not have (a base part, or a wrong MPN).
+- Has a purchase source number that the source does not have, or that is a
+  different MPN.
 - Has no stock, with the quantities on order and their dates, and the lead time
   (Mouser).
 - Has the Mouser state `Restricted Availability` or the DigiKey state
@@ -424,6 +476,19 @@ line for each project part with its lifecycle state and its stock. It gives a
   distributor.
 - Has no offer from the manufacturer of the part, when the MPN has offers of two or
   more manufacturers: the line then gives the data of a different manufacturer.
+- Has no JLCPCB stock: the assembly needs an order of the part.
+
+After the parts, the result gives the lines of the sources: the parts with no
+purchase source of a source, a distributor that did not answer, and the age of the
+JLCPCB library.
+
+The tool finds a lifecycle risk by the words of the state: `Obsolete`, `End of
+Life`, `EOL`, `Discontinued` (obsolete); `Last Time Buy`, `LTB` (last time buy); `Not
+For New Designs`, `Not Recommended for New Designs`, `NRND` (not for new designs).
+The documentation of the APIs gives no list of the states: a state with none of
+these words shows as the distributor gives it, with no risk. The states of the
+orderable offers come first: an obsolete packaging of an MPN that has an orderable
+packaging is not a state of the MPN. Of these offers, the most severe risk wins.
 
 Mouser gives a lifecycle state only for some parts (for example `New Product`,
 `End of Life`, `Obsolete`). A line with no state is a part with no such state.
@@ -441,7 +506,7 @@ own form. A distributor name does not change the registry.
 
 When the API of a distributor cannot answer (no connection, rate limit, server
 error), the tool stops for that distributor and lists the parts that it did not
-check. The other distributors continue. The tool keeps each answer in memory for one
+check, in one line after the parts. The other distributors continue. The tool keeps each answer in memory for one
 hour, and does not send the same request again in that time.
 
 ## Distributor status
@@ -512,10 +577,13 @@ the URL.
 - datasheet-lens uses only the official APIs of the distributors. It does not read
   their web pages (no scraping).
 - The terms of Mouser ask to name Mouser as the source of its data, and not to mix it
-  with other data with no distinction. Thus each result names its source, for
-  example `Source: Mouser`.
+  with other data with no distinction. Thus each value names its source: a search
+  gives a section `Source: Mouser`, and `project_availability` gives each value after
+  the name of its source (`Mouser: End of Life, stock 0`). The verdict of a part
+  names the sources that it uses (`orderable (Mouser, JLCPCB)`). The tool does not
+  add the stock of two sources.
 - The terms of DigiKey ask to name DigiKey as the source of its data
-  (`Source: DigiKey`). They do not permit a local database of DigiKey data. Thus the
+  (`Source: DigiKey`, or `DigiKey:` in `project_availability`). They do not permit a local database of DigiKey data. Thus the
   tool keeps the DigiKey data only in the memory of the process, for one hour, and
   never writes it to a file.
 - Each user uses a personal key under the terms of the distributor.

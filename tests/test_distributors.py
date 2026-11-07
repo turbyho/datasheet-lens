@@ -78,10 +78,62 @@ def test_mouser_texts(store_home, monkeypatch, tmp_path):
         for mpn in ("TPS7A0233PYCHR", "MAX20361CEWC+T"):
             prj.add_part(project, store, mpn)
     lines = distributors.availability(prj.load(project.root))
-    assert "TPS7A0233PYCHR: stock 1234" in lines
-    assert ("MAX20361CEWC+T: Restricted Availability, stock unknown. WARNING: Mouser does not sell this part now "
-            "(Restricted Availability). This is not the lifecycle state of the manufacturer: ask the manufacturer "
-            "or a different distributor") in lines
+    assert "TPS7A0233PYCHR: orderable (Mouser). Mouser: stock 1234" in lines
+    # Restricted: no lifecycle risk, but not orderable now.
+    assert lines[lines.index("MAX20361CEWC+T: WARNING: NOT ORDERABLE at any source") + 1] == (
+        "  Mouser: Restricted Availability, stock unknown. WARNING: Mouser does not sell this part now "
+        "(Restricted Availability). This is not the lifecycle state of the manufacturer: ask the manufacturer "
+        "or a different distributor")
+
+
+def test_lifecycle_risks():
+    """The lifecycle risks of the manufacturer, in the words of Mouser and
+    DigiKey. A state of the distributor only is no risk; an unknown state is no
+    risk and stays as the source gives it."""
+    def risk(state, **kw):
+        return distributors.risk_of(distributors.Offer("Mouser", "X", lifecycle=state, **kw))
+
+    assert [risk(s) for s in ("Obsolete", "End of Life", "EOL", "Last Time Buy", "Not For New Designs",
+                              "Not Recommended for New Designs", "NRND")] == (
+        ["obsolete"] * 3 + ["last time buy"] + ["not for new designs"] * 3)
+    assert [risk(s) for s in ("Active", "New Product", "Preliminary", "", "Restricted Availability",
+                              "Discontinued at Digi-Key")] == [""] * 6
+    assert risk("", discontinued=True) == "obsolete"
+    assert distributors._worst(["", "not for new designs", "obsolete"]) == "obsolete"
+    # The lifecycle of an MPN from its packagings: the orderable ones count, the most
+    # severe risk wins, and the order of the offers does not change the result.
+    offer = distributors.Offer
+    active = offer("Mouser", "X", lifecycle="Active", distributor_pn="1")
+    nrnd = offer("Mouser", "X", lifecycle="NRND", distributor_pn="2")
+    old = offer("Mouser", "X", lifecycle="Obsolete", distributor_pn="3")
+    assert distributors.lifecycle_of([active, nrnd]) == distributors.lifecycle_of([nrnd, active]) == (
+        "not for new designs", "NRND", "")
+    assert distributors.lifecycle_of([old, active]) == ("", "Active", "")
+    assert distributors.lifecycle_of([old]) == ("obsolete", "Obsolete", "")
+
+
+def test_verdict_of_a_part():
+    """The verdict from all sources: the purchase source first, then the other
+    sources with stock. A part with no warning gets one line."""
+    state = distributors._SourceState
+    part = {"mpn": "X1"}
+    jlc = state("JLCPCB", ["C1"], text="stock 0, library Basic (C1)", found=True, orderable=True)
+    mouser = state("Mouser", text="Active, stock 40", found=True, orderable=True, stock=40, lifecycle="Active")
+    assert distributors._verdict(part, [mouser, jlc]) == [
+        "X1 (C1, the purchase source): WARNING: the purchase source cannot deliver (JLCPCB: no stock). In stock at "
+        "Mouser", "  Mouser: Active, stock 40", "  JLCPCB: stock 0, library Basic (C1)"]
+    assert distributors._verdict(part, [mouser]) == ["X1: orderable (Mouser). Mouser: Active, stock 40"]
+    # A source that was not checked: the verdict names it, with the details.
+    failed = state("DigiKey", error="DigiKey does not answer")
+    assert distributors._verdict(part, [mouser, failed]) == [
+        "X1: orderable (Mouser). Not checked: DigiKey", "  Mouser: Active, stock 40",
+        "  DigiKey: not checked: DigiKey does not answer"]
+    # Last time buy: a risk also with stock.
+    ltb = state("Mouser", text="Last Time Buy, stock 9", found=True, orderable=True, stock=9, risk="last time buy",
+                lifecycle="Last Time Buy")
+    assert distributors._verdict(part, [ltb])[0] == (
+        "X1: WARNING: LAST TIME BUY at the manufacturer (Mouser: Last Time Buy). Orderable (Mouser). Select a "
+        "replacement with the user (find_parts with the values of the datasheet)")
 
 
 def test_mouser_errors_hide_the_key(monkeypatch):
@@ -115,9 +167,11 @@ def test_project_availability(store_home, monkeypatch, tmp_path, capsys):
             prj.add_part(project, store, mpn)
     assert main(["stock", "-p", str(project.root)]) == 0
     out = capsys.readouterr().out
-    assert "TPS7A0233PYCHR: New Product, stock 1234" in out
-    assert "TPS7A0218PYCHR: Obsolete, stock 0. WARNING: not orderable: Obsolete, replacement TPS7A0218PYCHR2" in out
-    assert "TPS7A02: WARNING: Mouser does not have this MPN" in out
+    assert "TPS7A0233PYCHR: orderable (Mouser). Mouser: New Product, stock 1234" in out
+    assert ("TPS7A0218PYCHR: WARNING: OBSOLETE at the manufacturer (Mouser: Obsolete, replacement TPS7A0218PYCHR2). "
+            "NOT ORDERABLE at any source. Select a replacement with the user") in out
+    assert "  Mouser: Obsolete, stock 0. WARNING: not orderable: Obsolete, replacement TPS7A0218PYCHR2" in out
+    assert "TPS7A02: WARNING: no source has this MPN (a base part, or a wrong MPN?)\n  Mouser: does not have this MPN" in out
 
 
 def test_offers_of_one_mpn_and_failures(store_home, monkeypatch, tmp_path):
@@ -140,9 +194,10 @@ def test_offers_of_one_mpn_and_failures(store_home, monkeypatch, tmp_path):
         for mpn in ("TPS7A0233PYCHR", "TMP112D0IDPWR"):
             prj.add_part(project, store, mpn)
     lines = distributors.availability(prj.load(project.root))
-    assert "TPS7A0233PYCHR: New Product, stock 100" in lines
-    assert ("TMP112D0IDPWR: New Product, stock unknown. WARNING: no stock (2994 on order for 2027-02-17), lead time "
-            "6 weeks") in lines
+    # The orderable offer gives the state: the obsolete packaging is not a state of the MPN.
+    assert "TPS7A0233PYCHR: orderable (Mouser). Mouser: New Product, stock 100" in lines
+    assert lines[lines.index("TMP112D0IDPWR: WARNING: no stock at any source") + 1] == (
+        "  Mouser: New Product, stock unknown. WARNING: no stock (2994 on order for 2027-02-17), lead time 6 weeks")
     assert not any("Žádný" in line for line in lines)
     offer = distributors._mouser_offer(dict(unknown, AvailabilityInStock="0", FactoryStock="40"))
     assert "stock: 0 (2994 on order for 2027-02-17, 40 at the factory)" in distributors.format_offer(offer)
@@ -162,6 +217,7 @@ def test_offers_of_one_mpn_and_failures(store_home, monkeypatch, tmp_path):
     distributors._cache.clear()
     lines = distributors.availability(prj.load(project.root))
     assert len(calls) == 1 and lines[-1].startswith("not checked: TPS7A0233PYCHR, TMP112D0IDPWR: Mouser API")
+    assert lines[:2] == ["TPS7A0233PYCHR: not checked", "  Mouser: not checked: Mouser does not answer"]
     with pytest.raises(LensError, match="not one MPN"):
         distributors.mouser_search("A|B")
     with pytest.raises(LensError, match="3 or more characters"):
@@ -203,7 +259,7 @@ def test_enabled_distributors_and_notes(store_home, monkeypatch, tmp_path, capsy
     lines = distributors.search_lines("TPS7A02", project=prj.load(root))
     assert lines[0].startswith("Mouser is enabled (the project file") and "Search links:" in lines
     fake_api(monkeypatch, [PART])
-    assert distributors.availability(prj.load(root))[1].startswith("TPS7A0233PYCHR: New Product")
+    assert distributors.availability(prj.load(root))[0].startswith("TPS7A0233PYCHR: orderable (Mouser)")
 
 
 def test_distributor_settings_with_problems(store_home, tmp_path, capsys):
@@ -266,8 +322,8 @@ def test_mouser_gives_only_the_parts_of_the_text(monkeypatch, store_home, tmp_pa
         project = prj.init_project(tmp_path / "board")
         prj.add_part(project, store, "TPS7A0233PYCHR", manufacturer="Other Maker")
         lines = distributors.availability(prj.load(project.root), store)
-    assert "TPS7A0233PYCHR: New Product, stock 1234. WARNING: not orderable: Mouser gives no part number to order" \
-        in lines
+    assert lines == ["TPS7A0233PYCHR: WARNING: NOT ORDERABLE at any source",
+                     "  Mouser: New Product, stock 1234. WARNING: not orderable: Mouser gives no part number to order"]
 
 
 def test_the_quantities_on_order_of_each_offer(monkeypatch, store_home, tmp_path):
@@ -281,8 +337,8 @@ def test_the_quantities_on_order_of_each_offer(monkeypatch, store_home, tmp_path
         project = prj.init_project(tmp_path / "board")
         prj.add_part(project, store, "TPS7A0233PYCHR")
     lines = distributors.availability(prj.load(project.root))
-    assert ("TPS7A0233PYCHR: New Product, stock 0. WARNING: no stock (5000 on order for 2027-03-01), lead time "
-            "6 weeks") in lines
+    assert lines == ["TPS7A0233PYCHR: WARNING: no stock at any source",
+                     "  Mouser: New Product, stock 0. WARNING: no stock (5000 on order for 2027-03-01), lead time 6 weeks"]
 
 
 def test_mouser_prices_in_the_format_of_the_account():
@@ -329,9 +385,60 @@ def test_availability_of_the_purchase_source(monkeypatch, store_home, tmp_path):
     prj.set_source(project, project.parts[1], "mouser", "595-T")  # a number of a different MPN
     prj.set_source(project, project.parts[2], "mouser", "595-X")  # Mouser does not have it
     lines = distributors.availability(prj.load(project.root))
-    assert "TPS7A0233PYCHR (595-B, the purchase source): New Product, stock 5" in lines
-    assert any(line.startswith("OPA2134PA (595-T, the purchase source): New Product, stock 7. WARNING: 595-T is "
-                               "TMP112D0IDPWR (Texas Instruments), not OPA2134PA") for line in lines)
-    assert "LM358DR (595-X, the purchase source): WARNING: Mouser does not have 595-X, the purchase source in the project file" in lines
+    assert ("TPS7A0233PYCHR (595-B, the purchase source): orderable at the purchase source (Mouser). Mouser: New "
+            "Product, stock 5") in lines
+    # A number of a different MPN: its stock is not the stock of the part.
+    assert lines[lines.index("OPA2134PA (595-T, the purchase source): WARNING: the purchase source cannot deliver "
+                             "(Mouser: 595-T is an other MPN). No other source has stock") + 1] == (
+        "  Mouser: New Product, stock 7. WARNING: 595-T is TMP112D0IDPWR (Texas Instruments), not OPA2134PA")
+    assert lines[lines.index("LM358DR (595-X, the purchase source): WARNING: the purchase source cannot deliver "
+                             "(Mouser: does not have 595-X). No other source has stock") + 1] == (
+        "  Mouser: WARNING: Mouser does not have 595-X, the purchase source in the project file")
     assert ("No purchase source of Mouser in the project file (checked by the MPN): TMP112D0IDPWR. adopt_part "
             "saves one.") in lines
+    # Two numbers: the verdict gives the reason of each one.
+    project = prj.load(project.root)
+    prj.set_source(project, project.parts[2], "mouser", "595-T")
+    lines = distributors.availability(prj.load(project.root))
+    assert ("LM358DR (595-X, 595-T, the purchase sources): WARNING: the purchase source cannot deliver (Mouser: does "
+            "not have 595-X; 595-T is an other MPN). No other source has stock") in lines
+
+
+def test_purchase_source_that_is_not_checked(monkeypatch, store_home, tmp_path):
+    """A purchase source at a source that the tool cannot ask (no key, no JLCPCB
+    library) is in the verdict as not checked: the other sources do not hide it."""
+    fake_api(monkeypatch, [PART])
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "TPS7A0233PYCHR")
+    project = prj.load(project.root)
+    prj.set_source(project, project.parts[0], "jlcpcb", "C1001")
+    prj.set_source(project, project.parts[0], "digikey", "296-1-ND")
+    lines = distributors.availability(prj.load(project.root))
+    assert lines[:4] == [
+        "TPS7A0233PYCHR (C1001, 296-1-ND, the purchase sources): WARNING: the purchase source cannot deliver "
+        "(JLCPCB: not checked; DigiKey: not checked). In stock at Mouser. Not checked: JLCPCB, DigiKey",
+        "  Mouser: New Product, stock 1234",
+        "  JLCPCB: not checked: the JLCPCB parts library is not on this machine (datasheet-lens jlc update)",
+        "  DigiKey: not checked: DigiKey is not enabled or has no API key"]
+
+
+def test_offers_of_other_manufacturers_are_not_the_part(monkeypatch, store_home, tmp_path):
+    """The offers of an other manufacturer give no stock and no lifecycle risk to
+    the part: the verdict tells that the source has no offer of the
+    manufacturer, and the details give the data with the warning."""
+    # Two manufacturers of the MPN: _of_maker compares the names (one manufacturer only
+    # is taken as it is, because the distributors write the names in their own forms).
+    nrnd = dict(PART, Manufacturer="Other Maker", LifecycleStatus="Not Recommended for New Designs")
+    fake_api(monkeypatch, [nrnd, dict(nrnd, Manufacturer="Third Maker", MouserPartNumber="595-Z")])
+    # The part with no manufacturer first: the store then gives no manufacturer to it.
+    for folder, maker in (("none", ""), ("ti", "Texas Instruments")):
+        with Store() as store:
+            project = prj.init_project(tmp_path / folder)
+            prj.add_part(project, store, "TPS7A0233PYCHR", manufacturer=maker)
+            lines = distributors.availability(prj.load(project.root), store)
+        assert lines[0] == "TPS7A0233PYCHR: WARNING: no offer of the manufacturer of the part (Mouser)"
+        assert lines[1] == "  Mouser: Not Recommended for New Designs, stock 2468. WARNING: " + (
+            "Mouser has no part from Texas Instruments: the data is of Other Maker, Third Maker" if maker else
+            "Mouser has the MPN from more manufacturers (Other Maker, Third Maker), and the project file gives no "
+            "manufacturer of the part")

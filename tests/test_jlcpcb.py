@@ -162,11 +162,12 @@ def test_offers_search_lines_and_availability(jlc, tmp_path):
         for mpn in ("FET-A", "FET-C", "NO-PART"):
             prj.add_part(project, store, mpn)
     lines = distributors.availability(prj.load(project.root))
-    assert "Source: JLCPCB parts library (stock for the JLCPCB assembly)" in lines
-    assert "FET-A: JLCPCB stock 500, library Extended (C1001)" in lines
-    assert ("FET-C: JLCPCB stock 0, library Extended (C1003). WARNING: NOT IN STOCK at JLCPCB: the assembly "
-            "needs an order of the part") in lines
-    assert "NO-PART: WARNING: the JLCPCB parts library does not have this MPN (a base part, or a wrong MPN?)" in lines
+    assert "FET-A: orderable (JLCPCB). JLCPCB: stock 500, library Extended (C1001)" in lines
+    assert lines[lines.index("FET-C: WARNING: no stock at any source") + 1] == (
+        "  JLCPCB: stock 0, library Extended (C1003). WARNING: NOT IN STOCK at JLCPCB: the assembly needs an order "
+        "of the part")
+    assert lines[lines.index("NO-PART: WARNING: no source has this MPN (a base part, or a wrong MPN?)") + 1] == (
+        "  JLCPCB: does not have this MPN")
 
 
 def test_source_is_required_and_cli(jlc, capsys):
@@ -226,12 +227,15 @@ def test_review_fixes(jlc, tmp_path, monkeypatch):
         project = prj.init_project(tmp_path / "board")
         prj.add_part(project, store, "FET-A", manufacturer="Other Maker")
         lines = distributors.availability(prj.load(project.root), store)
-    assert any("WARNING: the JLCPCB library has no part from Other Maker: the data is of Maker A, Maker Z" in line
-               for line in lines)
+    # The offers of other manufacturers are not offers of the part.
+    assert lines[:2] == ["FET-A: WARNING: no offer of the manufacturer of the part (JLCPCB)",
+                         "  JLCPCB: stock 500, library Extended (C1001). WARNING: the JLCPCB library has no part from "
+                         "Other Maker: the data is of Maker A, Maker Z"]
     monkeypatch.setattr(jlcpcb, "offers", broken)
     assert "Source: JLCPCB parts library. Not checked: database disk image is malformed" in \
         distributors.search_lines("FET-A", exact=True)
-    assert "FET-A: not checked: database disk image is malformed" in distributors.availability(prj.load(project.root))
+    assert distributors.availability(prj.load(project.root))[:2] == [
+        "FET-A: not checked", "  JLCPCB: not checked: database disk image is malformed"]
 
 
 def _wait(seconds: float = 10.0) -> dict:
@@ -322,9 +326,12 @@ def test_availability_of_the_jlcpcb_purchase_source(jlc, tmp_path):
     prj.set_source(project, project.parts[0], "jlcpcb", "C1001", "Extended")
     prj.set_source(project, project.parts[1], "jlcpcb", "C1002", "Basic")  # the C number of FET-B
     lines = distributors.availability(prj.load(project.root))
-    assert "FET-A (C1001, the purchase source): JLCPCB stock 500, library Extended (C1001)" in lines
-    assert any(line.startswith("FET-C (C1002, the purchase source): JLCPCB stock") and "WARNING: C1002 is FET-B (Maker B), not FET-C" in line
-               for line in lines)
+    assert ("FET-A (C1001, the purchase source): orderable at the purchase source (JLCPCB). JLCPCB: stock 500, "
+            "library Extended (C1001)") in lines
+    # A C number of a different MPN: its stock is not the stock of the part.
+    assert lines[lines.index("FET-C (C1002, the purchase source): WARNING: the purchase source cannot deliver "
+                             "(JLCPCB: C1002 is an other MPN). No other source has stock") + 1] == (
+        "  JLCPCB: stock 9000, library Basic (C1002). WARNING: C1002 is FET-B (Maker B), not FET-C")
     assert jlcpcb.offer_of_number("c1001").mpn == "FET-A" and jlcpcb.offer_of_number("C9999") is None
     with pytest.raises(LensError, match="not a JLCPCB number"):
         jlcpcb.offer_of_number("1001")
@@ -379,6 +386,56 @@ def test_replacements(jlc, tmp_path):
     lines = distributors.availability(prj.load(project.root))
     assert ("  replacement: C3002 C-50V (Maker R), library Basic, JLCPCB stock 10, 0402 (the same package and "
             "parameters): read its datasheet before you use it") in lines
+
+
+def test_obsolete_part_with_jlcpcb_stock(jlc, tmp_path, monkeypatch):
+    """A part that a distributor gives as obsolete gets the warning and the
+    replacements also when JLCPCB has it in stock. The verdict gives the state
+    of each distributor. The same MPN of the same manufacturer name is no
+    replacement; the same MPN of an other name is one, with a note; an Extended
+    part helps too."""
+    from datasheet_lens import project as prj
+    from datasheet_lens.distributors import Offer
+
+    r = {"Resistance": "10kΩ", "Tolerance": "±5%", "Power(Watts)": "62.5mW", "Temperature Coefficient": "±100ppm/℃"}
+    db = sqlite3.connect(jlcpcb.db_path())
+    _add(db, 2001, RESISTORS, "R-EXT", "0402", "expand", 0, 5000, r)                       # the part
+    _add(db, 2002, RESISTORS, "R-BASIC", "0402", "base", 0, 900, r)                        # a replacement
+    _add(db, 2008, RESISTORS, "R-EXT", "0402", "base", 0, 10, r, maker="Maker S")          # an other name
+    _add(db, 2009, RESISTORS, "R-EXT2", "0402", "expand", 0, 99000, r)                     # Extended: yes
+    _add(db, 2010, RESISTORS, "R-EXT", "0402", "base", 0, 700, r)                          # the same name: no
+    db.commit()
+    db.close()
+    found = [(o.distributor_pn, why) for o, why in jlcpcb.replacements("C2001", limit=10, obsolete=True)]
+    assert found == [("C2002", "the same package and parameters"),
+                     ("C2008", "the same MPN, manufacturer Maker S: its lifecycle state is not checked"),
+                     ("C2009", "the same package and parameters")]
+    # An other name of the manufacturer of the part (the registry knows it): no replacement.
+    assert [o.distributor_pn for o, _ in jlcpcb.replacements(
+        "C2001", limit=10, obsolete=True, same_maker=lambda name: name == "Maker S")] == ["C2002", "C2009"]
+    # The same search with no risk: the same MPN of each name, and no Extended part (the part has stock).
+    assert [o.distributor_pn for o, _ in jlcpcb.replacements("C2001", limit=10)] == ["C2002", "C2010", "C2008"]
+
+    offers = {"mouser": Offer("Mouser", "R-EXT", "Maker R", lifecycle="End of Life", stock=0, distributor_pn="m-1"),
+              "digikey": Offer("DigiKey", "R-EXT", "Maker R", lifecycle="Active", stock=0, distributor_pn="d-1")}
+    monkeypatch.setattr(distributors, "keys_of", lambda project=None: ({"mouser": "k", "digikey": ("a", "b")}, []))
+    monkeypatch.setattr(distributors, "offers_of", lambda name, mpn, exact, credential: [offers[name]])
+    project = prj.init_project(tmp_path / "board")
+    with Store() as store:
+        prj.add_part(project, store, "R-EXT", manufacturer="Maker R")
+    project = prj.load(project.root)
+    prj.set_source(project, project.parts[0], "jlcpcb", "C2001", "Extended")
+    lines = distributors.availability(prj.load(project.root))
+    assert lines[:5] == [
+        "R-EXT (C2001, the purchase source): WARNING: OBSOLETE at the manufacturer (Mouser: End of Life; DigiKey: "
+        "Active). Orderable at the purchase source (JLCPCB). Select a replacement with the user (find_parts with the "
+        "values of the datasheet)",
+        "  Mouser: End of Life, stock 0. WARNING: not orderable: End of Life",
+        "  DigiKey: Active, stock 0. WARNING: no stock",
+        "  JLCPCB: stock 5000, library Extended (C2001)",
+        "  replacement: C2002 R-BASIC (Maker R), library Basic, JLCPCB stock 900, 0402 (the same package and "
+        "parameters): read its datasheet before you use it"]
+    assert not any("C2010" in line for line in lines)
 
 
 def test_tolerance_in_other_units():

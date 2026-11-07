@@ -504,22 +504,187 @@ def _of_maker(offers: list[Offer], manufacturer: str, store=None) -> tuple[list[
     return (own, True) if own else (offers, False)
 
 
+# The lifecycle states of the manufacturer that are a risk for a design, the most
+# severe first, with the words that the distributors use for them (Mouser
+# LifecycleStatus, DigiKey ProductStatus). The documentation of the two APIs gives
+# no list of the values: a state with none of these words is shown as the source
+# gives it, with no risk.
+RISKS = (("obsolete", r"obsolete|end of life|eol|discontinued"),
+         ("last time buy", r"last time buy|ltb"),
+         ("not for new designs", r"not (?:recommended )?for new designs?|nrnd"))
+RISK_NAMES = [name for name, _ in RISKS]
+
+
+def risk_of(offer: Offer) -> str:
+    """The lifecycle risk of the manufacturer for an offer (a name of RISKS), or
+    "". A state of the distributor only (restricted) is not a state of the
+    manufacturer."""
+    if restricted(offer):
+        return ""
+    if offer.discontinued:
+        return "obsolete"
+    state = offer.lifecycle.lower()
+    return next((name for name, words in RISKS if re.search(rf"\b(?:{words})\b", state)), "")
+
+
+def _worst(risks) -> str:
+    """The most severe lifecycle risk (RISKS) of a list, or ""."""
+    found = [r for r in risks if r]
+    return min(found, key=RISK_NAMES.index) if found else ""
+
+
+def lifecycle_of(offers: list[Offer]) -> tuple[str, str, str]:
+    """The lifecycle state of an MPN at one source, from its offers (the
+    packagings): (risk, state, replacement). The orderable offers count first:
+    an obsolete packaging of an MPN that has an orderable packaging is not a
+    state of the MPN. The most severe risk of these offers wins, thus the
+    result does not depend on the order of the offers. The state and the
+    replacement are of the offer with this risk."""
+    base = [o for o in offers if not not_orderable(o)] or offers
+    if not base:
+        return "", "", ""
+    o = min(base, key=lambda x: RISK_NAMES.index(risk_of(x)) if risk_of(x) else len(RISK_NAMES))
+    return risk_of(o), o.lifecycle or ("discontinued" if o.discontinued else ""), o.replacement
+
+
+def maker_lifecycle(name: str, credential, mpn: str, manufacturer: str,
+                    store=None) -> tuple[tuple[str, str, str] | None, str]:
+    """The lifecycle state of the manufacturer for an MPN at one distributor:
+    (lifecycle_of, "") or (None, the reason). Only the offers of the
+    manufacturer of the part count (_of_maker), as in availability."""
+    label = SUPPORTED[name][0]
+    try:
+        offers = [o for o in offers_of(name, mpn, True, credential) if fits(o.mpn, mpn, True)]
+    except (LensError, Unavailable) as e:
+        return None, f"{label}: {e}"
+    if not offers:
+        return None, f"{label} does not have this MPN"
+    offers, own = _of_maker(offers, manufacturer, store)
+    if not own:
+        return None, (f"{label} has no offer from {manufacturer}" if manufacturer.strip()
+                      else f"{label} has offers of more manufacturers, and the part has no manufacturer")
+    return lifecycle_of(offers), ""
+
+
+@dataclass
+class _SourceState:
+    """The availability of one project part at one source (see availability)."""
+    label: str  # Mouser, DigiKey, JLCPCB
+    numbers: list[str] = field(default_factory=list)  # the purchase source numbers of the source
+    text: str = ""  # the details
+    warning: bool = False  # the details have a warning
+    error: str = ""  # not checked: the reason
+    found: bool = False  # the source has offers of the part (its MPN, its manufacturer)
+    missing: list[str] = field(default_factory=list)  # the purchase source numbers that the source does not have
+    wrong: list[str] = field(default_factory=list)  # the purchase source numbers of a different MPN
+    others: bool = False  # the source has the MPN only from other manufacturers
+    orderable: bool = False  # an offer of the part can be ordered now
+    stock: int = 0  # the stock of the orderable offers
+    risk: str = ""  # the lifecycle risk of the manufacturer (RISKS)
+    lifecycle: str = ""  # the lifecycle state as the source gives it
+    replacement: str = ""  # the replacement that the source suggests
+    lines: list[str] = field(default_factory=list)  # more lines: the replacements in the library
+
+
 def availability(project, store=None) -> list[str]:
-    """The lifecycle state and the stock of each project part, as lines, with a
-    WARNING for a part that is not orderable, that the distributor does not have,
-    or that has no stock. An enabled distributor with no key gives a note for
-    the user. store: its manufacturer registry selects the offers of the
-    manufacturer of the part."""
+    """The availability of each project part at all enabled sources, as lines:
+    one verdict for each part from all sources, then the details of each source
+    (see _verdict). A purchase source at a source that the tool cannot ask (no
+    key, not enabled, no JLCPCB library) is not checked, and the verdict tells
+    it. After the parts: the lines of the sources (the parts with no purchase
+    source, a source that does not answer, the age of the JLCPCB library), and
+    a note for each enabled distributor with no key. store: its manufacturer
+    registry selects the offers of the manufacturer of the part."""
     keys, notes = keys_of(project)
     jlc = jlcpcb_ready()
     if not keys and not jlc:
         return notes or ["No enabled distributor: \"datasheet-lens dist\" shows the settings."]
-    lines: list[str] = []
+    states: list[list[_SourceState]] = [[] for _ in project.parts]
+    after: list[str] = []
     for name, credential in keys.items():
-        lines += _availability_at(name, credential, project, store)
-    if jlc:
-        lines += _availability_jlcpcb(project, store)
-    return lines + notes
+        for row, state in zip(states, _states_at(name, credential, project, store, after)):
+            row.append(state)
+    if jlc:  # after the distributors: their lifecycle risk selects the replacements
+        risks = [_worst(s.risk for s in row) for row in states]
+        for row, state in zip(states, _states_jlcpcb(project, store, risks, after)):
+            row.append(state)
+    asked = set(keys) | ({"jlcpcb"} if jlc else set())
+    lines: list[str] = []
+    for part, row in zip(project.parts, states):
+        for source in dict.fromkeys(s["source"] for s in part.get("sources", [])):
+            if source not in asked:
+                label = "JLCPCB" if source == "jlcpcb" else SUPPORTED[source][0]
+                row.append(_SourceState(label, source_numbers(part, source), error=(
+                    "the JLCPCB parts library is not on this machine (datasheet-lens jlc update)"
+                    if source == "jlcpcb" else f"{label} is not enabled or has no API key")))
+        lines += _verdict(part, row)
+    return lines + after + notes
+
+
+def _verdict(part: dict, states: list[_SourceState]) -> list[str]:
+    """The lines of one part: the verdict from all sources, then the details.
+
+    The verdict starts with a lifecycle risk of the manufacturer at any source,
+    with the state of each source (thus a difference between the sources
+    shows), and asks for a replacement also when a source has stock. Then: the
+    purchase source can deliver, or the reasons why not and the other sources
+    with stock. A part with no purchase source: the sources with stock. A part
+    with no warning gets one line with the details of each source; a part with
+    a warning gets one line for each source."""
+    numbers = [n for s in states for n in s.numbers]
+    head = part["mpn"] + (f" ({', '.join(numbers)}, the purchase source{'s' if len(numbers) > 1 else ''})"
+                          if numbers else "")
+
+    def stocked(s: _SourceState) -> bool:
+        return s.orderable and s.stock > 0
+
+    def why(s: _SourceState) -> str:
+        """Why a purchase source cannot deliver."""
+        if s.error:
+            return "not checked"
+        reasons = (([f"does not have {', '.join(s.missing)}"] if s.missing else [])
+                   + ([f"{', '.join(s.wrong)} is an other MPN" if len(s.wrong) == 1
+                       else f"{', '.join(s.wrong)} are other MPNs"] if s.wrong else []))
+        if s.found:
+            reasons.append("no stock" if s.orderable else "not orderable")
+        return "; ".join(reasons) or "no offer"
+
+    purchase = [s for s in states if s.numbers]
+    unchecked = [s.label for s in states if s.error]
+    warn = True
+    if purchase and any(stocked(s) for s in purchase):
+        order, warn = f"orderable at the purchase source ({', '.join(s.label for s in purchase if stocked(s))})", False
+    elif purchase:
+        others = [s.label for s in states if not s.numbers and stocked(s)]
+        order = (f"the purchase source cannot deliver ({'; '.join(f'{s.label}: {why(s)}' for s in purchase)}). "
+                 + (f"In stock at {', '.join(others)}" if others else "No other source has stock"))
+    elif any(stocked(s) for s in states):
+        order, warn = f"orderable ({', '.join(s.label for s in states if stocked(s))})", False
+    elif any(s.orderable for s in states):
+        order = "no stock at any source"
+    elif any(s.found for s in states):
+        order = "NOT ORDERABLE at any source"
+    elif any(s.others for s in states):
+        order = f"no offer of the manufacturer of the part ({', '.join(s.label for s in states if s.others)})"
+    elif len(unchecked) < len(states):
+        order = "no source has this MPN (a base part, or a wrong MPN?)"
+    else:
+        order, warn = "not checked", False
+    if unchecked and len(unchecked) < len(states):
+        order += f". Not checked: {', '.join(unchecked)}"
+    risk = _worst(s.risk for s in states)
+    if risk:
+        sources = "; ".join(f"{s.label}: {s.lifecycle}" + (f", replacement {s.replacement}" if s.replacement else "")
+                            for s in states if s.lifecycle)
+        order = (f"WARNING: {risk.upper()} at the manufacturer ({sources}). {order[0].upper()}{order[1:]}. Select a "
+                 "replacement with the user (find_parts with the values of the datasheet)")
+    elif warn:
+        order = f"WARNING: {order}"
+    details = [(s.label, f"not checked: {s.error}" if s.error else s.text) for s in states]
+    more = [f"  {line}" for s in states for line in s.lines]
+    if not (risk or warn or unchecked or any(s.warning for s in states)):
+        return [f"{head}: {order}. " + "; ".join(f"{label}: {text}" for label, text in details)] + more
+    return [f"{head}: {order}"] + [f"  {label}: {text}" for label, text in details] + more
 
 
 def source_numbers(part: dict, source: str) -> list[str]:
@@ -563,18 +728,15 @@ def _part_offers(part: dict, source: str, by_number, by_mpn, store=None) -> tupl
     return offers, own, [], []
 
 
-def _head(part: dict, numbers: list[str]) -> str:
-    """The start of an availability line: the MPN, and the purchase sources."""
-    if not numbers:
-        return part["mpn"]
-    return f"{part['mpn']} ({', '.join(numbers)}, the purchase source{'s' if len(numbers) > 1 else ''})"
-
-
 def _missing(label: str, numbers: list[str]) -> str:
+    """The details of a source that has no offer of a part. A purchase source
+    number that the source does not have is a warning. An MPN that one source
+    does not have is not: a different source can sell it, and the verdict tells
+    when no source has it."""
     if numbers:
         return (f"WARNING: {label} does not have {', '.join(numbers)}, "
                 f"{'the purchase sources' if len(numbers) > 1 else 'the purchase source'} in the project file")
-    return f"WARNING: {label} does not have this MPN (a base part, or a wrong MPN?)"
+    return "does not have this MPN"
 
 
 def _number_warnings(part: dict, numbers: list[str], offers: list, missing: list[str], label: str) -> str:
@@ -588,64 +750,106 @@ def _number_warnings(part: dict, numbers: list[str], offers: list, missing: list
     return text + (f". {_missing(label, missing)}" if missing and offers else "")
 
 
-def _availability_jlcpcb(project, store=None) -> list[str]:
-    """The lines of availability in the JLCPCB parts library: the JLCPCB stock
-    for the assembly and the library class of each project part (see
-    _part_offers), and the replacements of a part with no JLCPCB stock or with
-    a loading fee (jlcpcb.replacements). One connection to the database."""
+def _maker_warning(label: str, part: dict, offers: list) -> str:
+    """The warning of a source that has the MPN only from other manufacturers
+    (_of_maker), or from more manufacturers when the part has no manufacturer:
+    these offers are not offers of the part."""
+    names = ", ".join(sorted({x.manufacturer or "manufacturer unknown" for x in offers}))
+    if part.get("manufacturer"):
+        return f". WARNING: {label} has no part from {part['manufacturer']}: the data is of {names}"
+    return (f". WARNING: {label} has the MPN from more manufacturers ({names}), and the project file gives no "
+            "manufacturer of the part")
+
+
+def _numbers_state(s: _SourceState, part: dict, numbers: list[str], offers: list, missing: list[str],
+                   label: str) -> str:
+    """Set the numbers that the source does not have or that are a different
+    MPN, and give their warnings (_number_warnings)."""
+    s.missing = list(missing)
+    s.wrong = list(dict.fromkeys(o.distributor_pn for o in offers if not fits(o.mpn, part["mpn"], True)))
+    text = _number_warnings(part, numbers, offers, missing, label)
+    s.warning = s.warning or bool(text)
+    return text
+
+
+def _states_jlcpcb(project, store, risks: list[str], after: list[str]) -> list[_SourceState]:
+    """The state of each project part in the JLCPCB parts library: the JLCPCB
+    stock for the assembly and the library class (see _part_offers), and the
+    replacements (jlcpcb.replacements) of a part with no JLCPCB stock, with a
+    loading fee (Extended), or with a lifecycle risk of the manufacturer (risks:
+    one for each part, from the distributors; the library has no lifecycle
+    state). One connection to the database."""
     from . import jlcpcb
 
-    label = "the JLCPCB parts library"
-    lines = ["Source: JLCPCB parts library (stock for the JLCPCB assembly)"]
+    name = "the JLCPCB parts library"
+    registry = store.db if store is not None else None
+    states = [_SourceState("JLCPCB", source_numbers(p, "jlcpcb")) for p in project.parts]
     try:
         db = jlcpcb.connect()
     except (LensError, sqlite3.Error) as e:
-        return lines + [f"not checked: {e}"]
+        for s in states:
+            s.error = "the library cannot be read"
+        after.append(f"JLCPCB parts library: not checked: {e}")
+        return states
     try:
-        for part in project.parts:
+        for part, risk, s in zip(project.parts, risks, states):
             try:
                 offers, own, numbers, missing = _part_offers(
                     part, "jlcpcb", lambda n: [o for o in [jlcpcb.offer_of_number(n, db)] if o is not None],
                     lambda mpn: jlcpcb.offers(mpn, exact=True), store)
             except (LensError, sqlite3.Error) as e:
-                lines.append(f"{part['mpn']}: not checked: {e}")
+                s.error = str(e)
                 continue
             if not offers:
-                lines.append(f"{_head(part, numbers)}: {_missing(label, numbers)}")
+                s.missing, s.text, s.warning = list(missing), _missing(name, numbers), bool(numbers)
                 continue
             # Each C number is a part of its own: the one with the most stock first, then the others.
             offers = sorted(offers, key=lambda x: -(x.stock or 0))
             o = offers[0]
             others = offers[1:] if numbers else []
-            state = (f"{_head(part, numbers)}: JLCPCB stock {o.stock}, library {o.library} ({o.distributor_pn})"
-                     + "".join(f"; {x.distributor_pn}: JLCPCB stock {x.stock}, library {x.library}" for x in others)
-                     + _number_warnings(part, numbers, offers, missing, label))
+            text = (f"stock {o.stock}, library {o.library} ({o.distributor_pn})"
+                    + "".join(f"; {x.distributor_pn}: stock {x.stock}, library {x.library}" for x in others)
+                    + _numbers_state(s, part, numbers, offers, missing, name))
             # Each C number of the project file is a part of its own: its stock warning
             # and its replacements. With no purchase source: the offer with the most stock.
-            checked = offers if numbers else [o]
+            # A number of a different MPN, and an offer of a different manufacturer, are
+            # not offers of the part.
+            checked = [x for x in (offers if numbers else [o]) if fits(x.mpn, part["mpn"], True)] if own else []
+            s.found = s.orderable = bool(checked)
+            s.others = not own
+            s.stock = sum(x.stock or 0 for x in checked)
             for x in checked:
                 if not x.stock:
-                    state += (". WARNING: " + (f"{x.distributor_pn} " if len(checked) > 1 else "")
-                              + "NOT IN STOCK at JLCPCB: the assembly needs an order of the part")
-            if part.get("manufacturer") and not own:
-                state += (f". WARNING: the JLCPCB library has no part from {part['manufacturer']}: the data is of "
-                          + ", ".join(sorted({x.manufacturer or "manufacturer unknown" for x in offers})))
-            lines.append(state)
-            # Replacements for a part with no JLCPCB stock or with a loading fee (Extended).
-            for x in (x for x in checked if not x.stock or x.library == "Extended"):
+                    s.warning = True
+                    text += (". WARNING: " + (f"{x.distributor_pn} " if len(checked) > 1 else "")
+                             + "NOT IN STOCK at JLCPCB: the assembly needs an order of the part")
+            if not own:
+                s.warning = True
+                text += _maker_warning("the JLCPCB library", part, offers)
+            s.text = text
+            # Replacements for a part with no JLCPCB stock, with a loading fee (Extended),
+            # or with a lifecycle risk of its manufacturer. With a risk, the same MPN of
+            # the manufacturer of the part is no replacement (the registry compares the
+            # names of the library and of the project file).
+            for x in (x for x in checked if risk or not x.stock or x.library == "Extended"):
+                makers_of_part = [m for m in (x.manufacturer, part.get("manufacturer", "")) if m]
                 try:
-                    found = jlcpcb.replacements(x.distributor_pn, db=db)
+                    found = jlcpcb.replacements(
+                        x.distributor_pn, db=db, obsolete=bool(risk),
+                        same_maker=lambda maker, names=makers_of_part: any(
+                            makers.same(registry, maker, m) for m in names))
                 except (LensError, sqlite3.Error) as e:
-                    lines.append(f"  replacements of {x.distributor_pn}: not checked: {e}")
+                    s.lines.append(f"replacements of {x.distributor_pn}: not checked: {e}")
                     continue
-                lines += ["  replacement" + (f" of {x.distributor_pn}" if len(checked) > 1 else "")
-                          + f": {r.distributor_pn} {r.mpn} ({r.manufacturer or 'manufacturer unknown'}), "
-                          f"library {r.library}, JLCPCB stock {r.stock}, {r.package} ({why}): read its datasheet "
-                          "before you use it" for r, why in found]
+                s.lines += ["replacement" + (f" of {x.distributor_pn}" if len(checked) > 1 else "")
+                            + f": {r.distributor_pn} {r.mpn} ({r.manufacturer or 'manufacturer unknown'}), "
+                            f"library {r.library}, JLCPCB stock {r.stock}, {r.package} ({why}): read its datasheet "
+                            "before you use it" for r, why in found]
     finally:
         db.close()
     note = jlcpcb.age_note()
-    return lines + _no_source_line(project, "jlcpcb", "JLCPCB") + ([note] if note else [])
+    after += _no_source_line(project, "jlcpcb", "JLCPCB") + ([note] if note else [])
+    return states
 
 
 def _offers_by_number(name: str, number: str, credential) -> list[Offer]:
@@ -664,48 +868,64 @@ def _offers_by_number(name: str, number: str, credential) -> list[Offer]:
         return []
 
 
-def _availability_at(name: str, credential, project, store=None) -> list[str]:
-    """The lines of availability for one distributor (see _part_offers)."""
+def _states_at(name: str, credential, project, store, after: list[str]) -> list[_SourceState]:
+    """The state of each project part at one distributor (see _part_offers). A
+    distributor that does not answer is not asked for the next parts: one line
+    in after names them."""
     label = SUPPORTED[name][0]
-    lines = [f"Source: {label}"]
-    for i, part in enumerate(project.parts):
+    states = [_SourceState(label, source_numbers(p, name)) for p in project.parts]
+    for i, (part, s) in enumerate(zip(project.parts, states)):
         try:
             offers, own, numbers, missing = _part_offers(
                 part, name, lambda n: _offers_by_number(name, n, credential),
                 lambda mpn: [o for o in offers_of(name, mpn, True, credential) if fits(o.mpn, mpn, True)], store)
         except Unavailable as e:  # the next parts fail too: do not wait for each one
-            lines.append(f"not checked: {', '.join(p['mpn'] for p in project.parts[i:])}: {e}")
+            for rest in states[i:]:
+                rest.error = f"{label} does not answer"
+            after.append(f"not checked: {', '.join(p['mpn'] for p in project.parts[i:])}: {e}")
             break
         except LensError as e:
-            lines.append(f"{part['mpn']}: not checked: {e}")
+            s.error = str(e)
             continue
         if not offers:
-            lines.append(f"{_head(part, numbers)}: {_missing(label, numbers)}")
+            s.missing, s.text, s.warning = list(missing), _missing(label, numbers), bool(numbers)
             continue
+        # The offers of the part: not a purchase source number of a different MPN, and
+        # not an offer of a different manufacturer (the details still show their data).
+        mine = [o for o in offers if fits(o.mpn, part["mpn"], True)] if own else []
         # One MPN can have more offers (cut tape and reel): the part is orderable
         # when one offer is, and its stock is the sum.
-        orderable = [o for o in offers if not not_orderable(o)]
-        o = (orderable or offers)[0]
-        stocks = [x.stock for x in orderable or offers if x.stock is not None]
+        sellable = [o for o in mine or offers if not not_orderable(o)]
+        o = (sellable or mine or offers)[0]
+        stocks = [x.stock for x in sellable or mine or offers if x.stock is not None]
         stock = sum(stocks) if stocks else None
-        state = (f"{_head(part, numbers)}: " + (f"{o.lifecycle}, " if o.lifecycle else "")
-                 + f"stock {stock if stock is not None else 'unknown'}"
-                 + _number_warnings(part, numbers, offers, missing, label))
-        if not orderable:
-            state += f". WARNING: not orderable: {not_orderable(o)}"
+        now = [x for x in sellable if not restricted(x)] if mine else []  # the distributor sells it now
+        s.found, s.orderable, s.others = bool(mine), bool(now), not own
+        s.stock = sum(x.stock or 0 for x in now)
+        if mine:
+            s.risk, s.lifecycle, s.replacement = lifecycle_of(mine)
+        text = ((f"{o.lifecycle}, " if o.lifecycle else "") + f"stock {stock if stock is not None else 'unknown'}"
+                + _numbers_state(s, part, numbers, offers, missing, label))
+        warned = True
+        if not sellable:
+            text += f". WARNING: not orderable: {not_orderable(o)}"
         elif not stock and all(restricted(x) for x in offers):
-            state += (f". WARNING: {label} does not sell this part now ({o.lifecycle}). This is not the "
-                      "lifecycle state of the manufacturer: ask the manufacturer or a different distributor")
+            text += (f". WARNING: {label} does not sell this part now ({o.lifecycle}). This is not the "
+                     "lifecycle state of the manufacturer: ask the manufacturer or a different distributor")
         elif not stock:
             # The quantities on order of each offer (cut tape and reel).
-            more = ", ".join(dict.fromkeys(x.availability for x in orderable or offers if x.availability))
-            state += (". WARNING: no stock" + (f" ({more})" if more else "")
-                      + (f", lead time {o.lead_time}" if o.lead_time else ""))
-        if part.get("manufacturer") and not own:
-            state += (f". WARNING: {label} has no offer from {part['manufacturer']}: the data is of "
-                      + ", ".join(sorted({x.manufacturer or "manufacturer unknown" for x in offers})))
-        lines.append(state)
-    return lines + _no_source_line(project, name, label)
+            more = ", ".join(dict.fromkeys(x.availability for x in sellable if x.availability))
+            text += (". WARNING: no stock" + (f" ({more})" if more else "")
+                     + (f", lead time {o.lead_time}" if o.lead_time else ""))
+        else:
+            warned = False
+        if not own:
+            warned = True
+            text += _maker_warning(label, part, offers)
+        s.warning = s.warning or warned
+        s.text = text
+    after += _no_source_line(project, name, label)
+    return states
 
 
 def status_lines(project=None) -> list[str]:

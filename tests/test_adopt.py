@@ -45,9 +45,36 @@ def test_adopt_by_number(jlc, downloads, tmp_path):  # noqa: F811
         [source] = store.part_sources(store.find_part("FET-A", "Maker A", create=False))
     assert (source["source"], source["number"], source["library"]) == ("jlcpcb", "C1001", "Extended")
     assert source["url"] == "https://jlcpcb.com/partdetail/C1001"
+    # No distributor with a key: the lifecycle state is not checked.
+    assert result["lines"][1] == ("lifecycle: not checked (the JLCPCB library has no lifecycle state): no enabled "
+                                  "distributor with a key")
     # A second take: the datasheet of the store, no second download.
     result = adopt_module.adopt("jlcpcb", "C1001", project=prj.load(project.root))
     assert "datasheet: in the store already" in "\n".join(result["lines"]) and len(downloads) == 1
+
+
+def test_lifecycle_check_of_adopt(jlc, downloads, monkeypatch):  # noqa: F811
+    """adopt asks the distributors with a key for the lifecycle state of the
+    manufacturer: a risk gives a warning, also when the source has stock. Only
+    the offers of the manufacturer of the part count."""
+    from datasheet_lens import distributors
+    from datasheet_lens.distributors import Offer
+
+    offers = {"mouser": [Offer("Mouser", "FET-A", "Maker A", lifecycle="Not Recommended for New Designs",
+                               stock=10, distributor_pn="m-1")],
+              "digikey": [Offer("DigiKey", "FET-A", "Maker A", lifecycle="Active", stock=0, distributor_pn="d-1"),
+                          Offer("DigiKey", "FET-A", "Maker Z", lifecycle="Obsolete", distributor_pn="d-2")]}
+    monkeypatch.setattr(distributors, "keys_of", lambda project=None: ({"mouser": "k", "digikey": ("a", "b")}, []))
+    monkeypatch.setattr(distributors, "offers_of", lambda name, mpn, exact, credential: offers[name])
+    lines = adopt_module.adopt("jlcpcb", "C1001")["lines"]
+    assert lines[1] == ("WARNING: NOT FOR NEW DESIGNS at the manufacturer (Mouser: Not Recommended for New Designs; "
+                        "DigiKey: Active). Tell the user, and select a replacement with the user (find_parts with the "
+                        "values of the datasheet); project_availability gives the replacements in the JLCPCB library")
+    # No offer of the MPN: the reasons.
+    offers.update(mouser=[], digikey=[])
+    lines = adopt_module.adopt("jlcpcb", "C1002")["lines"]
+    assert lines[1] == ("lifecycle: not checked (the JLCPCB library has no lifecycle state): Mouser does not have "
+                        "this MPN; DigiKey does not have this MPN")
 
 
 def test_number_or_mpn(jlc, downloads):  # noqa: F811

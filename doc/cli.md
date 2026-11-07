@@ -511,8 +511,9 @@ datasheet-lens adopt [-m MPN] [-b BASE] [-c CATEGORY] [-p PATH] SOURCE [NUMBER]
 ```
 
 Take a part of a source into the store and the project: download its datasheet, add
-the part, and save the purchase source. See
-[distributors.md](distributors.md#take-a-found-part).
+the part, and save the purchase source. The result gives the lifecycle state of the
+manufacturer from the distributors with a key, with a `WARNING` for a lifecycle
+risk. See [distributors.md](distributors.md#take-a-found-part).
 
 | Argument or option | Effect |
 |---|---|
@@ -548,16 +549,20 @@ action: `status`. See [distributors.md](distributors.md#jlcpcb-parts-library).
 datasheet-lens stock [-p PATH]
 ```
 
-Show the lifecycle state and the stock of each project part, with a warning for each
-part that is not orderable, that the distributor does not have, or that has no stock.
+Show one verdict for each project part from all sources (the distributors and the
+JLCPCB parts library), then the details of each source. See
+[distributors.md](distributors.md#check-the-project-parts).
 
-- A part with a purchase source (`[[part.source]]`) of a distributor: the offer of
-  its number, the packaging that the project orders. A number of a different MPN
-  gives a warning. A line names the parts with no purchase source of the
-  distributor, when other parts have one.
-- With the JLCPCB parts library: a section with the JLCPCB stock and the library
-  class of each part, and up to 3 replacements for a part with no JLCPCB stock or
-  with a loading fee (see
+- A lifecycle risk of the manufacturer (obsolete, last time buy, not for new
+  designs) gives a warning, also when a source has stock.
+- A part with a purchase source (`[[part.source]]`): the offer of its number, the
+  packaging that the project orders. The verdict tells if the purchase source can
+  deliver, and else the other sources with stock. A number of a different MPN gives
+  a warning. A line names the parts with no purchase source of a source, when other
+  parts have one.
+- With the JLCPCB parts library: the JLCPCB stock and the library class of each
+  part, and up to 3 replacements for a part with a lifecycle risk, with no JLCPCB
+  stock or with a loading fee (see
   [distributors.md](distributors.md#purchase-sources-and-replacements)).
 
 ### dist

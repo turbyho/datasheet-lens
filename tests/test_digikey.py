@@ -275,11 +275,16 @@ def test_availability_with_digikey(api, store_home, tmp_path):
         for mpn in ("FAKE-FET-1", "FAKE-FET-2", "FAKE-FET-3", "FAKE-FET-4"):
             prj.add_part(project, store, mpn)
     lines = distributors.availability(prj.load(project.root))
-    assert lines[0] == "Source: DigiKey" and lines[1] == "FAKE-FET-1: Active, stock 900"
-    assert lines[2].startswith("FAKE-FET-2: Discontinued at Digi-Key, stock 0. WARNING: DigiKey does not sell "
+    assert lines[0] == "FAKE-FET-1: orderable (DigiKey). DigiKey: Active, stock 900"
+    # Discontinued at Digi-Key: DigiKey does not sell it, not a lifecycle risk of the manufacturer.
+    assert lines[1] == "FAKE-FET-2: WARNING: NOT ORDERABLE at any source"
+    assert lines[2].startswith("  DigiKey: Discontinued at Digi-Key, stock 0. WARNING: DigiKey does not sell "
                                "this part now (Discontinued at Digi-Key). This is not the lifecycle state")
-    assert lines[3] == "FAKE-FET-3: Obsolete, stock 0. WARNING: not orderable: Obsolete"
-    assert lines[4].startswith("FAKE-FET-4: WARNING: DigiKey does not have this MPN")
+    assert lines[3:5] == ["FAKE-FET-3: WARNING: OBSOLETE at the manufacturer (DigiKey: Obsolete). NOT ORDERABLE at "
+                          "any source. Select a replacement with the user (find_parts with the values of the datasheet)",
+                          "  DigiKey: Obsolete, stock 0. WARNING: not orderable: Obsolete"]
+    assert lines[5:7] == ["FAKE-FET-4: WARNING: no source has this MPN (a base part, or a wrong MPN?)",
+                          "  DigiKey: does not have this MPN"]
 
 
 def test_services_of_each_distributor(api, store_home):
@@ -433,7 +438,7 @@ def test_an_mpn_of_more_manufacturers(api, store_home, tmp_path):
         project = prj.init_project(tmp_path / "board")
         prj.add_part(project, store, "DUP-1", manufacturer="Maker Two")
         lines = distributors.availability(prj.load(project.root), store)
-    assert lines[1] == "DUP-1: Active, stock 5"
+    assert lines[0] == "DUP-1: orderable (DigiKey). DigiKey: Active, stock 5"
     # adopt: the MPN of more manufacturers asks for the number; an MPN is not a number.
     with pytest.raises(LensError, match="DigiKey has more parts for DUP-1. Give the number of one: 1-DUP-1-CT-ND "
                                         r"\(DUP-1, Maker One\); 2-DUP-1-CT-ND \(DUP-1, Maker Two\)"):
@@ -461,7 +466,8 @@ def test_two_products_of_one_manufacturer(api, store_home, tmp_path, monkeypatch
     with Store() as store:
         project = prj.init_project(tmp_path / "board")
         prj.add_part(project, store, "TWO-1", manufacturer="Maker One")
-        assert distributors.availability(prj.load(project.root), store)[1] == "TWO-1: Active, stock 100"
+        assert distributors.availability(prj.load(project.root), store)[0] == (
+            "TWO-1: orderable (DigiKey). DigiKey: Active, stock 100")
     with pytest.raises(LensError, match="DigiKey has more parts for TWO-1"):
         adopt._part("digikey", "", "TWO-1")
     lines = distributors.link_lines("TWO-1")
@@ -538,7 +544,8 @@ def test_availability_of_the_digikey_purchase_source(api, store_home, tmp_path):
     project = prj.load(project.root)
     prj.set_source(project, project.parts[0], "digikey", "2-dup-1-ct-nd")
     lines = distributors.availability(prj.load(project.root))
-    assert lines[1] == "DUP-1 (2-dup-1-ct-nd, the purchase source): Active, stock 5"
+    assert lines[0] == ("DUP-1 (2-dup-1-ct-nd, the purchase source): orderable at the purchase source (DigiKey). "
+                        "DigiKey: Active, stock 5")
 
 
 def test_offer_of_one_packaging():

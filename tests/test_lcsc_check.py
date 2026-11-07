@@ -126,8 +126,10 @@ def test_more_purchase_sources_and_their_removal(jlc, tmp_path, capsys):  # noqa
     text = "\n".join(prj.format_check(result))
     assert "LCSC: Q2: the field has no JLCPCB number; FET-A has more JLCPCB purchase sources (C1001, C1002)." in text
     lines = distributors.availability(prj.load(project.root))
-    line = next(x for x in lines if x.startswith("FET-A (C1001, C1002, the purchase sources)"))
-    assert "JLCPCB stock 9000, library Basic (C1002); C1001: JLCPCB stock 500, library Extended" in line
+    # C1001 is FET-A with stock: the purchase source can deliver.
+    assert "FET-A (C1001, C1002, the purchase sources): orderable at the purchase source (JLCPCB)" in lines
+    line = lines[lines.index("FET-A (C1001, C1002, the purchase sources): orderable at the purchase source (JLCPCB)") + 1]
+    assert "JLCPCB: stock 9000, library Basic (C1002); C1001: stock 500, library Extended" in line
     assert "WARNING: C1002 is FET-B (Maker B), not FET-A" in line
     # The removal: the project file, and with store also the store.
     out = server.project_remove_source("FET-A", "c1002", path=str(project.root))
@@ -177,5 +179,6 @@ def test_the_bom_is_the_master(jlc, tmp_path):  # noqa: F811
     project = prj.load(project.root)
     prj.set_source(project, project.parts[0], "jlcpcb", "C1004")
     lines = distributors.availability(prj.load(project.root))
-    line = next(x for x in lines if x.startswith("FET-C (C1003, C1004, the purchase sources)"))
+    head = "FET-C (C1003, C1004, the purchase sources): orderable at the purchase source (JLCPCB)"
+    line = lines[lines.index(head) + 1]
     assert "WARNING: C1003 NOT IN STOCK at JLCPCB" in line and "C1004 NOT IN STOCK" not in line
