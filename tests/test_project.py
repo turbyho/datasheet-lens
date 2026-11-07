@@ -1157,6 +1157,30 @@ def test_write_targets_of_a_variant(store_home, tmp_path):
     assert [c["mpn_confirmed_fields"] for c in result["unconfirmed"]] == [["MPN_Confirmed"], ["MC"]]
 
 
+def test_review_cases_of_2026_11_07(store_home, tmp_path):
+    """A variant line with the same Value and other confirmed copies than the default line
+    gives its own move; a BOM line with only confirmed fields (the user removed Value and
+    MPN of a confirmed symbol) is a change. (The same cases as the tests of
+    kicad-workbench.)"""
+    with Store() as store:
+        result = prj.check_parts(prj.init_project(tmp_path / "board"), store, [
+            prj.CadSymbol(reference="U1", value="LM358 (X)", mpn="X", value_confirmed="LM358 (X)"),
+            prj.CadSymbol(reference="U1", value="LM358 (X)", mpn="", value_confirmed="LM358 (X)", variant="b"),
+            prj.CadSymbol(reference="U2", value="LM358 (Y)", mpn="Y", value_confirmed="LM358 (Y)"),
+            prj.CadSymbol(reference="U2", value="LM358 (Y)", mpn="Y", value_confirmed="LM358 (Y)", variant="b")])
+    assert [(m["reference"], m["mpn_confirmed"]) for m in result["move"]] == [
+        ("U1", "X"), ("U2", "Y"), ("U1 (variant b)", "")]
+    bom = tmp_path / "removed.csv"
+    bom.write_text("Reference,Value,MPN,MPN_Confirmed,Value_Confirmed\nR1,,,A1,10k\nR2,,,,\n", encoding="utf-8")
+    (r1,) = prj.bom_parts(str(bom)).cad
+    with Store() as store:
+        result = prj.check_parts(prj.init_project(tmp_path / "board2"), store, [r1])
+    (change,) = result["changes"]
+    assert change["change"] == ("Value '', Value_Confirmed '10k'; MPN '(empty)', MPN_Confirmed 'A1': the value and "
+                                "the part are not the confirmed ones")
+    assert change["removed"] == ["A1"]
+
+
 def test_bom_formats(tmp_path):
     """The reader reads CSV (RFC 4180). It finds the delimiter in the header line
     only when one delimiter splits it; the caller gives an other delimiter and the

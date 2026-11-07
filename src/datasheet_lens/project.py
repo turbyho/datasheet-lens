@@ -1915,7 +1915,9 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
                 {**write, "new": state.new, "removed": state.removed})
         elif state.move:
             move = state.move
-            add("move", symbol, (move["value"], move["mpn"], target),
+            # Each field of the move: a variant line with other confirmed copies is no duplicate.
+            add("move", symbol, ((move["value"], move["mpn"], move["mpn_confirmed"], move["value_confirmed"]),
+                                 target),
                 {"reference": label, "variant": symbol.variant, "value": move["value"], "mpn": move["mpn"],
                  "mpn_confirmed": move["mpn_confirmed"],
                  "value_confirmed": move["value_confirmed"], **names})
@@ -2448,7 +2450,7 @@ def _read_bom(path: str, delimiter: str = "", quote: str = '"', column: str = ""
 @dataclass
 class BomParts:
     """The CAD parts of a BOM file, for check_parts."""
-    cad: list[CadSymbol]  # one item for each fitted line with a Value, an MPN or a conflict
+    cad: list[CadSymbol]  # one item for each line with a Value, an MPN, a confirmed field or a conflict
     summary: str  # one line: the columns that the parts come from
 
 
@@ -2649,7 +2651,9 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
         symbol.mpn_confirmed_fields, symbol.mpn_confirmed_known = _write_fields(
             names, [i for i in found["MPN_Confirmed"] if _filled(row[i])], found["MPN_Confirmed"],
             "MPN_Confirmed", group)
-        if symbol.value or symbol.mpn or symbol.conflict:
+        # A line with only a confirmed field: the user removed Value and MPN of a confirmed
+        # symbol, which is a change.
+        if symbol.value or symbol.mpn or symbol.value_confirmed or symbol.mpn_confirmed or symbol.conflict:
             cad.append(symbol)
     references = ", ".join(labels[i] for i in found["Reference"])
     confirmed_columns = ", ".join(labels[i] for i in found["Value_Confirmed"])
