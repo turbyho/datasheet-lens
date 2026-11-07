@@ -179,9 +179,12 @@ links the document to a different part, and reports it as a problem.
 
 datasheet-lens writes the project file with tomlkit. A write keeps the comments, the
 format, the order and the keys that datasheet-lens does not know. It changes only the
-values that changed, and adds new parts and documents at the end. Before a write, the
-tool reads the new text back and compares it with the data. If the file changed after
-the tool read it, the tool writes nothing and tells you to run the command again.
+values that changed, and adds new parts and documents at the end. When the tool removes
+a part, a document or a purchase source, it removes its table, the comment lines
+directly above its header (with no blank line between) and one blank-line gap. A comment
+with a blank line after it stays. Before a write, the tool reads the new text back and
+compares it with the data. If the file changed after the tool read it, the tool writes
+nothing and tells you to run the command again.
 
 Write `part` and `part.document` as arrays of tables (`[[part]]`), not as inline
 arrays. The tool cannot add to an inline array.

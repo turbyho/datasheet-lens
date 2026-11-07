@@ -262,6 +262,24 @@ def test_removed_tables_leave_one_gap(setup):
         prj.save(loaded)
         assert project.path.read_text(encoding="utf-8") == expected, removed
 
+    # A comment directly above the header of a removed part goes with the part.
+    # A comment with a blank line after it, and a comment above the next part, stay.
+    project.path.write_text(head + part("A") + "\n# about A, B and C\n\n# about B\n" + part("B")
+                            + "\n# about C\n" + part("C"), encoding="utf-8")
+    loaded = prj.load(project.root)
+    loaded.parts = [p for p in loaded.parts if p["mpn"] != "B"]
+    prj.save(loaded)
+    assert project.path.read_text(encoding="utf-8") == (head + part("A") + "\n# about A, B and C\n\n# about C\n"
+                                                        + part("C"))
+    for removed, expected in [({"A"}, head + "# about B\n" + part("B") + "\n" + part("C")),
+                              ({"A", "B"}, head + part("C"))]:
+        project.path.write_text(head + "# about A\n" + part("A") + "\n# about B\n" + part("B") + "\n" + part("C"),
+                                encoding="utf-8")
+        loaded = prj.load(project.root)
+        loaded.parts = [p for p in loaded.parts if p["mpn"] not in removed]
+        prj.save(loaded)
+        assert project.path.read_text(encoding="utf-8") == expected, removed
+
     # Blank lines at the start of the file: the file starts with the header
     # of the next part.
     project.path.write_text("\n\n" + part("A") + "\n" + part("B"), encoding="utf-8")

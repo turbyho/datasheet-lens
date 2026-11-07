@@ -192,9 +192,10 @@ The state tells how much to trust the fact.
 
 `project.py` reads the project file with `tomllib` and writes it with tomlkit. A write
 keeps the text of the user: comments, format, order and unknown keys. It changes only
-the values that changed. Before a write, it parses the new text and compares it with
-the data. When the file changed after the read, it writes nothing. All writes are
-atomic (`fileutil.py`): a temporary file, then a replace.
+the values that changed. A removed table takes with it the comment lines directly above
+its header and one blank-line gap (`_remove_tables`). Before a write, it parses the new
+text and compares it with the data. When the file changed after the read, it writes
+nothing. All writes are atomic (`fileutil.py`): a temporary file, then a replace.
 
 `sync` compares the project with the store and the document folder. First it takes
 the PDF files of the inbox `_inbox`: it imports each one, and links it to the project

@@ -444,13 +444,27 @@ def _join_gaps(tails: list[list]) -> list:
     return joined
 
 
-def _clear_gap(body: list, end: int) -> None:
-    """Make the blank-line items before body[end] empty. The items stay in the
+def _clear(body: list, end: int, kind: type | tuple) -> None:
+    """Make the items of the kind before body[end] empty. The items stay in the
     list, because tomlkit keeps the index of each key of a body."""
     i = end - 1
-    while i >= 0 and body[i][0] is None and isinstance(body[i][1], (Whitespace, Null)):
+    while i >= 0 and body[i][0] is None and isinstance(body[i][1], kind):
         body[i] = (None, Whitespace(""))
         i -= 1
+
+
+def _clear_gap(body: list, end: int) -> None:
+    """Make the blank-line items before body[end] empty."""
+    _clear(body, end, (Whitespace, Null))
+
+
+def _without_header_comment(tail: list) -> list:
+    """The tail with no comment lines at its end. Comment lines directly above a
+    header, with no blank line between, are a part of the table of the header."""
+    tail = list(tail)
+    while tail and isinstance(tail[-1], Comment):
+        tail.pop()
+    return tail
 
 
 def _key_index(container, key: str) -> int:
@@ -472,7 +486,8 @@ def _at_start(container, key: str) -> bool:
 
 def _remove_tables(container, key: str, old: list, keep: set[int]) -> list:
     """Remove the tables of old that are not in keep from the array of tables
-    container[key]. The text of a removed table goes, and one gap goes with it:
+    container[key]. The text of a removed table goes, with the comment lines
+    directly above its header (no blank line between). One gap goes with it:
     the blank lines before its header, or the blank lines at its end. The
     comment lines at the end of a removed table stay above the next header.
     Gives the comment and blank-line items that no kept table can hold (all
@@ -487,7 +502,8 @@ def _remove_tables(container, key: str, old: list, keep: set[int]) -> list:
         a = b - 1  # old[a:b] is a run of removed tables
         while a > 0 and id(old[a - 1]) not in keep:
             a -= 1
-        gap = _join_gaps([_take_tail(t) for t in old[a:b]])
+        tails = [_take_tail(t) for t in old[a:b]]
+        gap = _join_gaps([_without_header_comment(t) for t in tails[:-1]] + tails[-1:])
         previous = old[a - 1] if a > 0 else None
         following = old[b] if b < len(old) else None
         if previous is not None:
@@ -496,6 +512,7 @@ def _remove_tables(container, key: str, old: list, keep: set[int]) -> list:
         else:
             body = _body(container)
             end = _key_index(container, key)
+        _clear(body, end, Comment)  # the comment lines directly above the header of old[a]
         if previous is None and _at_start(container, key):
             _clear_gap(body, end)  # the start of the file: no blank lines
             while gap and isinstance(gap[0], Whitespace):
