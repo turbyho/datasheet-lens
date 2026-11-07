@@ -937,10 +937,10 @@ def test_symbol_state():
     # MPN_Confirmed. The move keeps the state: the old field MPN is the confirmed copy.
     s = state("2N7002 (2N7002LT1G, BSS138LT1G)", "2N7002LT1G", "2N7002 (2N7002LT1G)")
     assert s.move == {"value": "2N7002", "mpn": both, "mpn_confirmed": "2N7002LT1G",
-                      "value_confirmed": "2N7002"}
+                      "value_confirmed": "2N7002", "old": "Value"}
     assert (s.parts, s.change, s.unconfirmed) == (["2N7002LT1G"], "", False)
     assert state("LM358 (LM358DR)").move == {"value": "LM358", "mpn": "LM358DR", "mpn_confirmed": "",
-                                             "value_confirmed": None}
+                                             "value_confirmed": None, "old": "Value"}
     assert state("J (\"A(1)\")", "A(1)", "", "").move["mpn"] == "A(1)"
     assert not state("10k (1%)", "", "10k (1%)", "-").move  # MPN_Confirmed: the new convention
     # Other MPNs in the field MPN: the new convention (review of 2026-11-07), also with
@@ -949,7 +949,8 @@ def test_symbol_state():
     assert (s.move, s.parts, s.unconfirmed) == ({}, ["RC0603FR-0710KL"], True)
     assert state("10k (1%)", "RC0603FR-0710KL").parts == ["RC0603FR-0710KL"]
     # "(TBD)": the old convention with an empty list.
-    assert state("10k (TBD)").move == {"value": "10k", "mpn": "", "mpn_confirmed": "", "value_confirmed": None}
+    assert state("10k (TBD)").move == {"value": "10k", "mpn": "", "mpn_confirmed": "", "value_confirmed": None,
+                                       "old": "Value"}
     assert not state("10k (A) (B)").move and not state("10k (GRM1, -)").move  # no valid list
     # The move of a symbol with an MPN_Confirmed of the old fields: no move, the text.
     assert state("10k (1%)", "RC1", "10k (1%)", "RC1").parts == ["RC1"]
@@ -1017,7 +1018,7 @@ def test_check_tells_about_changes(store_home, tmp_path, capsys):
     assert "#PWR01" not in out and "no part selected (a general value and no MPN): R1." in out
     assert ("the old convention: R5: the MPNs are in the parentheses of Value. Move them into the field MPN") in out
     assert ("Write Value = '10k', MPN = 'RC0603FR-0710KL', MPN_Confirmed = 'RC0603FR-0710KL' and Value_Confirmed = "
-            "'10k' into the symbol.") in out
+            "'10k' into the symbol, then run project_check again") in out
     assert ("C5: Value '220nF', Value_Confirmed '100nF': the MPN 'GRM1' can be wrong now. Ask the user: a new part "
             "for the new value, or the same part. A new part: select it with the user (find_parts by its "
             "parameters, search_distributors and get_ordering_codes by its MPN), write its MPN into the symbol (the "
@@ -1097,7 +1098,7 @@ def test_write_field_names(store_home, tmp_path):
     out = "\n".join(prj.format_check(result))
     assert "Write MPN_Confirmed = 'LM358DR' and Custom 3 = 'LM358' into the symbol." in out
     assert ("Write Value = 'LM358', Manufacturer Part Number = 'LM358DT', MPN_Confirmed = '' and Custom 3 = "
-            "'' into the symbol.") in out
+            "'' into the symbol, then run project_check again") in out
     # Eagle: each library has its own attribute. No MPN in the line: the user selects
     # the attribute of the symbol for the move.
     bom.write_text("Parts,Value,MP,MANUFACTURER_PART_NUMBER\nU1,X,A,A\nU2,X (B),,\nR1,10k,,\n",
@@ -1110,7 +1111,7 @@ def test_write_field_names(store_home, tmp_path):
     with Store() as store:
         out = "\n".join(prj.format_check(prj.check_parts(project, store, [u1, u2, r1])))
     assert ("Write Value = 'X', the MPN field = 'B' (the BOM has the columns MANUFACTURER_PART_NUMBER, MP: ask the "
-            "user which one the symbol uses) and MPN_Confirmed = '' into the symbol.") in out
+            "user which one the symbol uses) and MPN_Confirmed = '' into the symbol, then run project_check again") in out
     assert "write its MPN into the field MPN of the symbol" in out
     # The parts of the parameter parts: the names of the CAD tool, else the default names.
     with Store() as store:
@@ -1179,6 +1180,52 @@ def test_review_cases_of_2026_11_07(store_home, tmp_path):
     assert change["change"] == ("Value '', Value_Confirmed '10k'; MPN '(empty)', MPN_Confirmed 'A1': the value and "
                                 "the part are not the confirmed ones")
     assert change["removed"] == ["A1"]
+
+
+def test_decisions_32_and_33(store_home, tmp_path):
+    """Decision 32: the old convention only in Value_Confirmed (the user removed the
+    parentheses from Value) gets a move of the confirmed copies. Decision 33: a new general
+    value with an MPN that the user never confirmed is a change, not select. (The same
+    cases as the tests of kicad-workbench.)"""
+    from datasheet_lens.project import CadSymbol, symbol_state
+
+    def state(value, mpn="", confirmed=None, mpn_confirmed=None):
+        return symbol_state(CadSymbol(reference="Q1", value=value, mpn=mpn, value_confirmed=confirmed,
+                                      mpn_confirmed=mpn_confirmed))
+
+    move = {"value": None, "mpn": None, "mpn_confirmed": "A1", "value_confirmed": "x", "old": "Value_Confirmed"}
+    for mpn_confirmed in (None, ""):
+        s = state("x", "A1", "x (A1)", mpn_confirmed)
+        assert (s.move, s.parts, s.change, s.select) == (move, ["A1"], "", False)
+    assert state("y", "A1", "x (A1)").move["value_confirmed"] == "x"  # a new value: a change after the move
+    assert state("x", "A1, B1", "x (A1; B1)").move["mpn_confirmed"] == "A1, B1"
+    s = state("x", "B1", "x (A1)")  # an other MPN: no move, a change of the value
+    assert (s.move, bool(s.change)) == ({}, True)
+    assert not state("x", "A1", "x (A1) (B)").move  # no valid list
+    assert not state("x", "A1", "x (A1)", "A1").move  # MPN_Confirmed: the new convention
+    assert not state("x (A1)", "A1", "x (A1)", "A1").move
+    s = state("", "A1", "x (A1)", "")  # an empty Value is a removal: a change, no move
+    assert (s.move, bool(s.change)) == ({}, True)
+    s = state("220nF", "D1", "100nF", "")
+    assert (s.select, s.new, s.parts) == (False, ["D1"], ["D1"])
+    assert s.change == "Value '220nF', Value_Confirmed '100nF': the MPN 'D1' is not confirmed"
+    assert state("220nF", "D1", "100nF").select  # no field MPN_Confirmed: the tool cannot know
+    with Store() as store:
+        result = prj.check_parts(prj.init_project(tmp_path / "board"), store, [
+            CadSymbol(reference="Q1", value="x", mpn="A1", value_confirmed="x (A1)", mpn_confirmed="")])
+    out = "\n".join(prj.format_check(result))
+    with Store() as store:  # a variant line with an other Value writes the same copies: one move
+        moves = prj.check_parts(prj.init_project(tmp_path / "board2"), store, [
+            CadSymbol(reference="Q1", value="x", mpn="A1", value_confirmed="x (A1)"),
+            CadSymbol(reference="Q1", value="y", mpn="A1", value_confirmed="x (A1)", variant="b")])["move"]
+    assert [m["reference"] for m in moves] == ["Q1"]
+    assert ("the old convention: Q1: Value_Confirmed has the MPNs in parentheses, and Value and the field MPN "
+            "follow the new convention. Write the confirmed copies by the new convention: the confirmed part stays, "
+            "and the parts do not change. Tell the user, and when the user agrees: Write MPN_Confirmed = 'A1' and "
+            "Value_Confirmed = 'x' into the symbol, then run project_check again: it compares the fields again.") in out
+    # An other Value column shows the old convention itself (decision 32: Value has no parentheses).
+    s = symbol_state(CadSymbol(value="x", mpn="A1", value_confirmed="x (A1)", other_values=["x (-, B1)"]))
+    assert (s.move["old"], s.extra) == ("Value_Confirmed", [])
 
 
 def test_bom_formats(tmp_path):

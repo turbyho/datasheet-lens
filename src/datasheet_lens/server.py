@@ -1263,8 +1263,9 @@ def project_check(
       Value_Confirmed. Add the datasheet of a new MPN at once; tell the user;
       write the given fields only when the user confirms it.
     - not confirmed: the fields are not confirmed yet.
-    - the old convention: the MPNs are in the parentheses of Value. Write the
-      given fields (the move); the confirmed state and the parts do not change.
+    - the old convention: the MPNs are in the parentheses of Value (or only of
+      Value_Confirmed). Write the given fields (the move); the confirmed state and
+      the parts do not change.
     - no field Value_Confirmed or MPN_Confirmed, no part selected (a general
       value and no MPN).
     - CAD lines with a part, the symbols that are not fitted (DNP: their parts

@@ -548,7 +548,9 @@ The check of each symbol. The confirmation of the user is the truth:
   the user. Until the user confirms the change, the confirmed MPNs are the parts.
   When the user does not confirm it, `Value` and `MPN` must change back.
 - **A new general value with the confirmed MPN**: the MPN can be wrong now. The user
-  selects a new part (and writes it into `MPN`), or confirms that the part stays.
+  selects a new part (and writes it into `MPN`), or confirms that the part stays. A
+  new general value with an MPN that the user never confirmed (an empty
+  `MPN_Confirmed`) is a change: the agent adds the datasheet of the MPN first.
 - **Confirmed**: `MPN` is equal to `MPN_Confirmed`, and `Value` is equal to
   `Value_Confirmed`. The parts are the MPNs.
 - **Not confirmed**: `MPN` has MPNs, and `MPN_Confirmed` or `Value_Confirmed` is
@@ -563,7 +565,10 @@ The check of each symbol. The confirmation of the user is the truth:
   value of the old `Value_Confirmed`. A confirmed symbol stays confirmed, and the
   parts do not change. A symbol with an `MPN_Confirmed`, or with other MPNs in `MPN`,
   has the new convention: its parentheses are text of the general value
-  (`10k (1%)`).
+  (`10k (1%)`). When only `Value_Confirmed` has the parentheses (the user removed them
+  from `Value`, and `MPN` holds the same MPNs), the move writes only the confirmed
+  copies: `MPN_Confirmed` = `MPN`, `Value_Confirmed` = the general value of the old
+  `Value_Confirmed`.
 - A general value with no MPN: no part is selected. The tool gives the references
   in one line (not the power symbols, `#PWR01`).
 - **No column `Value_Confirmed` or `MPN_Confirmed`** (a BOM of an other CAD tool):
