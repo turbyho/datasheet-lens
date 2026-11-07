@@ -133,7 +133,8 @@ In the root folder of the repository of the design:
 ```sh
 datasheet-lens project init     # the project file, and a block in AGENTS.md, CLAUDE.md
 datasheet-lens add PATH|URL     # add a datasheet; it proposes the MPN of the part
-datasheet-lens sync             # copy the documents into the project folder
+datasheet-lens sync             # copy the documents into the project folder, and give the
+                                # PDF files of datasheets/_inbox/ to their parts
 datasheet-lens check BOM.csv    # compare the project with a BOM of the CAD project
 ```
 

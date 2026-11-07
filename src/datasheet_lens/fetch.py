@@ -39,7 +39,9 @@ TIMEOUT_S = 60  # with no data for each network operation (connect, each read)
 MIN_RATE = 1024  # bytes per second
 MIN_RATE_AFTER_S = 120
 MAX_NAME = 120
-MANUAL = "download the file by hand, put it into the folder of the project and run project sync"
+MANUAL = ("download the file by hand in a web browser. Then, in a project, put it into the inbox of the "
+          "project (the folder _inbox in the folder of the copies) and run project sync, or add the file "
+          "with add_document")
 
 
 def is_url(text: str) -> bool:

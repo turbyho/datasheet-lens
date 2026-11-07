@@ -720,7 +720,12 @@ def project_sync(
     project folder, move the copies into the subfolders of the layout, and import
     the new PDF files of the folder. A new file gets a part only from the store;
     for a different file the result proposes a part, and project_add_part
-    assigns it. Gives the changes and the problems."""
+    assigns it. The inbox (the folder _inbox in the folder of the copies) is for
+    the PDF files that the user downloads: sync gives each one to the project
+    parts that it agrees with (the MPN, the base part and the manufacturer of
+    the datasheet), and takes it from the inbox. For a file with no part, ask the
+    user for the part, then assign it with project_add_part. Gives the changes
+    and the problems."""
     from .project import format_report, load, sync
 
     with _add_lock, Store() as store:
@@ -970,7 +975,9 @@ def adopt_part(
     class) in the store and in the project file. Use it when the user selects a
     candidate. Then project_sync copies the datasheet into the project folder.
     The element map builds in the background. Read the values that the design
-    needs in the datasheet and save them with save_fact."""
+    needs in the datasheet and save them with save_fact. When no URL gives the
+    datasheet (a login, a captcha), the result gives the URLs and the inbox
+    folder of the project: give them to the user."""
     from .adopt import adopt
     from .project import load_optional
 

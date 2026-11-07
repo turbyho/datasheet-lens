@@ -29,7 +29,8 @@ datasheet-lens project init
 The command does these steps:
 
 1. It makes the project file `datasheet-lens.toml` with a comment header.
-2. It makes the document folder.
+2. It makes the document folder, with the inbox `_inbox` in it (see
+   [The inbox](#the-inbox)).
 3. It puts the datasheet-lens block into `AGENTS.md` and `CLAUDE.md`.
 
 | Option | Effect |
@@ -266,14 +267,16 @@ datasheet-lens ls            # the same as: datasheet-lens project status
 `datasheet-lens ls` shows the parts and documents, and what a sync would change. It
 changes nothing. `datasheet-lens sync` does these steps:
 
-1. It adds the documents that the store links to each project part (and to its base
+1. It imports each PDF file of the inbox into the store, and links it to the project
+   parts that it agrees with (see [The inbox](#the-inbox)).
+2. It adds the documents that the store links to each project part (and to its base
    part). It does not add a document that the part excludes.
-2. It copies each missing copy from the store into the document folder.
-3. It moves each copy to the subfolder of the layout. It does not move a pinned file.
-4. It imports each new PDF file of the document folder into the store.
-5. It builds the index of each project document that has none.
-6. It writes the project file.
-7. The CLI builds the element map of each document. The MCP tool builds them in the
+3. It copies each missing copy from the store into the document folder.
+4. It moves each copy to the subfolder of the layout. It does not move a pinned file.
+5. It imports each new PDF file of the document folder into the store.
+6. It builds the index of each project document that has none.
+7. It writes the project file, and removes the inbox files that the project has now.
+8. The CLI builds the element map of each document. The MCP tool builds them in the
    background.
 
 The report gives a line for each change and each problem:
@@ -286,6 +289,7 @@ The report gives a line for each change and each problem:
 | `part not in the store` | The store has no part with this MPN. | On a new machine, the first sync makes the part from the copies: run sync again. If the line stays, link a document to the part (`project add-part MPN --document DOC`). |
 | `no part` | A new file of the folder that the store links to no project part. | Assign it with the command or call in the line. |
 | `problem` | For example two store parts with the same MPN, or a moved `[[part.document]]` block. | Do the step in the line. |
+| `inbox` | A file of the inbox: given to its parts, in the project already, or with no part. | For a file with no part: select the part, and assign the file with the command or call in the line. |
 
 ### New files in the folder
 
@@ -294,6 +298,38 @@ store. When the store links the document to a project part, sync adds it to that
 part with `pinned = true`. Else sync proposes a part from the file name. Assign the
 file with `datasheet-lens project add-part MPN --document DOC` (CLI) or
 `project_add_part` (MCP).
+
+### The inbox
+
+The inbox is the folder `_inbox` in the document folder (`datasheets/_inbox/`). Put
+the PDF files there that you download yourself: a datasheet that a tool could not
+download (a login or a captcha), or many datasheets at one time. `adopt` gives the
+path of the inbox when no URL gives the datasheet.
+
+For each file of the inbox, sync does these steps:
+
+1. It imports the file into the store.
+2. It finds the project parts that the document agrees with. A part agrees when its
+   MPN is an ordering code of the document, or when its MPN or its base part is the
+   part of the PDF or one of its variants.
+3. It compares the manufacturers. The manufacturer of the datasheet is the valid one:
+   a part with a manufacturer gets the document only from the same manufacturer. A
+   copy of a part can have the same MPN and its own datasheet.
+4. It looks at the documents of the part. Only a part with no datasheet gets the
+   document as its datasheet. The tool does not find the role of a document (errata,
+   manual, application note, a new revision): for a part with a datasheet, you
+   decide.
+5. It links the document to each part that it goes to, as `add-part` does. The copy
+   goes into the subfolder of the layout, and sync removes the file from the inbox.
+
+A file with no part stays in the inbox. The store has its document, and the report
+gives the part that the PDF names, and why a part that agrees did not get it. Select
+the part (and the role, when it is not the datasheet), and assign the file with
+`datasheet-lens project add-part MPN --document DOC` (CLI) or `project_add_part`
+(MCP). The next sync removes the file from the inbox. A file of a document that the
+project has already goes from the inbox too. When the project does not get a
+document (for example, two parts of the store have its MPN), the file stays, and the
+report gives a problem.
 
 ### PDF files outside the folder
 

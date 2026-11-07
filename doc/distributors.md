@@ -353,7 +353,9 @@ does these steps:
    name of the manufacturer, record it with `datasheet-lens maker alias NAME OTHER`.
    The result tells the
    URL that it used, and the URLs that failed. When no URL gives a PDF, the part comes
-   with no datasheet: find it with `links`.
+   with no datasheet. The result then gives the URLs to open in a web browser and,
+   in a project, the path of its inbox: save the file there, and run `sync` (see
+   [projects.md](projects.md#the-inbox)).
 3. It adds the document and the part to the store, and in a project folder to the
    project. The CLI copies the datasheet into the document folder of the project. With
    the MCP tool, run `project_sync` after it.

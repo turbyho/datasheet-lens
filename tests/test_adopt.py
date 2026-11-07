@@ -225,4 +225,18 @@ def test_texts_of_the_result(jlc, downloads, monkeypatch):  # noqa: F811
     monkeypatch.setattr(adopt_module, "datasheet_urls", lambda c, s, p=None, n=None: iter(["https://ti.com/x"]))
     text = "\n".join(adopt_module.adopt("jlcpcb", "C1004")["lines"])
     assert ("datasheet: NOT ADDED. The URLs that failed: https://ti.com/x: did not give a PDF (text/html): download "
-            "the file by hand. Find the datasheet") in text
+            "the file by hand.\nTell the user: download the datasheet of FET-D from https://ti.com/x in a web "
+            "browser, and add the PDF file with add_document (CLI: datasheet-lens add FILE).") in text
+
+
+def test_a_datasheet_for_the_inbox(jlc, downloads, monkeypatch, tmp_path):  # noqa: F811
+    """No URL gives the datasheet: the result gives the URLs and the inbox of
+    the project, for the user to save the file into."""
+    monkeypatch.setattr(adopt_module, "datasheet_urls", lambda c, s, p=None, n=None: iter(["https://ti.com/missing"]))
+    project = prj.init_project(tmp_path / "board")
+    project.inbox_path.rmdir()  # a project of an older version: the tool makes the inbox
+    text = "\n".join(adopt_module.adopt("jlcpcb", "C1004", project=prj.load(project.root))["lines"])
+    assert (f"Tell the user: download the datasheet of FET-D from https://ti.com/missing in a web browser, and save "
+            f"the PDF file into the inbox of the project: {project.inbox_path}. Then run project_sync (CLI: "
+            "datasheet-lens sync): it gives the file to FET-D.") in text
+    assert project.inbox_path.is_dir()

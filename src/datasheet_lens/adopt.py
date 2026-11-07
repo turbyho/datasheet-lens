@@ -231,8 +231,10 @@ def adopt(source: str, number: str = "", mpn: str = "", base: str = "", category
         lines.append(f"datasheet: in the store already (document {known.sha256[:12]}, {known.filename})")
         return _commit(c, source, base, category, project, lock, lines, known, new=False)
     failed: list[str] = []
+    tried: list[str] = []
     not_used: list[str] = []
     for url in datasheet_urls(c, source, project, not_used):
+        tried.append(url)
         doc = _download(url, lock, failed)
         if doc is not None:
             lines.append(f"datasheet: {url} (document {doc.sha256[:12]}, {doc.pages} pages)"
@@ -240,10 +242,27 @@ def adopt(source: str, number: str = "", mpn: str = "", base: str = "", category
             lines += _not_used_line(c, not_used)
             return _commit(c, source, base, category, project, lock, lines, doc, new=True)
     lines.append("datasheet: NOT ADDED. " + ("The URLs that failed: " + "; ".join(failed) + "." if failed
-                                             else "No source gives a datasheet URL.")
-                 + " Find the datasheet (part_links) and add it with add_document.")
+                                             else "No source gives a datasheet URL."))
+    if project is not None:  # the folder for the file of the user; an error only leaves it out
+        with contextlib.suppress(OSError):
+            project.inbox_path.mkdir(parents=True, exist_ok=True)
+    lines.append(_manual_line(c, project, tried))
     lines += _not_used_line(c, not_used)
     return _commit(c, source, base, category, project, lock, lines, None, new=False)
+
+
+def _manual_line(c: dict, project, urls: list[str]) -> str:
+    """The line for the user when no URL gives the datasheet (a login, a
+    captcha, a page of links): the URLs to open in a web browser, and the
+    folder to save the file into. In a project, the inbox: the next sync gives
+    the file to the part (project._inbox)."""
+    found = f"from {' or '.join(urls)}" if urls else f"(part_links of {c['mpn']} gives the search links)"
+    if project is not None:
+        target = (f"save the PDF file into the inbox of the project: {project.inbox_path}. Then run project_sync "
+                  f"(CLI: datasheet-lens sync): it gives the file to {c['mpn']}")
+    else:
+        target = "add the PDF file with add_document (CLI: datasheet-lens add FILE)"
+    return f"Tell the user: download the datasheet of {c['mpn']} {found} in a web browser, and {target}."
 
 
 def _not_used_line(c: dict, not_used: list[str]) -> list[str]:

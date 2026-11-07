@@ -36,6 +36,11 @@ from .store import LIBRARIES, ROLES, Document, Store, check_source, sha256_file
 
 PROJECT_FILE = "datasheet-lens.toml"
 DEFAULT_FOLDER = "datasheets"
+# The inbox: a subfolder of the folder for the PDF files that the user puts
+# there (a datasheet that a tool could not download, or many datasheets at one
+# time). sync imports each file into the store and gives it to the project
+# parts that it agrees with (see _inbox). It is not a folder of copies.
+INBOX = "_inbox"
 # The subfolder of a copy in the folder: a pattern with {manufacturer},
 # {category} (the function of the part) and {mpn}. "" puts all copies into the
 # folder itself. A missing value gives the subfolder UNKNOWN.
@@ -105,6 +110,11 @@ class Project:
         """The path of a file in the folder (rel is relative to the folder)."""
         return self.folder_path.joinpath(*_rel_parts(rel, "the file"))
 
+    @property
+    def inbox_path(self) -> Path:
+        """The inbox in the folder (see INBOX)."""
+        return self.folder_path / INBOX
+
     def find(self, mpn: str, manufacturer: str = "", store: Store | None = None) -> dict | None:
         """The part with this MPN (and this manufacturer, if given), or None. With
         the store, two names of one manufacturer are the same (makers.same)."""
@@ -134,7 +144,7 @@ def init_project(root: Path | str, folder: str = DEFAULT_FOLDER, layout: str = D
     if (root / PROJECT_FILE).exists():
         raise LensError(f"{root / PROJECT_FILE} exists already")
     project = Project(root, _rel(folder, "the folder"), layout=_check_layout(layout))
-    project.folder_path.mkdir(parents=True, exist_ok=True)
+    project.inbox_path.mkdir(parents=True, exist_ok=True)
     save(project)
     return project
 
@@ -576,12 +586,153 @@ def _hash(path: Path) -> str:
 
 
 def _folder_files(project: Project) -> dict[str, str]:
-    """{relative file name: SHA-256} of the PDF files in the folder."""
+    """{relative file name: SHA-256} of the PDF files in the folder. A file of
+    the inbox is in the list only when a reference names it: then it is a copy
+    (a pinned file of an older version, or a layout that gives the folder of
+    the inbox), not a file for _inbox."""
     folder = project.folder_path
     if not folder.is_dir():
         return {}
-    return {p.relative_to(folder).as_posix(): _hash(p)
-            for p in sorted(folder.rglob("*")) if p.is_file() and p.suffix.lower() == ".pdf"}
+    named = _used(project)
+    out = {}
+    for p in sorted(folder.rglob("*")):
+        rel = p.relative_to(folder)
+        if p.is_file() and p.suffix.lower() == ".pdf" and (rel.parts[0] != INBOX or rel.as_posix() in named):
+            out[rel.as_posix()] = _hash(p)
+    return out
+
+
+def _inbox_files(project: Project) -> list[Path]:
+    """The PDF files of the inbox, not the copies that a reference names (see
+    _folder_files)."""
+    inbox = project.inbox_path
+    if not inbox.is_dir():
+        return []
+    named = _used(project)
+    return [p for p in sorted(inbox.rglob("*")) if p.is_file() and p.suffix.lower() == ".pdf"
+            and p.relative_to(project.folder_path).as_posix() not in named]
+
+
+def _has_datasheet(project_part: dict, store: Store) -> bool:
+    """True if the part has a datasheet: in the project file, or in the store
+    (the part or its base part)."""
+    if any(d.get("role", "datasheet") == "datasheet" for d in project_part["documents"]):
+        return True
+    rows = store.match_parts(project_part["mpn"], project_part["manufacturer"])
+    return len(rows) == 1 and any(r["role"] == "datasheet" for r in store.documents_of_part(rows[0]["id"]))
+
+
+def _inbox_parts(project: Project, store: Store, doc: Document) -> tuple[list[dict], str, list[str]]:
+    """The project parts that a document of the inbox goes to, the part that
+    the PDF proposes ("MPN (manufacturer)" or ""), and the reasons why a part
+    that agrees does not get it.
+
+    A part agrees when its MPN is an ordering code of the document, or when its
+    MPN or its base part is the part of the PDF or one of its variants. A live
+    check, 2026-11-07: 21 of 28 datasheets of a project agreed with their parts,
+    none with a different part. The ordering codes come from the index of the
+    document.
+
+    A part that agrees gets the document only when these are true:
+    - The manufacturer of the datasheet is the manufacturer of the part. The
+      manufacturer of the datasheet is the valid one, and a copy of a part has
+      the same MPN and its own datasheet. A name that the registry does not
+      relate to the name of the part stops the link: the user decides.
+    - The part has no datasheet. The tool does not find the role of a document
+      (errata, manual, application note): the role is datasheet only for a part
+      with no datasheet, and the user decides for the other parts."""
+    from .identify import ordering_codes, propose
+
+    proposal = propose(doc)
+    codes = {code.upper() for code, *_ in ordering_codes(store, doc.id, proposal)}
+    names = {n.upper() for n in (proposal.mpn, *proposal.variants) if n}
+    agree, reasons = [], []
+    for part in project.parts:
+        if doc.sha256 in part.get("exclude", []):
+            continue
+        mpn, base = part["mpn"].upper(), (part.get("base") or "").upper()
+        if not (mpn in codes or mpn in names or (base and base in names)):
+            continue
+        name = f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'})"
+        if part["manufacturer"] and not (proposal.manufacturer
+                                         and store.same_maker(part["manufacturer"], proposal.manufacturer)):
+            reasons.append(f"the MPN agrees with {name}, but the datasheet is not of the same manufacturer, or "
+                           "the tool cannot read its manufacturer")
+        elif _has_datasheet(part, store):
+            reasons.append(f"the MPN agrees with {name}, but the part has a datasheet already: is the file a "
+                           "different document (errata, manual) or a new revision?")
+        else:
+            agree.append(part)
+    text = f"{proposal.mpn} ({proposal.manufacturer or 'manufacturer unknown'})" if proposal.mpn else ""
+    return agree, text, reasons
+
+
+def _inbox(project: Project, store: Store, apply: bool, report: dict) -> list[dict]:
+    """The files of the inbox: import each one into the store with its index,
+    and link it to the project parts that it goes to (_inbox_parts), as add_part
+    does. The next steps of sync give the documents to the parts and make their
+    copies. A file with no part stays for the user. A file that the project has
+    already goes from the inbox. Gives the files that can go from the inbox
+    ({"path", "sha256"}): sync removes each one at its end, when the project has
+    its document then. A dry run (apply false) only tells the files."""
+    from .indexer import build_index
+
+    if apply:
+        project.inbox_path.mkdir(parents=True, exist_ok=True)
+    referenced = {d["sha256"] for part in project.parts for d in part["documents"]}
+    out = []
+    for path in _inbox_files(project):
+        rel = path.relative_to(project.folder_path).as_posix()
+        if not apply:
+            known = _hash(path) in referenced
+            report["inbox_known" if known else "inbox_new"].append(rel)
+            continue
+        try:
+            doc = store.add_document(path)
+            report["documents"].append(doc.id)
+            if doc.sha256 in referenced:
+                report["inbox_known"].append(rel)
+                out.append({"path": path, "sha256": doc.sha256})
+                continue
+            if store.build(doc.id, "index") is None:
+                build_index(store, doc.id)  # the ordering codes come from the index
+            parts, proposal, reasons = _inbox_parts(project, store, doc)
+            for part in parts:
+                store_part(store, part["mpn"], part["manufacturer"], doc.sha256, "datasheet", "",
+                           part.get("base", ""))
+        except (LensError, OSError, pdfium.PdfiumError) as e:
+            report["problems"].append(f"{rel}: not taken from the inbox: {e}")
+            continue
+        if not parts:
+            report["inbox_waiting"].append({"file": rel, "sha256": doc.sha256, "proposal": proposal,
+                                            "other": reasons})
+            continue
+        report["inbox_assigned"].append({"file": rel, "sha256": doc.sha256, "parts": [p["mpn"] for p in parts]})
+        out.append({"path": path, "sha256": doc.sha256})
+    return out
+
+
+def _remove_from_inbox(project: Project, files: list[dict], report: dict) -> None:
+    """Remove the files of the inbox whose document the project has now, and
+    the empty subfolders of the inbox. The inbox stays. A file whose document
+    the project did not get (for example: two parts of the store have its MPN)
+    stays, with a problem."""
+    referenced = {d["sha256"] for part in project.parts for d in part["documents"]}
+    for item in files:
+        path = item["path"]
+        if item["sha256"] not in referenced:
+            rel = path.relative_to(project.folder_path).as_posix()
+            report["inbox_assigned"] = [a for a in report["inbox_assigned"] if a["file"] != rel]
+            report["problems"].append(f"{rel}: the store links it to its parts, but the project did not get it "
+                                      "(see the problems above): the file stays in the inbox")
+            continue
+        with contextlib.suppress(FileNotFoundError):
+            path.unlink()
+        folder = path.parent
+        with contextlib.suppress(OSError):
+            while folder != project.inbox_path and folder.is_dir() and not any(folder.iterdir()):
+                folder.rmdir()
+                folder = folder.parent
 
 
 # Folders of a repository that do not hold the datasheets of the design.
@@ -2220,7 +2371,10 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
         project = copy.deepcopy(project)
 
     report = {k: [] for k in ("ok", "copied", "restored", "changed", "missing", "imported", "added", "moved",
-                              "suggested", "unassigned", "unknown_parts", "problems", "misplaced", "documents")}
+                              "suggested", "unassigned", "unknown_parts", "problems", "misplaced", "documents",
+                              "inbox_assigned", "inbox_known", "inbox_waiting", "inbox_new")}
+    # 0. The inbox: its documents go into the store, linked to their parts.
+    from_inbox = _inbox(project, store, apply, report)
     files = _folder_files(project)
     placed: set[str] = set()  # the documents whose copy is at its place: the first part decides
     part_ids: dict[int, int] = {}  # id(project part) -> the ID of its store part
@@ -2389,6 +2543,7 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
                 doc = store.document(doc_id)
                 report["problems"].append(f"{doc.filename} ({doc.sha256[:12]}): no index: {e}")
         save(project)
+        _remove_from_inbox(project, from_inbox, report)
     report["outside"], report["outside_complete"] = outside_pdfs(project, store)
     return report
 
@@ -2442,6 +2597,21 @@ def format_report(report: dict, apply: bool, add_hint: tuple[str, str]) -> list[
     for item in report["unassigned"]:
         lines.append(f"no part: {item['file']} ({item['sha256'][:12]}); assign it with "
                      f"{hint('<MPN>', item['sha256'])}, with the concrete orderable MPN of the BOM")
+    # The inbox (see _inbox).
+    for item in report["inbox_assigned"]:
+        lines.append(f"inbox: {item['file']}: the datasheet of {', '.join(item['parts'])}; its copy is in the "
+                     "subfolder of the part, and the file is not in the inbox now")
+    lines += [f"inbox: {rel}: the project has this document; "
+              + ("the file is not in the inbox now" if apply else "the next sync takes the file from the inbox")
+              for rel in report["inbox_known"]]
+    for item in report["inbox_waiting"]:
+        lines.append(f"inbox: {item['file']} ({item['sha256'][:12]}): no part of the project agrees"
+                     + (f"; the PDF gives the part {item['proposal']}" if item["proposal"] else "")
+                     + "".join(f"; {reason}" for reason in item["other"])
+                     + f". Ask the user for the part (and the role, when it is not the datasheet), then assign it "
+                     f"with {hint('<MPN>', item['sha256'])}. The next sync then takes the file from the inbox.")
+    lines += [f"inbox: {rel}: the next sync imports it and looks for the parts that it agrees with"
+              for rel in report["inbox_new"]]
     # The folders with store documents in detail, the others in one line.
     outside = report.get("outside", [])
     for g in (g for g in outside if g["in_store"]):

@@ -448,7 +448,9 @@ def test_the_add_hints_of_the_cli_and_the_server():
     from datasheet_lens import cli, server
 
     report = {k: [] for k in ("ok", "copied", "restored", "changed", "missing", "imported", "added", "moved",
-                              "unknown_parts", "problems", "misplaced", "suggested", "unassigned")}
+                              "unknown_parts", "problems", "misplaced", "suggested", "unassigned",
+                              "inbox_assigned", "inbox_known", "inbox_waiting", "inbox_new")}
+    report["inbox_waiting"] = [{"file": "_inbox/d.pdf", "sha256": "d" * 64, "proposal": "", "other": []}]
     report["misplaced"] = [{"file": "a.pdf", "mpn": "TLV755P", "part": "TLV75533PDBVR", "base": "TLV755P",
                             "sha256": "a" * 64, "linked": ["X"]},
                            {"file": "b.pdf", "mpn": "OPA2134", "part": "OPA2134", "base": "", "sha256": "b" * 64,
@@ -461,6 +463,8 @@ def test_the_add_hints_of_the_cli_and_the_server():
     text = "\n".join(prj.format_report(report, False, cli.PROJECT_ADD_HINT))
     assert 'project add-part "TLV75533PDBVR" --base "TLV755P" --document aaaaaaaaaaaa' in text
     assert 'project add-part "OPA2134" --document bbbbbbbbbbbb' in text
+    assert 'project add-part "<MPN>" --document dddddddddddd' in text
+    assert "project_add_part(mpn='<MPN>', document='dddddddddddd')" in mcp
 
 
 def test_pdf_files_outside_the_folder(store_home, text_pdf, tmp_path):
@@ -1206,3 +1210,111 @@ def test_bom_conflict_rules(tmp_path):
     start = time.monotonic()
     assert len(list(_records("Ref||MPN\nU1||X1" + "||" * 8000 + "\n", "||", '"'))[1][1]) == 8002
     assert time.monotonic() - start < 1
+
+
+INBOX_OPA = [[(50, 60, 14, "OPA2134 High Performance Audio Operational Amplifier"),
+              (50, 760, 8, "TEXAS INSTRUMENTS")]]
+INBOX_COPY = [[(50, 60, 14, "OPA2134 Audio Operational Amplifier"), (50, 760, 8, "ONSEMI")]]
+
+
+def test_the_inbox(store_home, text_pdf, tmp_path):
+    """The user puts PDF files into the inbox. sync imports each one, and gives
+    it to the project parts that it agrees with: the copy goes into the
+    subfolder of the part, and the file is not in the inbox then. A file with
+    no part stays in the inbox for the user to decide. A datasheet of a
+    different manufacturer with the same MPN is not given to the part."""
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        assert project.inbox_path.is_dir()
+        prj.add_part(project, store, "OPA2134PA", manufacturer="TI", base="OPA2134")
+        inbox = project.inbox_path
+        shutil.copyfile(text_pdf("opa2134.pdf", INBOX_OPA), inbox / "opa2134.pdf")
+        shutil.copyfile(text_pdf("copy.pdf", INBOX_COPY), inbox / "copy.pdf")
+        (inbox / "more").mkdir()
+        shutil.copyfile(text_pdf("widget.pdf", [[(50, 60, 14, "XYZ123 Widget")]]), inbox / "more" / "widget.pdf")
+        dry = prj.sync(prj.load(project.root), store, apply=False)
+        assert dry["inbox_new"] == ["_inbox/copy.pdf", "_inbox/more/widget.pdf", "_inbox/opa2134.pdf"]
+        assert (inbox / "opa2134.pdf").is_file() and dry["imported"] == []  # a dry run changes nothing
+        report = prj.sync(prj.load(project.root), store)
+        assert [(a["file"], a["parts"]) for a in report["inbox_assigned"]] == [("_inbox/opa2134.pdf", ["OPA2134PA"])]
+        [copy, widget] = report["inbox_waiting"]
+        assert (copy["file"], copy["proposal"]) == ("_inbox/copy.pdf", "OPA2134 (onsemi)")
+        assert copy["other"] == ["the MPN agrees with OPA2134PA (TI), but the datasheet is not of the same "
+                                 "manufacturer, or the tool cannot read its manufacturer"]
+        assert (widget["file"], widget["proposal"]) == ("_inbox/more/widget.pdf", "XYZ123 (manufacturer unknown)")
+        lines = prj.format_report(report, True, ("add {part}{base} {sha}", " -b {base}"))
+        assert any(line.startswith("inbox: _inbox/more/widget.pdf (") and "the PDF gives the part XYZ123" in line
+                   and f"assign it with add <MPN> {widget['sha256'][:12]}" in line for line in lines)
+        part = prj.load(project.root).parts[0]
+        assert [(d["file"], d.get("pinned", False)) for d in part["documents"]] == [
+            ("Texas Instruments/opa2134.pdf", False)]
+        assert (project.folder_path / "Texas Instruments/opa2134.pdf").is_file()
+        assert not (inbox / "opa2134.pdf").exists() and (inbox / "copy.pdf").is_file()
+        assert store.document(widget["sha256"]) is not None  # in the store, with no part
+        # The user decides: the widget is XYZ123. The next sync takes the file from the inbox.
+        prj.add_part(prj.load(project.root), store, "XYZ123", document=widget["sha256"][:12])
+        report = prj.sync(prj.load(project.root), store)
+        assert report["inbox_known"] == ["_inbox/more/widget.pdf"]
+        assert not (inbox / "more").exists() and inbox.is_dir()
+        assert (project.folder_path / "_unknown/widget.pdf").is_file()  # XYZ123 has no manufacturer
+
+
+INBOX_CODES = [[(50, 60, 14, "OPA2134 High Performance Audio Operational Amplifier"),
+                (50, 300, 9, "ORDERING INFORMATION"), (50, 320, 9, "OPA2134UA SO-8 Tape and reel"),
+                (50, 760, 8, "TEXAS INSTRUMENTS")]]
+
+
+def test_the_inbox_rules(store_home, text_pdf, tmp_path, monkeypatch):
+    """The ordering codes come from the index of a new document. A part with a
+    datasheet does not get a second document from the inbox: the user decides
+    (errata, manual, revision). A file whose document the project did not get
+    stays in the inbox. An error of one file does not stop the sync. A copy
+    in the inbox that a reference names is a copy, not a file of the inbox."""
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "OPA2134UA", manufacturer="TI")  # no base part: only the code agrees
+        inbox = project.inbox_path
+        shutil.copyfile(text_pdf("opa.pdf", INBOX_CODES), inbox / "opa.pdf")
+        report = prj.sync(prj.load(project.root), store)
+        assert [(a["file"], a["parts"]) for a in report["inbox_assigned"]] == [("_inbox/opa.pdf", ["OPA2134UA"])]
+        # A second document for the same part: it waits for the user.
+        shutil.copyfile(text_pdf("errata.pdf", [INBOX_CODES[0] + [(50, 400, 9, "Errata")]]), inbox / "errata.pdf")
+        report = prj.sync(prj.load(project.root), store)
+        [item] = report["inbox_waiting"]
+        assert "OPA2134UA (TI), but the part has a datasheet already" in item["other"][0]
+        assert (inbox / "errata.pdf").is_file()
+        # The dry run tells a file that the project has already.
+        prj.add_part(prj.load(project.root), store, "OPA2134UA", document=item["sha256"][:12], role="errata")
+        assert prj.sync(prj.load(project.root), store, apply=False)["inbox_known"] == ["_inbox/errata.pdf"]
+        assert prj.sync(prj.load(project.root), store)["inbox_known"] == ["_inbox/errata.pdf"]
+        # The project does not get the document: the file stays, with a problem.
+        prj.add_part(prj.load(project.root), store, "OPA2134PA", manufacturer="TI", base="OPA2134")
+        shutil.copyfile(text_pdf("pa.pdf", INBOX_OPA), inbox / "pa.pdf")
+        monkeypatch.setattr(prj, "store_part", lambda *args, **kwargs: (None, None))
+        report = prj.sync(prj.load(project.root), store)
+        assert report["inbox_assigned"] == [] and (inbox / "pa.pdf").is_file()
+        assert any(p.startswith("_inbox/pa.pdf: the store links it to its parts, but the project did not get it")
+                   for p in report["problems"])
+        monkeypatch.undo()
+        # An error of one file: a problem; the other files continue.
+        from datasheet_lens import identify
+
+        real = identify.propose
+        monkeypatch.setattr(identify, "propose", lambda doc: (_ for _ in ()).throw(LensError("broken text"))
+                            if doc.filename == "pa.pdf" else real(doc))
+        shutil.copyfile(text_pdf("widget.pdf", [[(50, 60, 14, "XYZ123 Widget")]]), inbox / "widget.pdf")
+        report = prj.sync(prj.load(project.root), store)
+        assert "_inbox/pa.pdf: not taken from the inbox: broken text" in report["problems"]
+        assert [w["file"] for w in report["inbox_waiting"]] == ["_inbox/widget.pdf"]
+        monkeypatch.undo()
+        # A reference to a file in the inbox (a pinned file of an older version): a copy.
+        loaded = prj.load(project.root)
+        widget = report["inbox_waiting"][0]["sha256"]
+        prj.add_part(loaded, store, "XYZ123", document=widget[:12])
+        loaded = prj.load(project.root)
+        part = next(p for p in loaded.parts if p["mpn"] == "XYZ123")
+        part["documents"] = [{"sha256": widget, "file": "_inbox/widget.pdf", "role": "datasheet", "pinned": True}]
+        prj.save(loaded)
+        for _ in range(2):
+            report = prj.sync(prj.load(project.root), store)
+            assert (inbox / "widget.pdf").is_file() and "_inbox/widget.pdf" not in report["inbox_known"]

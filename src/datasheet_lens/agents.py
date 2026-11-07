@@ -49,7 +49,9 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
   project_status (CLI `datasheet-lens ls`) gives the parts and documents of the
   file. If you cannot get a datasheet, tell the user, with the search links of
   part_links (CLI `datasheet-lens links MPN`; also for symbols, footprints and
-  3D models). Tell the user about each change, different or extra part, and when
+  3D models). The user saves a downloaded datasheet into the inbox
+  (`_inbox` in the folder of the copies): project_sync (CLI
+  `datasheet-lens sync`) gives it to its parts. Tell the user about each change, different or extra part, and when
   the MPN of the CAD project and the datasheet do not agree. Remove a part only
   when the user agrees: project_remove_part (CLI `datasheet-lens rm MPN`). The
   MCP server instructions give the full procedure.

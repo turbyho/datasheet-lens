@@ -116,7 +116,7 @@ project folder. The other tools only read.
 | `project_update_part` | Change the MPN, base part, category or manufacturer of a project part in place. | `mpn`, `new_mpn`, `base`, `category`, `new_manufacturer`, `manufacturer`, `path` | store, project file |
 | `project_remove_part` | Remove a part from the project, and delete its copies that no other part uses. | `mpn`, `manufacturer`, `delete_pinned`, `dry_run`, `path` | project file, project folder |
 | `project_remove_document` | Remove a document from the parts of the project. The parts stay. | `document`, `mpn`, `manufacturer`, `delete_pinned`, `dry_run`, `path` | project file, project folder |
-| `project_sync` | Copy the documents into the project folder, move copies to the subfolders of the layout, and import new PDF files of the folder. | `path`, `restore` | store, project file, project folder |
+| `project_sync` | Copy the documents into the project folder, move copies to the subfolders of the layout, import new PDF files of the folder, and give the files of the inbox to their parts. | `path`, `restore` | store, project file, project folder |
 
 ### Distributors and links
 

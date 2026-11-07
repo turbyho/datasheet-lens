@@ -323,7 +323,7 @@ def _family_codes(store: Store, docs: list, key: str, limit: int = 8) -> tuple[b
 MAX_CODES = 100
 
 
-def ordering_codes(store: Store, doc_id: int) -> list[tuple[str, int, str, bool]]:
+def ordering_codes(store: Store, doc_id: int, proposal: Proposal | None = None) -> list[tuple[str, int, str, bool]]:
     """The orderable codes in the text layer of a document: (code, page, line,
     table). A code starts with a part of the document (ADC34J24 ->
     ADC34J24IRGZR), or it fits a family name with placeholders (TLV755xxP ->
@@ -331,11 +331,13 @@ def ordering_codes(store: Store, doc_id: int) -> list[tuple[str, int, str, bool]
     ordering table does; it can give the package, the packing, the temperature
     and the state. These codes come first. A list such as TMP112A/B/D/N is not
     a code, and see base_hint. The parts of the document are the parts that the
-    store links to it, or else the proposal from the PDF."""
+    store links to it, or else the proposal from the PDF (proposal: the
+    proposal that the caller has made already). The text layer comes from the
+    index of the document."""
     keys = sorted({p["mpn"] for p in store.parts_of_document(doc_id) if p["base_id"] is None}, key=len)
     if not keys:
-        proposal = propose(store.document(doc_id)).mpn
-        keys = [proposal] if proposal else []
+        mpn = (proposal or propose(store.document(doc_id))).mpn
+        keys = [mpn] if mpn else []
     order_rx = re.compile(ORDER_WORDS, re.I)
     variants = {k.upper() for k in keys}  # TL071A of a datasheet of TL071 is a variant, not a code
     found: dict[str, tuple[int, str, bool]] = {}
