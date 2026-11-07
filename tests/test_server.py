@@ -419,3 +419,21 @@ def test_element_text_of_a_table_gives_the_image_call(store_home, text_pdf):
     assert lines[3] == image.format(ref, "p1.T8")  # no caption label: no caption call
     assert lines[5] == image.format(ref, "p1.F9") and lines[7] == image.format(ref, "p1.Q9")
     assert lines[8].startswith("p1.P1 (") and len(lines) == 9  # a paragraph: its text only
+
+
+def test_add_document_title(store_home, text_pdf):
+    """The parameter title, and the title in the result. The title of a document
+    that the store has already does not change: the result tells it."""
+    plain = text_pdf("plain.pdf", [PAGE])
+    out = text_of(call("add_document", path=str(plain)))
+    assert "\nno title (the PDF metadata has none)" in out
+    ldo = text_pdf("ldo.pdf", [[(50, 60, 14, "TLV755P 500-mA Low-Dropout Regulator")]])
+    title = "TLV755P 500-mA Low-Dropout Regulator"
+    out = text_of(call("add_document", path=str(ldo), part="TLV755P", manufacturer="TI", title=title))
+    assert f"\ntitle: {title!r}\n" in out + "\n"
+    assert f"title: {title}" in text_of(call("list_documents", part="TLV755P"))
+    out = text_of(call("add_document", path=str(ldo), title="An other title"))
+    assert (f"\ntitle: {title!r}. The store has this document already: the parameter title does not change it"
+            in out)
+    out = text_of(call("add_document", path=str(ldo)))
+    assert f"\ntitle: {title!r} (from the PDF metadata or an earlier add)" in out

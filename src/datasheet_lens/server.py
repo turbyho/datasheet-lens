@@ -315,7 +315,11 @@ def add_document(
         role: Role = "datasheet",
         variants: Annotated[list[str] | None, Field(description=(
             "The other parts that the same datasheet covers, for example [\"ADC34J22\", \"ADC34J23\"] "
-            "for ADC34J24. Only with part."))] = None) -> str:
+            "for ADC34J24. Only with part."))] = None,
+        title: Annotated[str, Field(description=(
+            "The title of the document, for example \"TLV755P 500-mA Low-Dropout Regulator\". Empty: the "
+            "title of the PDF metadata. The title of a document that the store has already does not change."
+        ))] = "") -> str:
     """Add a PDF document to the store: copy or download it, build its index and
     its element map, and link it to its part. Use it when list_documents does
     not find the datasheet; the URL can come from a distributor tool or from the
@@ -326,8 +330,10 @@ def add_document(
     rough proposal of the MPN from the text of the PDF; it can be wrong. Read the
     MPN on page 1 of the original, then call add_document again with part. No
     tool removes a link of a document to a part in the store: give part only
-    when the MPN is sure. To put the part into the user project:
-    project_add_part."""
+    when the MPN is sure. The result gives the title of the document: the
+    title of the PDF metadata can be wrong (a file name, a different
+    document). No tool changes the title later: give title when you know it.
+    To put the part into the user project: project_add_part."""
     from pathlib import Path
 
     from .config import data_home
@@ -346,7 +352,7 @@ def add_document(
         else:
             file, source = Path(path).expanduser(), ""
         with _add_lock, Store() as store:
-            doc = store.add_document(file, source_url=source, move=bool(source))
+            doc = store.add_document(file, title=title.strip(), source_url=source, move=bool(source))
         # The index is not under _add_lock: build_index makes one build at a time,
         # and a different call that holds the lock of a project folder can wait
         # for _add_lock (the order of the locks, lock.py).
@@ -365,7 +371,18 @@ def add_document(
     problems = "".join(f"\n{f}" for f in failures)
     return (f"document {doc.sha256[:12]}: {doc.filename}, {doc.pages} pages; index: "
             f"{idx['outline']} outline entries, {idx['captions']} captions; element map: {text}"
-            + problems + proposal)
+            + _title_line(doc, title.strip()) + problems + proposal)
+
+
+def _title_line(doc, title: str) -> str:
+    """The title of the document that add_document added or found. A title that
+    the store did not take: the store had the document already."""
+    if title and doc.title != title:
+        return (f"\ntitle: {doc.title!r}. The store has this document already: the parameter title does not "
+                "change it")
+    if doc.title:
+        return f"\ntitle: {doc.title!r}" + ("" if title else " (from the PDF metadata or an earlier add)")
+    return "\nno title (the PDF metadata has none)"
 
 
 def _proposal(store: Store, doc) -> str:
