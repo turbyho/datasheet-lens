@@ -46,7 +46,7 @@ the code of the working tree.
 | `keyring` | The API keys in the key store of the system. |
 | `docling` (extra `layout`) | The layout model of the element map. |
 | `fastapi`, `uvicorn`, `asyncpg`, `boto3` (extra `server`) | The team server: API, PostgreSQL, S3 object store. |
-| `pytest` (extra `dev`) | The tests. |
+| `pytest`, `httpx` (extra `dev`) | The tests. The team server tests use `httpx` for the object store and the FastAPI `TestClient`. |
 
 The PNG encoder and the HTTP client (also the client of the team server) use only the
 standard library.
@@ -86,8 +86,14 @@ with docling (docling must be installed).
 ### Tests of the team server
 
 The tests of the team server and of its client use a real PostgreSQL and a real S3
-object store (Garage). They run only with these environment variables; else pytest
-skips them:
+object store (Garage). They need the extras `dev` and `server`:
+
+```sh
+.venv/bin/pip install -e ".[dev,server]"
+```
+
+They run only with these environment variables. Without them, pytest skips the
+tests:
 
 | Variable | Content |
 |---|---|

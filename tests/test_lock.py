@@ -84,15 +84,13 @@ def test_a_different_process_makes_the_command_wait(store_home, tmp_path):
     """The CLI and the MCP server are two processes: a sync waits for the lock
     of the other process."""
     project = prj.init_project(tmp_path / "board")
-    other = subprocess.Popen([sys.executable, "-c", HOLD, str(project.root), "0.6"], stdout=subprocess.PIPE,
-                             text=True)
-    try:
+    # The with block closes the pipe of stdout and waits for the process (it stops after 0.6 s).
+    with subprocess.Popen([sys.executable, "-c", HOLD, str(project.root), "0.6"], stdout=subprocess.PIPE,
+                          text=True) as other:
         assert other.stdout.readline().strip() == "held"
         start = time.monotonic()
         assert main(["sync", "-p", str(project.root)]) == 0
         assert time.monotonic() - start >= 0.3
-    finally:
-        other.wait(10)
     assert lock.lock_path(project.root).parent == store_home / "locks"
 
 

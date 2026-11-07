@@ -46,7 +46,9 @@ Issues = "https://github.com/turbyho/datasheet-lens/issues"
 layout = ["docling>=2.144"]
 # The team server (dslens-server, dslens-admin): API, PostgreSQL, S3 object store.
 server = ["fastapi>=0.162", "uvicorn[standard]>=0.54", "asyncpg>=0.32", "boto3>=1.43"]
-dev = ["pytest>=8"]
+# The tests. The team server tests use httpx for the presigned URLs of the object store
+# and for the FastAPI TestClient.
+dev = ["pytest>=8", "httpx>=0.28"]
 
 [project.scripts]
 datasheet-lens = "datasheet_lens.cli:main"

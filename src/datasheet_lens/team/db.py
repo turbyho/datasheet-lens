@@ -11,7 +11,7 @@ import secrets
 from typing import Any
 
 from .config import ROLES
-from .sync import SCHEMA as SYNC_SCHEMA
+from .sync import SCHEMA as SYNC_SCHEMA, RegistryCache
 
 # 2: the shared tables (sync.SCHEMA); 3: the bundles of derived data; 4: the purchase
 # sources of the parts (sync.SCHEMA makes the new table on the next start).
@@ -65,17 +65,22 @@ def token_hash(token: str) -> bytes:
 
 
 class Database:
-    """A pool of connections to the database of the server."""
+    """A pool of connections to the database of the server, and the registry
+    cache of the pushes (sync.push). The pool and the cache have the same life:
+    connect makes the two, close removes the two. Thus the cache is of this
+    database, and the event loop of the pool is the only user of the cache."""
 
     def __init__(self, url: str, min_size: int = 1, max_size: int = 10):
         self.url, self.min_size, self.max_size = url, min_size, max_size
         self.pool: Any = None
+        self.registries: RegistryCache | None = None
 
     async def connect(self) -> None:
         import asyncpg
 
         self.pool = await asyncpg.create_pool(self.url, min_size=self.min_size, max_size=self.max_size,
                                               command_timeout=60)
+        self.registries = RegistryCache()
         async with self.pool.acquire() as conn:  # the pool connects lazily: find a wrong URL now
             await conn.fetchval("SELECT 1")
 
@@ -83,6 +88,7 @@ class Database:
         if self.pool is not None:
             await self.pool.close()
             self.pool = None
+        self.registries = None
 
     async def init_schema(self) -> None:
         """Make the tables (a second run changes nothing)."""

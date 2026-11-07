@@ -43,37 +43,47 @@ def db():
         await admin_sql(f"CREATE DATABASE {name}")
         database = Database(f"{base}/{name}")
         await database.connect()
-        await database.init_schema()
-        accounts = {}
-        for account, role in (("reader", "reader"), ("alice", "contributor"), ("rita", "reviewer"),
-                              ("adam", "admin")):
-            accounts[account] = {"id": await database.create_account(account, role), "name": account, "role": role}
-        for sha in (DOC, DOC2):
-            await database.add_blob(sha, 1000, "application/pdf", accounts["adam"]["id"])
-        await database.close()
-        return accounts
+        try:
+            await database.init_schema()
+            accounts = {}
+            for account, role in (("reader", "reader"), ("alice", "contributor"), ("rita", "reviewer"),
+                                  ("adam", "admin")):
+                accounts[account] = {"id": await database.create_account(account, role), "name": account,
+                                     "role": role}
+            for sha in (DOC, DOC2):
+                await database.add_blob(sha, 1000, "application/pdf", accounts["adam"]["id"])
+            return accounts
+        finally:
+            await database.close()
 
     accounts = run(prepare())
+    # The drop has no FORCE: a connection that a test leaves open is an error of the test.
     yield {"url": f"{base}/{name}", **accounts}
-    run(admin_sql(f"DROP DATABASE {name} WITH (FORCE)"))
+    run(admin_sql(f"DROP DATABASE {name}"))
 
 
-def call(db, func, *args):
-    """Run a function of sync with a new pool (one event loop for each call)."""
+def with_database(db, func, *args):
+    """Run func(database, *args) with a new connected Database: a new pool and
+    registry cache, one event loop for each call."""
 
     async def go():
         database = Database(db["url"], max_size=4)
         await database.connect()
         try:
-            return await func(database.pool, *args)
+            return await func(database, *args)
         finally:
             await database.close()
 
     return run(go())
 
 
+def call(db, func, *args):
+    """Run func(pool, *args), a function of sync, with a new pool."""
+    return with_database(db, lambda database, *rest: func(database.pool, *rest), *args)
+
+
 def push(db, account, *changes):
-    return call(db, sync.push, db[account], [{"seq": i, **c} for i, c in enumerate(changes)])
+    return with_database(db, sync.push, db[account], [{"seq": i, **c} for i, c in enumerate(changes)])
 
 
 def pull_all(db, cursor=None):
@@ -250,6 +260,72 @@ def test_relation_merges_parts(db):
     assert parts["p2"]["deleted"] and parts["p2"]["merged_into"] == "p1"
 
 
+def test_registry_cache_follows_the_relations(db, monkeypatch):
+    """One Database (one pool and one registry cache) for all pushes, as in the
+    app: the cache gets each new relation, keeps no refused relation, loads the
+    registry again after a change of a relation in the database, and loads
+    nothing for a push with no change of a relation."""
+    distinct = {"tbl": "maker_relations", "op": "insert", "key": "r0",
+                "data": {"relation": "distinct", "name": "Proto Semi", "other": "Proto Semiconductor",
+                         "created": "2026-11-01T09:00:00+00:00"}}
+    alias = {"tbl": "maker_relations", "op": "insert", "key": "r1",
+             "data": {"relation": "alias", "name": "Proto Semiconductor", "other": "Proto Semi",
+                      "created": "2026-11-02T09:00:00+00:00"}}
+    loads = []
+    load = sync.Registry.load.__func__
+
+    async def counted(cls, conn):
+        loads.append(1)
+        return await load(cls, conn)
+
+    monkeypatch.setattr(sync.Registry, "load", classmethod(counted))
+
+    async def go(database):
+        async def send(*changes):
+            before = len(loads)
+            answer = results(await sync.push(database, db["alice"],
+                                             [{"seq": i, **c} for i, c in enumerate(changes)]))
+            return answer, len(loads) - before
+
+        answers = [await send(distinct),
+                   await send(part("p1", "X100", "Proto Semi")),
+                   await send(part("p2", "X100", "Proto Semiconductor")),  # distinct: a second part
+                   await send(alias, part("p3", "X200", "Proto Semi")),  # the alias is refused
+                   await send(part("p4", "X200", "Proto Semiconductor"))]  # no alias in the cache: a second part
+        async with database.pool.acquire() as conn:
+            await conn.execute("UPDATE maker_relations SET deleted = true WHERE gid = 'r0'")
+        answers += [await send(alias),  # the cache loads again: no distinct pair, the alias is applied
+                    await send(part("p5", "X300", "Proto Semi")),
+                    await send(part("p6", "X300", "Proto Semiconductor"))]  # the cached alias: a duplicate
+        return answers
+
+    answers = with_database(db, go)
+    assert [a for a, _ in answers] == [["applied"], ["applied"], ["applied"], ["rejected", "applied"], ["applied"],
+                                       ["applied"], ["applied"], ["merged"]]
+    # The pushes of parts only: one load after a change of the relations (p1, p5), else none.
+    assert [answers[i][1] for i in (1, 2, 4, 6, 7)] == [1, 0, 0, 1, 0]
+
+
+def test_a_failed_or_deleted_relation_is_not_in_the_rest_of_the_push(db):
+    """The registry of a push holds only the relations of its transaction: a
+    relation that the registry takes but the database refuses (a NUL character),
+    and a relation that the push deletes, do not merge the next parts."""
+    # The key of a name ignores the NUL: the registry takes the alias, the database refuses it.
+    bad = {"tbl": "maker_relations", "op": "insert", "key": "r0",
+           "data": {"relation": "alias", "name": "Proto Semiconductor", "other": "Proto Semi\x00",
+                    "created": "2026-11-01T09:00:00+00:00"}}
+    answer = push(db, "alice", bad, part("p1", "X1", "Proto Semi"), part("p2", "X1", "Proto Semiconductor"))
+    assert results(answer) == ["rejected", "applied", "applied"]
+    assert "database refuses" in answer[0]["reason"]
+    alias = {"tbl": "maker_relations", "op": "insert", "key": "r1",
+             "data": {"relation": "alias", "name": "Proto Semiconductor", "other": "Proto Semi",
+                      "created": "2026-11-02T09:00:00+00:00"}}
+    assert results(push(db, "alice", alias)) == ["applied"]  # it merges p2 into p1
+    answer = push(db, "adam", {"tbl": "maker_relations", "op": "delete", "key": "r1", "base_version": None},
+                  part("p3", "X2", "Proto Semi"), part("p4", "X2", "Proto Semiconductor"))
+    assert results(answer) == ["applied", "applied", "applied"]
+
+
 def test_delete_with_cascade(db):
     push(db, "alice", document(), part("p1", "LM358", "TI"), part("p2", "LM358DR", "TI", base="p1"), link("p1"),
          fact("f1", "p1"))
@@ -280,14 +356,14 @@ def test_same_part_from_two_clients_at_the_same_time(db):
     for attempt in range(5):
         mpn = f"RACE{attempt}"
 
-        async def both(pool):
-            a = sync.push(pool, db["alice"], [{"seq": 0, **part(f"a{attempt}", mpn, "TI",
-                                                                created="2026-11-01T09:00:00+00:00")}])
-            b = sync.push(pool, db["rita"], [{"seq": 0, **part(f"b{attempt}", mpn, "TI",
-                                                               created="2026-11-01T10:00:00+00:00")}])
+        async def both(database):
+            a = sync.push(database, db["alice"],
+                          [{"seq": 0, **part(f"a{attempt}", mpn, "TI", created="2026-11-01T09:00:00+00:00")}])
+            b = sync.push(database, db["rita"],
+                          [{"seq": 0, **part(f"b{attempt}", mpn, "TI", created="2026-11-01T10:00:00+00:00")}])
             return await asyncio.gather(a, b)
 
-        call(db, both)
+        with_database(db, both)
         live = [r for r in pull_all(db)[0] if r["tbl"] == "parts" and r["data"]["mpn"] == mpn]
         assert [r["key"] for r in live] == [f"a{attempt}"]
 
@@ -303,7 +379,7 @@ def test_wrong_changes_are_rejected_one_by_one(db):
                "not a change",                                                              # (the API refuses it too)
                {**part("p3", "Y"), "data": {**part("p3", "Y")["data"], "mpn": "x\x00"}},   # NUL: the database refuses
                good]
-    answer = call(db, sync.push, db["alice"], changes)
+    answer = with_database(db, sync.push, db["alice"], changes)
     assert [r["result"] for r in answer] == ["rejected"] * 6 + ["applied"]
     assert "database refuses" in answer[5]["reason"]
 
@@ -453,7 +529,7 @@ class _Client:
             after = json.loads(params["after"]) if "after" in params else None
             return call(self.db, sync.pull, params.get("cursor"), after)
         assert (method, path) == ("POST", "/v1/sync/push")
-        return {"results": call(self.db, sync.push, self.db[self.account], body["changes"])}
+        return {"results": with_database(self.db, sync.push, self.db[self.account], body["changes"])}
 
 
 def test_upgraded_client_gets_the_skipped_sources_and_the_deletes(db, tmp_path):

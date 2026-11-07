@@ -44,13 +44,15 @@ def server():
     async def accounts(url):
         db = Database(url)
         await db.connect()
-        await db.init_schema()
-        tokens = {}
-        for account, role in (("alice", "contributor"), ("rita", "reviewer"), ("rudi", "reader")):
-            await db.create_account(account, role)
-            tokens[account] = (await db.create_token(account))[1]
-        await db.close()
-        return tokens
+        try:
+            await db.init_schema()
+            tokens = {}
+            for account, role in (("alice", "contributor"), ("rita", "reviewer"), ("rudi", "reader")):
+                await db.create_account(account, role)
+                tokens[account] = (await db.create_token(account))[1]
+            return tokens
+        finally:
+            await db.close()
 
     asyncio.run(admin_sql(f"CREATE DATABASE {name}"))
     endpoint = os.environ["DSLENS_TEST_S3"]
@@ -72,7 +74,9 @@ def server():
     yield {"url": f"http://127.0.0.1:{port}", "tokens": tokens, "settings": settings}
     uv.should_exit = True
     thread.join(10)
-    asyncio.run(admin_sql(f"DROP DATABASE {name} WITH (FORCE)"))
+    # The drop has no FORCE: the server must stop first, because its pool holds the database.
+    assert not thread.is_alive(), "the test server did not stop in 10 s"
+    asyncio.run(admin_sql(f"DROP DATABASE {name}"))
 
 
 @pytest.fixture

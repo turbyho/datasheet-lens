@@ -51,10 +51,11 @@ def settings():
 
     asyncio.run(admin_sql(f"CREATE DATABASE {name}"))
     endpoint = os.environ["DSLENS_TEST_S3"]
+    # The drop has no FORCE: a connection that a test leaves open is an error of the test.
     yield Settings(db_url=f"{base}/{name}", s3_endpoint=endpoint, s3_public_url=endpoint,
                    s3_key_id=os.environ["DSLENS_TEST_S3_KEY_ID"], s3_secret=os.environ["DSLENS_TEST_S3_SECRET"],
                    s3_bucket=os.environ.get("DSLENS_TEST_S3_BUCKET", "dslens-test"), max_blob_size=100 * MiB)
-    asyncio.run(admin_sql(f"DROP DATABASE {name} WITH (FORCE)"))
+    asyncio.run(admin_sql(f"DROP DATABASE {name}"))
 
 
 @pytest.fixture
@@ -237,8 +238,10 @@ def test_cleanup_of_uploads(client, settings, monkeypatch, capsys):
 
     async def age():
         conn = await asyncpg.connect(settings.db_url)
-        await conn.execute("UPDATE uploads SET started = now() - interval '2 days' WHERE id = $1", stale)
-        await conn.close()
+        try:
+            await conn.execute("UPDATE uploads SET started = now() - interval '2 days' WHERE id = $1", stale)
+        finally:
+            await conn.close()
 
     asyncio.run(age())
     _admin(settings, monkeypatch, capsys, "cleanup")
@@ -265,9 +268,11 @@ def test_schema_is_idempotent(settings):
     async def twice():
         db = Database(settings.db_url)
         await db.connect()
-        await db.init_schema()
-        await db.init_schema()
-        await db.close()
+        try:
+            await db.init_schema()
+            await db.init_schema()
+        finally:
+            await db.close()
 
     asyncio.run(twice())
 

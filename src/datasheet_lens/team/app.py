@@ -345,6 +345,6 @@ def create_app(settings: Settings, *, db: Database | None = None, blobs: BlobSto
     @app.post("/v1/sync/push")
     async def sync_push(request: Request, body: Push):
         account = require(request, "reader")
-        return {"results": await sync.push(db.pool, account, body.changes)}
+        return {"results": await sync.push(db, account, body.changes)}
 
     return app

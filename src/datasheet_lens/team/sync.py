@@ -350,6 +350,11 @@ class Pusher:
         self.conn, self.account, self.registry = conn, account, registry
         self.own_registry = False  # True: a copy of the cached registry, for the relations of this push
 
+    async def reload_registry(self) -> None:
+        """Load the registry of this push from its transaction: the relations that
+        the transaction holds now. The cached registry does not change."""
+        self.registry, self.own_registry = await Registry.load(self.conn), True
+
     def require(self, role: str) -> None:
         from .config import ROLES
 
@@ -469,12 +474,10 @@ class Pusher:
                 raise Rejected(f"the document has the size {values.get('size')}, its file {size}")
         if table == "maker_relations":
             if not self.own_registry:  # a copy for this push: the cache stays correct when the push fails
-                self.registry, self.own_registry = await Registry.load(self.conn), True
-            try:
-                self.registry.check(values["relation"], values["name"], values["other"])
-            except Rejected:
-                self.registry = await Registry.load(self.conn)  # check() can have changed it
-                raise
+                await self.reload_registry()
+            # push() loads the registry again after this change, also when a later
+            # step fails: then the savepoint undoes the relation, and the registry too.
+            self.registry.check(values["relation"], values["name"], values["other"])
         if table == "knowledge" and data.get("status", "unchecked") != "unchecked":
             self.require("reviewer")
         await self.check_refs(table, values)
@@ -634,34 +637,40 @@ async def merge_duplicates(conn, registry: Registry, account_id: int | None, mpn
     return count
 
 
-_registries: dict[int, tuple[tuple, Registry]] = {}  # id of the pool -> (state of the relations, registry)
+class RegistryCache:
+    """The registry of the relations of one database, kept between the pushes.
+    Each db.Database has one, with the same life as its pool: thus only the event
+    loop of the pool uses it. The SQLite connection of a Registry works only in
+    the thread that made it."""
+
+    def __init__(self):
+        self.state: tuple | None = None
+        self.registry: Registry | None = None
+
+    async def get(self, conn) -> Registry:
+        """The registry of the relations of the database of conn. The relations only
+        grow (a relation does not change, a delete is a tombstone): their numbers
+        and the last change identify a state."""
+        state = tuple(await conn.fetchrow("SELECT count(*), count(*) FILTER (WHERE deleted), max(changed)"
+                                          " FROM maker_relations"))
+        if self.registry is None or self.state != state:
+            self.registry, self.state = await Registry.load(conn), state
+        return self.registry
 
 
-async def cached_registry(conn, pool) -> Registry:
-    """The registry of the relations of the server. The relations only grow (a
-    relation does not change, a delete is a tombstone): their numbers and the last
-    change identify a state."""
-    state = tuple(await conn.fetchrow("SELECT count(*), count(*) FILTER (WHERE deleted), max(changed)"
-                                      " FROM maker_relations"))
-    cached = _registries.get(id(pool))
-    if cached is None or cached[0] != state:
-        cached = (state, await Registry.load(conn))
-        _registries[id(pool)] = cached
-    return cached[1]
-
-
-async def push(pool, account: dict, changes: list[dict]) -> list[dict]:
+async def push(database, account: dict, changes: list[dict]) -> list[dict]:
     """Apply the changes in their order. One result for each change: applied
     (version), conflict (the row of the server), merged (gid of the kept part)
     or rejected (reason). One push at a time (a lock in the database): the
     search for a duplicate part and the merges of a relation see a registry
-    and parts that no other push changes at the same time."""
+    and parts that no other push changes at the same time. database: a connected
+    db.Database (its pool and its registry cache)."""
     import asyncpg
 
     results = []
-    async with pool.acquire() as conn, conn.transaction():
+    async with database.pool.acquire() as conn, conn.transaction():
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext('dslens registry'))")
-        pusher = Pusher(conn, account, await cached_registry(conn, pool))
+        pusher = Pusher(conn, account, await database.registries.get(conn))
         for change in changes:
             seq = change.get("seq") if isinstance(change, dict) else None
             try:
@@ -676,6 +685,10 @@ async def push(pool, account: dict, changes: list[dict]) -> list[dict]:
             except (asyncpg.exceptions.DataError, asyncpg.exceptions.IntegrityConstraintViolationError) as e:
                 # A value that the checks above do not find (for example a text that is too long).
                 result = {"result": "rejected", "reason": f"the database refuses the change: {e}", "retry": False}
+            if isinstance(change, dict) and change.get("tbl") == "maker_relations":
+                # Also after a refused or failed change, or a delete: the next changes
+                # see only the relations of the transaction.
+                await pusher.reload_registry()
             results.append({"seq": seq, **result})
     return results
 
