@@ -63,6 +63,10 @@ MANUFACTURERS = {
     "Coto Technology": ("COTO TECHNOLOGY", "COTOTECHNOLOGY", "COTORELAY"),
     "ECS": ("ECS INC", "ECSXTAL"),
     "1GLOBAL": ("1GLOBAL",),
+    # The name of LCSC and JLCPCB: "UNI-ROYAL(Uniroyal Elec)", "UNI ROYAL Uniroyal Elec".
+    # The datasheet: "Uniroyal Electronics Global Co., Ltd.", the brands RoyalOhm and UniOhm.
+    "UNI-ROYAL": ("UNI-ROYAL", "UNI ROYAL UNIROYAL ELEC", "UNIROYAL ELECTRONICS GLOBAL", "UNIROYAL ELECTRONICS",
+                  "UNIOHM", "ROYALOHM"),
 }
 # Short names that people and BOMs use. Only for the registry: they are too
 # short to find a manufacturer in the text of a PDF (identify.ALIAS_RE).

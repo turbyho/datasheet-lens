@@ -19,6 +19,11 @@ def test_key():
     assert not makers.same(None, "TI", "Texas Instruments")
 
 
+def test_builtin_name_of_a_jlcpcb_name():
+    """The project folder gets the built-in name, not the JLCPCB name."""
+    assert makers.builtin_name("UNI ROYAL Uniroyal Elec") == "UNI-ROYAL"
+
+
 def test_registry(store_home):
     with Store() as store:
         db = store.db
@@ -29,6 +34,9 @@ def test_registry(store_home):
         # The names of the distributors (live calls, 2026-11-07).
         assert makers.same(db, "Microchip Tech", "Microchip Technology")
         assert makers.same(db, "Vishay Siliconix", "Vishay Semiconductors")
+        # JLCPCB and LCSC, and the datasheet (0603WAF, 2026-11-07).
+        assert makers.same(db, "UNI ROYAL Uniroyal Elec", "Uniroyal Electronics Global Co., Ltd.")
+        assert makers.same(db, "UNI-ROYAL(Uniroyal Elec)", "UNI-ROYAL")
         assert not makers.same(db, "TXN", "Texas Instruments")
         assert not makers.same(db, "TI", "")
         store.maker_relation("alias", "TXN", "Texas Instruments")
