@@ -1479,3 +1479,26 @@ def test_the_inbox_rules(store_home, text_pdf, tmp_path, monkeypatch):
         for _ in range(2):
             report = prj.sync(prj.load(project.root), store)
             assert (inbox / "widget.pdf").is_file() and "_inbox/widget.pdf" not in report["inbox_known"]
+
+
+def test_status_gives_the_parts_of_a_document_one_time(store_home, text_pdf, tmp_path):
+    """Four parts of one datasheet: the status gives the parts at the first line
+    of the document, and not at each part again."""
+    with Store() as store:
+        doc = store.add_document(text_pdf("res.pdf", [[(50, 60, 14, "RC0603FR-07")]]))
+        mpns = ["RC0603FR-0710KL", "RC0603FR-071KL", "RC0603FR-0747KL", "RC0603FR-07100KL"]
+        store.link_parts(doc.id, mpns[0], mpns[1:], "Yageo")
+        other = store.add_document(text_pdf("ldo.pdf", [[(50, 60, 14, "TLV755P")]]))
+        store.link_parts(other.id, "TLV755P", [], "TI")
+        project = prj.init_project(tmp_path / "board")
+        for mpn in mpns + ["TLV755P"]:
+            prj.add_part(project, store, mpn)
+        lines = prj.format_parts(prj.load(project.root), store)
+    listed = "parts: " + ", ".join(sorted(mpns))
+    doc_lines = [line for line in lines if doc.sha256[:12] in line]
+    assert len(doc_lines) == 4
+    assert doc_lines[0].endswith(listed)
+    assert not any("parts:" in line for line in doc_lines[1:])
+    assert not any("variants" in line for line in lines)
+    ldo = next(line for line in lines if other.sha256[:12] in line)
+    assert "parts:" not in ldo  # a document of one part

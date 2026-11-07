@@ -3171,16 +3171,26 @@ def add_details(report: dict, project: Project, store: Store) -> None:
     report["outside"], report["outside_complete"] = outside_pdfs(project, store)
 
 
-def format_parts(project: Project) -> list[str]:
-    """The parts and the documents of a project as lines, as in the project file."""
+def format_parts(project: Project, store: Store) -> list[str]:
+    """The parts and the documents of a project as lines, as in the project file.
+    The first line of a document that the store links to more than one part
+    gives these parts (for example the variants of one datasheet). The next
+    lines of the same document do not give them again."""
     lines = [f"project {project.root} (folder {project.folder}/): {len(project.parts)} parts "
              f"(as in {PROJECT_FILE})"]
+    shown: set[str] = set()
     for part in project.parts:
         lines.append(f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'})"
-                     + (f", base part {part['base']}" if part.get("base") else "")
-                     + (f", variants: {', '.join(part['variants'])}" if part.get("variants") else ""))
+                     + (f", base part {part['base']}" if part.get("base") else ""))
         for d in part["documents"]:
-            lines.append(f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}")
+            line = f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}"
+            if d["sha256"] not in shown:
+                shown.add(d["sha256"])
+                doc = store.document(d["sha256"])
+                names = sorted({r["mpn"] for r in store.parts_of_document(doc.id)}) if doc else []
+                if len(names) > 1:
+                    line += f"  parts: {', '.join(names)}"
+            lines.append(line)
     return lines
 
 

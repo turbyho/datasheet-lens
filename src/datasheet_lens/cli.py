@@ -447,7 +447,8 @@ def cmd_project_status(args: argparse.Namespace) -> int:
         with open_project(args.path) as project:  # the lock only for the dry run of the folder
             report = dry_run(project, store, details=False)[0]
         add_details(report, project, store)
-    print("\n".join(user_notes() + format_parts(project) + format_report(report, False, PROJECT_ADD_HINT, cli=True)))
+        parts = format_parts(project, store)
+    print("\n".join(user_notes() + parts + format_report(report, False, PROJECT_ADD_HINT, cli=True)))
     for line in user_defects():
         print(line, file=sys.stderr)
     return 0

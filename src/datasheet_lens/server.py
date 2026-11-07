@@ -721,8 +721,10 @@ PROJECT_ADD_HINT = ("project_add_part(mpn='{part}'{base}, document='{sha}')", ",
 def project_status(path: ProjectPath = "") -> str:
     """The parts and documents of the user project, and the state of the copies
     in the project folder: missing or changed copies, new files, problems. It
-    changes nothing. Gives one line for each part (MPN, manufacturer, base part,
-    variants) and one line for each document (reference, role, file). A first
+    changes nothing. Gives one line for each part (MPN, manufacturer, base part)
+    and one line for each document (reference, role, file). The first line of a
+    document of more parts (for example the variants of one datasheet) gives
+    these parts; the next lines of the document do not. A first
     line can tell about a newer release or a necessary restart of the LLM
     client, or about the team server (a failed sync, a conflict): tell the user."""
     from .project import add_details, dry_run, format_parts, format_report, open_project
@@ -735,7 +737,8 @@ def project_status(path: ProjectPath = "") -> str:
             report = dry_run(project, store, details=False)[0]
         add_details(report, project, store)
         team = model_notes(store)
-    return "\n".join(version_notes() + team + format_parts(project) + format_report(report, False, PROJECT_ADD_HINT))
+        parts = format_parts(project, store)
+    return "\n".join(version_notes() + team + parts + format_report(report, False, PROJECT_ADD_HINT))
 
 
 @tool
