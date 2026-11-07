@@ -23,7 +23,8 @@ COLUMNS = ("lcsc", "present", "category", "subcategory", "mfr", "package", "manu
 PARTS = [
     # lcsc, category, subcategory, mfr, package, manufacturer, library, preferred, stock, price, attributes
     (1001, "Transistors/Thyristors", "MOSFETs", "FET-A", "DFN3x3-8", "Maker A", "expand", 0, 500, "1-9:0.5,10-:0.4",
-     {"Type": "N-Channel", "Drain to Source Voltage": "30V", "RDS(on)": "4mΩ@4.5V, 6mΩ@2.5V"}),
+     {"Type": "N-Channel", "Drain to Source Voltage": "30V", "RDS(on)": "4mΩ@4.5V, 6mΩ@2.5V",
+      "Collector Current (Ic)": "1A"}),  # a parameter of one part (of an IGBT in this category)
     (1002, "Transistors/Thyristors", "MOSFETs", "FET-B", "SOT-23", "Maker B", "base", 0, 9000, "1-49:0.05",
      {"type": "N-Channel", "Drain to Source Voltage": "30V", "RDS(on)": "30mΩ@4.5V"}),
     (1003, "Transistors/Thyristors", "MOSFETs", "FET-C", "DFN3x3-8", "Maker C", "expand", 0, 0, "1-9:0.3",
@@ -143,8 +144,9 @@ def test_categories(jlc):
     with pytest.raises(LensError, match="the condition needs a number"):
         jlcpcb.search("MOSFETs", ["rds_on <= 10 mOhm at low voltage"])
     lines = jlcpcb.parameter_lines("MOSFETs")
-    assert "Library (short name library): 2 values: Basic | Extended" in lines
-    assert any(line.startswith("RDS(on) (short name rds_on): 2 values") for line in lines)
+    assert "Library (short name library): 2 parts, 2 values: Basic | Extended" in lines
+    assert any(line.startswith("RDS(on) (short name rds_on): 2 parts, 2 values") for line in lines)
+    assert lines[-1] == "Collector Current (Ic): 1 parts, 1 values: 1A"  # the parameters of most parts first
 
 
 def test_offers_search_lines_and_availability(jlc, tmp_path):

@@ -959,8 +959,11 @@ def find_parts(
 def part_parameters(source: Source, category: Category, path: ProjectPath = "") -> str:
     """The parameters of a part category at a source of the parametric search
     (DigiKey, or the JLCPCB parts library), for the filters of find_parts:
-    the full name, the short name, the number of values and examples of the
-    values (jlcpcb: of the parts with JLCPCB stock). Use it before find_parts."""
+    the full name, the short name, the number of parts with a value, the number
+    of values and examples of the values (jlcpcb: of the parts with JLCPCB
+    stock). The parameters that most parts have come first: a parameter of few
+    parts can be a parameter of a different part type in the same category.
+    Use it before find_parts."""
     from .distributors import parameter_lines
     from .project import load_optional
 

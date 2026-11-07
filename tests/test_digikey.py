@@ -178,9 +178,31 @@ def test_category_and_parameter_errors(api):
 def test_parameter_lines(api):
     lines = digikey.parameter_lines("100")
     assert lines[0].startswith("Source: DigiKey. Category 100") and "(25 parts)" in lines[0]
-    assert "Drain to Source Voltage (Vdss) (short name vdss): 4 values: 12 V | 20 V | 30 V | 60 V" in lines
+    # The values of FILTERS have no ProductCount: the number of parts is unknown, not 0.
+    assert ("Drain to Source Voltage (Vdss) (short name vdss): parts unknown, 4 values: 12 V | 20 V | 30 V | 60 V"
+            in lines)
     digikey.parameter_lines("100")
     assert sum(1 for url, _, _ in api["sent"] if url.endswith("/search/keyword")) == 1  # the cache
+
+
+def test_parameter_lines_give_the_parameters_of_most_parts_first(api, monkeypatch):
+    """The parameters that most parts have first (with the number of parts),
+    then the parameters with an unknown number of parts."""
+    def counted(pid, name, values, counts):
+        f = _filter(pid, name, values)
+        f["FilterValues"] = [dict(v, ProductCount=n) for v, n in zip(f["FilterValues"], counts)]
+        return f
+
+    monkeypatch.setitem(globals(), "FILTERS", {"ProductsCount": 25, "FilterOptions": {"ParametricFilters": [
+        counted(5, "FET Type", [("51", "N-Channel"), ("52", "P-Channel")], (1, 1)),
+        _filter(9, "Supplier Device Package", [("91", "SOT-23-3")]),
+        counted(6, "Drain to Source Voltage (Vdss)", [("20 V", "20 V"), ("30 V", "30 V")], (15, 10)),
+        counted(13, "Grade", [("131", "Automotive")], (3,))]}})
+    lines = digikey.parameter_lines("100")
+    assert [line.split(":")[0].split(" (")[0] for line in lines[1:]] == [
+        "Drain to Source Voltage", "Grade", "FET Type", "Supplier Device Package"]
+    assert lines[1].endswith("(short name vdss): 25 parts, 2 values: 20 V | 30 V")
+    assert lines[4].startswith("Supplier Device Package (short name package): parts unknown, 1 values")
 
 
 def test_errors_of_the_api(api):

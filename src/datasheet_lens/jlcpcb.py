@@ -394,21 +394,24 @@ def _value(row, attrs: dict, name: str) -> str:
 
 
 def _parameters(rows, parsed: dict | None = None) -> list:
-    """The parameters of the rows with their distinct values (ID = text). The
-    name of a parameter is its most frequent form. parsed: the attributes of
-    each row by its LCSC number, when the caller has them."""
+    """The parameters of the rows with their distinct values (ID = text) and
+    the number of rows of each value. The name of a parameter is its most
+    frequent form. parsed: the attributes of each row by its LCSC number, when
+    the caller has them."""
     from .parametric import Parameter
 
-    values: dict[str, dict[str, None]] = {name.lower(): {} for name in COLUMNS}
+    # The values in the sequence of the rows, with the number of rows of each value.
+    values: dict[str, collections.Counter] = {name.lower(): collections.Counter() for name in COLUMNS}
     forms: dict[str, collections.Counter] = {name.lower(): collections.Counter({name: 1}) for name in COLUMNS}
     for row in rows:
         attrs = parsed[row["lcsc"]] if parsed is not None else _attributes(row)
         for name in COLUMNS:
-            values[name.lower()].setdefault(_value(row, attrs, name), None)
+            values[name.lower()][_value(row, attrs, name)] += 1
         for key, (name, value) in attrs.items():
-            values.setdefault(key, {}).setdefault(value, None)
+            values.setdefault(key, collections.Counter())[value] += 1
             forms.setdefault(key, collections.Counter())[name] += 1
-    return [Parameter(id=key, name=forms[key].most_common(1)[0][0], values=[(v, v) for v in vals if v])
+    return [Parameter(id=key, name=forms[key].most_common(1)[0][0], values=[(v, v) for v in vals if v],
+                      counts={v: n for v, n in vals.items() if v})
             for key, vals in values.items()]
 
 
@@ -539,7 +542,7 @@ def search_lines(result: dict) -> list[str]:
 def parameter_lines(category: str) -> list[str]:
     """The parameters of a category, with the number of values and examples."""
     from .digikey import _spread
-    from .parametric import quantity
+    from .parametric import by_parts, quantity
 
     db = connect()
     try:
@@ -552,13 +555,13 @@ def parameter_lines(category: str) -> list[str]:
         short.setdefault(name, alias)
     lines = ["Source: JLCPCB parts library. Category: "
              + "; ".join(f"{c['category']} > {c['subcategory']}" for c in cats)
-             + f" ({len(rows)} parts with JLCPCB stock). The parameters for the filters, with examples of their "
-               "values (separated by |):"]
-    for p in _parameters(rows):
+             + f" ({len(rows)} parts with JLCPCB stock). The parameters for the filters, the parameters that "
+               "most parts have first, with the number of parts and examples of their values (separated by |):"]
+    for p in by_parts(_parameters(rows)):
         values = sorted((t for _, t in p.values),
                         key=lambda t: (quantity(t) is None, quantity(t).value if quantity(t) else 0, t))
         alias = f" (short name {short[p.name]})" if p.name in short else ""
-        lines.append(f"{p.name}{alias}: {len(values)} values: {' | '.join(_spread(values, 8))}")
+        lines.append(f"{p.name}{alias}: {p.parts_text()}, {len(values)} values: {' | '.join(_spread(values, 8))}")
     note = age_note()
     return lines + ([note] if note else [])
 

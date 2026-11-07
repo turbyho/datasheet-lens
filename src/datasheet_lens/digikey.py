@@ -32,7 +32,7 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from .errors import Choose, LensError, Unavailable
-from .parametric import Filter, Parameter, matching_values, parse_filter, resolve
+from .parametric import Filter, Parameter, by_parts, matching_values, parse_filter, resolve
 
 TOKEN_URL = "https://api.digikey.com/v1/oauth2/token"
 BASE_URL = "https://api.digikey.com/products/v4"
@@ -258,7 +258,10 @@ def parameters(category: dict, credential=None) -> tuple[list[Parameter], int]:
     out = []
     for p in (data.get("FilterOptions") or {}).get("ParametricFilters") or []:
         values = [(str(v.get("ValueId")), str(v.get("ValueName") or "")) for v in p.get("FilterValues") or []]
-        counts = {str(v.get("ValueId")): _count(v.get("ProductCount")) or 0 for v in p.get("FilterValues") or []}
+        # Only the counts that DigiKey gives: a value with no count makes the
+        # number of parts of the parameter unknown (Parameter.parts).
+        counts = {str(v.get("ValueId")): n for v in p.get("FilterValues") or []
+                  if (n := _count(v.get("ProductCount"))) is not None}
         out.append(Parameter(id=str(p.get("ParameterId")), name=str(p.get("ParameterName") or ""), values=values,
                              counts=counts))
     count = int(data.get("ProductsCount") or 0)
@@ -525,11 +528,12 @@ def parameter_lines(category: str, credential=None) -> list[str]:
     for alias, name in ALIASES.items():
         short.setdefault(name, alias)
     lines = [f"Source: DigiKey. Category {cat['id']} {cat['path']} ({count} parts). The parameters for the "
-             "filters, with examples of their values (separated by |):"]
-    for p in params:
+             "filters, the parameters that most parts have first, with the number of parts and examples of "
+             "their values (separated by |):"]
+    for p in by_parts(params):
         alias = f" (short name {short[p.name]})" if p.name in short else ""
         examples = " | ".join(t for _, t in _spread(p.values, 8))
-        lines.append(f"{p.name}{alias}: {len(p.values)} values: {examples}")
+        lines.append(f"{p.name}{alias}: {p.parts_text()}, {len(p.values)} values: {examples}")
     return lines
 
 

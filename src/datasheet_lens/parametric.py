@@ -182,6 +182,26 @@ class Parameter:
     values: list[tuple[str, str]] = field(default_factory=list)
     counts: dict[str, int] = field(default_factory=dict)
 
+    @property
+    def parts(self) -> int | None:
+        """The number of parts with a value of the parameter (a part has one
+        value of each parameter). None when the source gives no count for a
+        value."""
+        if any(vid not in self.counts for vid, _ in self.values):
+            return None
+        return sum(self.counts.values())
+
+    def parts_text(self) -> str:
+        """The number of parts as a text: "25 parts" or "parts unknown"."""
+        return "parts unknown" if self.parts is None else f"{self.parts} parts"
+
+
+def by_parts(parameters: list[Parameter]) -> list[Parameter]:
+    """The parameters that most parts have first, then the parameters with an
+    unknown number of parts. The order of the source stays for the parameters
+    with the same number of parts."""
+    return sorted(parameters, key=lambda p: (p.parts is None, -(p.parts or 0)))
+
 
 def resolve(name: str, parameters: list[Parameter], aliases: dict[str, str]) -> Parameter:
     """The parameter for a filter name: the same name (case is ignored), an
