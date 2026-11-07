@@ -133,17 +133,17 @@ def cmd_add(args: argparse.Namespace) -> int:
         idx = build_index(store, doc.id)
         if not idx["skipped"]:
             print(f"index: {idx['outline']} outline entries, {idx['captions']} captions")
-        if not args.no_project:
-            _add_to_project(store, doc, mpn, manufacturer, category, args)
+    if not args.no_project:  # after the store: the lock of the folder comes first (lock.py)
+        _add_to_project(doc, mpn, manufacturer, category, args)
     return 0
 
 
-def _add_to_project(store: Store, doc, mpn: str, manufacturer: str, category: str,
-                    args: argparse.Namespace) -> None:
+def _add_to_project(doc, mpn: str, manufacturer: str, category: str, args: argparse.Namespace) -> None:
     """In a project folder: add the part to the project, copy the document into
-    the folder and build its element map."""
+    the folder and build its element map. The question for the concrete MPN
+    comes before the lock of the folder: an answer of the user can take long."""
     from .elements import build_elements
-    from .project import add_part, find_project, load, sync
+    from .project import add_part, find_project, load, sync_project
     from .setup import element_backend
 
     try:
@@ -157,32 +157,46 @@ def _add_to_project(store: Store, doc, mpn: str, manufacturer: str, category: st
         return
     # The project (the BOM) needs the concrete orderable MPN: the package, the
     # voltage or the grade make it (TLV75533PDBVR of the base part TLV755P).
-    project = load(root)
+    def users_of(project) -> list[str]:
+        return [p["mpn"] for p in project.parts if p.get("base", "").lower() == mpn.lower()]
+
     concrete = (args.orderable or "").strip()
-    users = [p["mpn"] for p in project.parts if p.get("base", "").lower() == mpn.lower()]
-    if not concrete and users:
-        # The project has concrete parts of this base part: they get the
-        # document through the base part. The base part is not a second BOM line.
-        print(f"project: {', '.join(users)} (base part {mpn}) get the document")
-    else:
-        if not concrete and not args.yes and sys.stdin.isatty():
-            concrete = _input(f"  the concrete orderable MPN that the design uses (package, voltage ...; "
-                              f"Enter = {mpn}): ")
+    # The question (or no question) is before the lock, from this state of the project.
+    interactive = not concrete and not args.yes and sys.stdin.isatty()
+    asked = users_of(load(root)) if interactive else []
+    if interactive and not asked:
+        concrete = _input(f"  the concrete orderable MPN that the design uses (package, voltage ...; "
+                          f"Enter = {mpn}): ")
+
+    def prepare(project, store) -> None:
+        users = users_of(project)
+        if interactive and asked and not users:
+            # No question, because the project had concrete parts of this base part; a
+            # different command removed them before the lock: now the question is
+            # necessary. (A concrete part that came before the lock needs no question.)
+            raise LensError(f"{project.path} changed during the command: run the command again")
+        if not concrete and users:
+            # The project has concrete parts of this base part: they get the
+            # document through the base part. The base part is not a second BOM line.
+            print(f"project: {', '.join(users)} (base part {mpn}) get the document")
+            return
         part = add_part(project, store, concrete or mpn, manufacturer, doc.sha256, args.role, category, base=mpn)
         if part.get("base"):
             print(f"project part: {part['mpn']} (base part {part['base']})")
         note = _base_note(store, part)
         if note:
             print(note)
-    report = sync(project, store)
-    for text in report["problems"]:
-        print(f"problem: {text}")
-    files = [d["file"] for part in project.parts for d in part["documents"] if d["sha256"] == doc.sha256]
-    if files:
-        print(f"project: {project.folder}/{files[0]}")
-    result = build_elements(store, doc.id, element_backend())
-    if not result["skipped"]:
-        print(f"element map: {result['elements']} elements ({result['backend']})")
+
+    with Store() as store:  # no write before the lock (lock.py); the element map needs no lock
+        report, project = sync_project(store, root, prepare=prepare)
+        for text in report["problems"]:
+            print(f"problem: {text}")
+        files = [d["file"] for part in project.parts for d in part["documents"] if d["sha256"] == doc.sha256]
+        if files:
+            print(f"project: {project.folder}/{files[0]}")
+        result = build_elements(store, doc.id, element_backend())
+        if not result["skipped"]:
+            print(f"element map: {result['elements']} elements ({result['backend']})")
 
 
 def _doc(store: Store, ref: str):
@@ -390,13 +404,22 @@ def cmd_project_init(args: argparse.Namespace) -> int:
     """The command project init: make the project file and its folder, and put the
     datasheet-lens block into AGENTS.md and CLAUDE.md. A second run changes only
     a block that is not current."""
-    from . import agents
-    from .project import DEFAULT_FOLDER, DEFAULT_LAYOUT, PROJECT_FILE, find_project, init_project, load
+    from .lock import folder_lock
+    from .project import find_project
 
     root = Path(args.path or Path.cwd()).expanduser().resolve()
     if not args.path:  # in a subfolder of a project: that project, not a new one in the subfolder
         with contextlib.suppress(LensError):
             root = find_project(root)
+    with folder_lock(root):
+        return _project_init(args, root)
+
+
+def _project_init(args: argparse.Namespace, root: Path) -> int:
+    """The command project init with the lock of the project folder."""
+    from . import agents
+    from .project import DEFAULT_FOLDER, DEFAULT_LAYOUT, PROJECT_FILE, init_project, load
+
     if (root / PROJECT_FILE).is_file():
         project = load(root)
         print(f"project file: {project.path} (it exists: not changed)")
@@ -417,12 +440,13 @@ def cmd_project_init(args: argparse.Namespace) -> int:
 def cmd_project_status(args: argparse.Namespace) -> int:
     """The command ls (project status): print the parts, documents and copies,
     and a newer release that an earlier check found."""
-    from .project import format_parts, format_report, load, sync
+    from .project import add_details, dry_run, format_parts, format_report, open_project
     from .version_check import user_defects, user_notes
 
-    project = load(args.path)
-    with Store() as store:
-        report = sync(project, store, apply=False)
+    with Store() as store:  # no write before the lock: see the order of the locks in lock.py
+        with open_project(args.path) as project:  # the lock only for the dry run of the folder
+            report = dry_run(project, store, details=False)[0]
+        add_details(report, project, store)
     print("\n".join(user_notes() + format_parts(project) + format_report(report, False, PROJECT_ADD_HINT, cli=True)))
     for line in user_defects():
         print(line, file=sys.stderr)
@@ -432,12 +456,11 @@ def cmd_project_status(args: argparse.Namespace) -> int:
 def cmd_project_sync(args: argparse.Namespace) -> int:
     """The command sync (project sync): synchronize the project and build element maps."""
     from .elements import build_elements
-    from .project import format_report, load, sync
+    from .project import format_report, sync_project
     from .setup import element_backend
 
-    project = load(args.path)
-    with Store() as store:
-        report = sync(project, store, restore=args.restore)
+    with Store() as store:  # no write before the lock (lock.py); the element maps need no lock
+        report, _ = sync_project(store, args.path, args.restore)
         print("\n".join(format_report(report, True, PROJECT_ADD_HINT, cli=True)))
         backend, failed = element_backend(), 0
         for doc_id in report["documents"]:
@@ -454,11 +477,18 @@ def cmd_project_sync(args: argparse.Namespace) -> int:
 
 def cmd_rm(args: argparse.Namespace) -> int:
     """The command rm: remove a part, or a document (-d), from the project."""
-    from .project import document_ref, load, remove_document, remove_part, remove_source
+    from .project import open_project
 
     if not args.mpn and not args.document:
         raise LensError("give a part (MPN) or a document (-d)")
-    project = load(args.path)
+    with open_project(args.path) as project:
+        return _rm(args, project)
+
+
+def _rm(args: argparse.Namespace, project) -> int:
+    """The command rm with the lock of the project folder (cmd_rm)."""
+    from .project import document_ref, remove_document, remove_part, remove_source
+
     apply = not args.dry_run
     if args.source:
         if not args.mpn or args.document:
@@ -500,10 +530,9 @@ def cmd_rm(args: argparse.Namespace) -> int:
 
 def cmd_project_add_part(args: argparse.Namespace) -> int:
     """The command project add-part: add a part with its documents to the project."""
-    from .project import add_part, load
+    from .project import add_part, open_project
 
-    project = load(args.path)
-    with Store() as store:
+    with open_project(args.path) as project, Store() as store:
         part = add_part(project, store, args.mpn, args.manufacturer or "", args.document or "", args.role,
                         args.category or "", args.base or "")
         note = _base_note(store, part)
@@ -602,7 +631,7 @@ def cmd_dist(args: argparse.Namespace) -> int:
     """The command dist: show or set the distributors that datasheet-lens asks,
     globally or (--local) for the project."""
     from .distributors import check_locale, check_names, set_locale, status_lines
-    from .project import load, load_optional, set_distributors
+    from .project import load_optional, open_project, set_distributors
     from .config import load_config
     from .setup import save_config
 
@@ -612,8 +641,8 @@ def cmd_dist(args: argparse.Namespace) -> int:
     if args.local:
         if args.site or args.currency:
             raise LensError("--site and --currency are global settings: give them without --local")
-        project = load(args.path)
-        set_distributors(project, check_names(args.names) if args.names else None)
+        with open_project(args.path) as project:
+            set_distributors(project, check_names(args.names) if args.names else None)
         print(f"project {project.root}: " + (f"distributors {', '.join(project.distributors)}"
                                             if project.distributors is not None else "the global configuration"))
     else:
@@ -641,16 +670,18 @@ def cmd_adopt(args: argparse.Namespace) -> int:
     """The command adopt: a part of a source, with its datasheet and its purchase source."""
     from .adopt import adopt
     from .elements import build_elements
-    from .project import load_optional, sync
+    from .project import load_optional, sync_project
     from .setup import element_backend
 
     project = load_optional(args.path)
     result = adopt(args.source, args.number, args.mpn, args.base, args.category, project)
     print("\n".join(result["lines"]))
+    if result["project"] is not None:  # as the command add: the copy in the document folder
+        with Store() as store:
+            report, _ = sync_project(store, result["project"].root)
+        for text in report["problems"]:
+            print(f"problem: {text}")
     with Store() as store:
-        if result["project"] is not None:  # as the command add: the copy in the document folder
-            for text in sync(result["project"], store)["problems"]:
-                print(f"problem: {text}")
         if result["document"] is not None:
             built = build_elements(store, result["document"], element_backend())
             if not built["skipped"]:
@@ -749,13 +780,12 @@ def cmd_codes(args: argparse.Namespace) -> int:
 def cmd_check(args: argparse.Namespace) -> int:
     """The command check: compare the project with a BOM file (CSV) of the CAD
     project, for example from "kicad-cli sch export bom"."""
-    from .project import bom_files, check_parts, dry_run, format_check, load, sync_steps
+    from .project import bom_files, check_parts, dry_run, format_check, open_project, sync_steps
 
     reads = bom_files(args.bom, args.column or "", args.delimiter, args.quote,
                       {"column": "--column", "delimiter": "--delimiter", "quote": "--quote",
                        "confirmed": "--confirmed-column"}, args.confirmed_column or "")
-    project = load(args.path)
-    with Store() as store:
+    with open_project(args.path) as project, Store() as store:
         result = check_parts(project, store, [s for r in reads for s in r.cad])
         result["sync"] = sync_steps(dry_run(project, store, details=False)[0])
     for read in reads:
@@ -767,10 +797,9 @@ def cmd_check(args: argparse.Namespace) -> int:
 def cmd_set(args: argparse.Namespace) -> int:
     """The command set: change a part of the project in place (MPN, base part,
     category, manufacturer, pinned documents)."""
-    from .project import document_ref, load, update_part
+    from .project import document_ref, open_project, update_part
 
-    project = load(args.path)
-    with Store() as store:
+    with open_project(args.path) as project, Store() as store:
         part = update_part(project, store, args.part, args.of or "", args.mpn or "", args.base or "",
                            args.category, args.manufacturer or "", document_ref(store, args.pin or ""),
                            document_ref(store, args.unpin or ""))
@@ -1063,7 +1092,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Run the CLI. Give the exit code: 0 done, 1 a file cannot be read, 2 a wrong input,
     130 stopped by the user."""
+    from . import lock
+
     args = build_parser().parse_args(argv)
+    # A command waits for the lock of a project folder with no limit: tell it one time.
+    previous = lock.on_wait
+    lock.on_wait = lambda root: print(f"datasheet-lens: an other datasheet-lens command works on the project {root}: "
+                                      "waiting until it ends (Ctrl-C stops)", file=sys.stderr)
     try:
         return args.func(args)
     except KeyboardInterrupt:  # Ctrl-C, for example at a question
@@ -1077,6 +1112,8 @@ def main(argv: list[str] | None = None) -> int:
         # A file of the store that cannot be read (missing, damaged).
         print(f"datasheet-lens: error: cannot read a file: {e}", file=sys.stderr)
         return 1
+    finally:
+        lock.on_wait = previous
 
 
 if __name__ == "__main__":

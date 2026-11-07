@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 
 import pypdfium2 as pdfium
 
@@ -77,9 +78,27 @@ def _read_pages(path: str) -> tuple[list[PageText], list[dict], list[dict]]:
         pdf.close()
 
 
+# One build of the index of one document at a time in a process: the check of a
+# current index and the build are one step, thus two threads (for example
+# project_sync and get_index of the MCP server) do not build the index of one
+# document two times. The builds of different documents do not wait for each
+# other (pdfium reads one PDF at a time anyway, pdflock). It is not a lock of the
+# store or of a project folder.
+_build_guard = threading.Lock()
+_build_locks: dict[int, threading.Lock] = {}
+
+
 def build_index(store: Store, doc_id: int, force: bool = False) -> dict:
     """Build the index of a document. An index of the same format (INDEX_FORMAT)
-    is kept, unless force is true."""
+    is kept, unless force is true. One build of a document at a time in a
+    process."""
+    with _build_guard:
+        doc_lock = _build_locks.setdefault(int(doc_id), threading.Lock())
+    with doc_lock:
+        return _build_index(store, doc_id, force)
+
+
+def _build_index(store: Store, doc_id: int, force: bool) -> dict:
     doc = store.document(doc_id)
     if doc is None:
         raise LensError(f"document not found: {doc_id}")

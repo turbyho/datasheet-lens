@@ -33,7 +33,7 @@ from tomlkit.items import AoT, Comment, Null, Table, Whitespace
 from . import PROJECT_URL, makers
 from .errors import LensError
 from .fileutil import temp_path, write_atomic
-from .lock import locked
+from .lock import folder_lock, locked
 from .store import LIBRARIES, ROLES, Document, Store, check_source, sha256_file
 
 PROJECT_FILE = "datasheet-lens.toml"
@@ -274,6 +274,18 @@ def load(start: Path | str | None = None) -> Project:
     if names is not None and (not isinstance(names, list) or not all(isinstance(n, str) for n in names)):
         raise LensError(f"{path}: distributors must be a list of names, for example [\"mouser\"]")
     return Project(root, folder, parts, layout, text=text, distributors=names)
+
+
+@contextlib.contextmanager
+def open_project(start: Path | str | None = None):
+    """The project that holds start, read with the lock of its folder (see
+    lock.py): the project file and the folder do not change during the block,
+    and the block reads the project file after a different command is done.
+    Take it before a lock of the MCP server and before a Store (the order of
+    the locks)."""
+    root = find_project(start)
+    with folder_lock(root):
+        yield load(root)
 
 
 def load_optional(start: Path | str | None = None) -> Project | None:
@@ -597,6 +609,7 @@ def _match_documents(old_docs: list, documents: list[dict]) -> list:
     return [t if t is not None else tomlkit.table() for t in found]
 
 
+@locked
 def save(project: Project) -> None:
     """Write the project file. The text of the file stays: the comments, the
     format and the keys that datasheet-lens does not know. Only the changed values
@@ -2888,8 +2901,45 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
     command datasheet-lens index builds it again), and save the project file. If
     restore is true, a changed copy is copied again from the store. Give the
     report: lists of file names (and of document IDs in "documents"). If apply is
-    false, the project does not change (see dry_run)."""
+    false, the project does not change (see dry_run). It builds no index of
+    the new documents: the caller runs build_indexes after it frees the lock of
+    the folder (see sync_project). Only a file of the inbox gets its index in
+    sync, because sync reads it to find its parts (_inbox)."""
     return _sync(project if apply else copy.deepcopy(project), store, apply, restore)
+
+
+def sync_project(store: Store, start: Path | str | None = None, restore: bool = False, prepare=None,
+                 lock=None) -> tuple[dict, Project]:
+    """Sync a project in the order of the locks (lock.py): the lock of the
+    folder (open_project, which reads the project file), then lock (the lock of
+    the MCP server, or none). store: an open store with no write transaction.
+    prepare(project, store): a change before the sync in the same locks (the
+    command add adds the part). After the lock of the folder: the index of each
+    new document (build_indexes). Gives the report and the project."""
+    with open_project(start) as project, lock or contextlib.nullcontext():
+        if prepare is not None:
+            prepare(project, store)
+        report = sync(project, store, restore=restore)
+    build_indexes(store, report)
+    return report, project
+
+
+def build_indexes(store: Store, report: dict) -> None:
+    """Build the index of each document of a report of sync that has none: a new
+    document, or a document that came into the store with no index (for example
+    through the command add of an older version). An index of an older version
+    stays: the command datasheet-lens index builds it again. A failure is a
+    problem of the report. It needs no lock of the folder."""
+    from .indexer import build_index
+
+    for doc_id in report["documents"]:
+        if store.build(doc_id, "index") is not None:
+            continue
+        try:
+            build_index(store, doc_id)
+        except (LensError, OSError, pdfium.PdfiumError) as e:
+            doc = store.document(doc_id)
+            report["problems"].append(f"{doc.filename} ({doc.sha256[:12]}): no index: {e}")
 
 
 @locked
@@ -2930,8 +2980,6 @@ def sync_steps(report: dict) -> dict[str, list[str]]:
 def _sync(project: Project, store: Store, apply: bool, restore: bool, details: bool = True) -> dict:
     """sync on the given project: with apply false, the caller gives a copy.
     details: see dry_run (only with apply false)."""
-    from .indexer import build_index
-
     report = {k: [] for k in ("ok", "copied", "restored", "changed", "missing", "imported", "added", "moved",
                               "suggested", "unassigned", "unknown_parts", "problems", "misplaced", "documents",
                               "inbox_assigned", "inbox_known", "inbox_waiting", "inbox_new", "found")}
@@ -3096,17 +3144,7 @@ def _sync(project: Project, store: Store, apply: bool, restore: bool, details: b
             report["documents"].append(doc.id)
         known.add(sha)
     report["documents"] = sorted(set(report["documents"]))
-    if apply:
-        # A new document, or a document that came into the store with no index
-        # (for example through the command add of an older version).
-        for doc_id in report["documents"]:
-            if store.build(doc_id, "index") is not None:
-                continue
-            try:
-                build_index(store, doc_id)
-            except (LensError, OSError, pdfium.PdfiumError) as e:
-                doc = store.document(doc_id)
-                report["problems"].append(f"{doc.filename} ({doc.sha256[:12]}): no index: {e}")
+    if apply:  # the index comes after (sync, build_indexes): it does not change the folder
         save(project)
         _remove_from_inbox(project, from_inbox, report)
     report["outside"], report["outside_complete"] = [], True

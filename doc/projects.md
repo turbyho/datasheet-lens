@@ -291,10 +291,17 @@ changes nothing. `datasheet-lens sync` does these steps:
    background.
 
 The CLI and the MCP server can work on one project at the same time. A command that
-reads or changes the document folder (`sync`, `ls`, `check`, `set`, `rm`, `add-part`)
-holds a lock of the folder, so that one command does not read a file that the other
-moves. The lock is a file in the store folder (`locks/`), not in the project. A command
-waits for the lock up to 10 minutes, then it stops with an error.
+reads or changes the document folder or the project file (`sync`, `ls`, `check`,
+`set`, `rm`, `add`, `add-part`, `adopt`, `dist --local`, `project init`) holds a lock
+of the folder, so that one command does not read a file that the other moves. The
+command reads the project file after it has the lock. The index and the element maps
+of new documents come after the lock; only a file of the inbox gets its index in the
+lock, because sync reads it to find its parts. The lock is a file in the store folder
+(`locks/`), not in the project: thus it excludes the commands of one store (one
+person on one machine). A CLI command waits for the lock with no limit and tells it
+one time (Ctrl-C stops it). An MCP tool call waits up to 60 s, then it gives an error,
+and the agent calls the tool again. A store folder on a file system with no file
+locks gives an error.
 
 The report gives a line for each change and each problem:
 

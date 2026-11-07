@@ -54,11 +54,16 @@ MAX_PDF_PAGES = 50
 REGION_PAGES = 10  # search_text gives the regions of the hits on this number of pages
 MAX_IMAGES = 6  # get_page_image with a caption: the images of one result
 
-# The SDK runs the tools in worker threads. Only one add_document (or change of
-# the project file) at a time:
-# a second call for the same file (for example a retry after a client timeout)
-# then finds the current build and does not start a second one.
+# The SDK runs the tools in worker threads. Only one change of the store or of a
+# project file at a time. The order of the locks: the lock of a project folder
+# first, then this lock, then the store (lock.py). An index build does not hold
+# this lock: build_index makes one build at a time in the process, thus a second
+# call for the same file (a retry after a client timeout) finds the build.
 _add_lock = threading.Lock()
+# The time that a tool call waits for the lock of a project folder (lock.py):
+# then the call gives an error, and the client calls again. A call that waits
+# longer than the client would do its change when nobody reads the result.
+FOLDER_LOCK_TIMEOUT = 60.0
 
 # The element map of a large document takes minutes with docling: longer than
 # the timeout of an MCP client. A background thread builds it (with docling in a
@@ -174,8 +179,7 @@ def _indexed(store: Store, doc_ids: list[int]) -> list[int]:
 
     for doc_id in doc_ids:
         if store.build(doc_id, "index") is None:
-            with _add_lock:
-                build_index(store, doc_id)
+            build_index(store, doc_id)  # one build at a time (indexer), with no lock of the server
     return doc_ids
 
 
@@ -339,7 +343,12 @@ def add_document(
             file, source = Path(path).expanduser(), ""
         with _add_lock, Store() as store:
             doc = store.add_document(file, source_url=source, move=bool(source))
+        # The index is not under _add_lock: build_index makes one build at a time,
+        # and a different call that holds the lock of a project folder can wait
+        # for _add_lock (the order of the locks, lock.py).
+        with Store() as store:
             idx = build_index(store, doc.id)
+        with _add_lock, Store() as store:
             # An MPN or an alias, as in the CLI command add. A failure is a line of
             # the result: the document, its index and its element map stay.
             failures = store.link_parts(doc.id, part, variants or [], manufacturer, role)[1] if part.strip() else []
@@ -715,15 +724,14 @@ def project_status(path: ProjectPath = "") -> str:
     variants) and one line for each document (reference, role, file). A first
     line can tell about a newer release or a necessary restart of the LLM
     client, or about the team server (a failed sync, a conflict): tell the user."""
-    from .project import add_details, dry_run, format_parts, format_report, load
+    from .project import add_details, dry_run, format_parts, format_report, open_project
     from .version_check import version_notes
 
     from .teamsync import model_notes
 
-    project = load(path or None)
-    with Store() as store:
-        # dry_run holds the lock of the folder (lock.py); the details need no lock.
-        report = dry_run(project, store, details=False)[0]
+    with Store() as store:  # no write before the lock: see the order of the locks in lock.py
+        with open_project(path or None) as project:  # the lock only for the dry run of the folder
+            report = dry_run(project, store, details=False)[0]
         add_details(report, project, store)
         team = model_notes(store)
     return "\n".join(version_notes() + team + format_parts(project) + format_report(report, False, PROJECT_ADD_HINT))
@@ -746,12 +754,15 @@ def project_sync(
     the datasheet) and that have no datasheet, and takes it from the inbox. For a file with no part, ask the
     user for the part, then assign it with project_add_part. Gives the changes
     and the problems."""
-    from .project import format_report, load, sync
+    from .project import format_report, sync_project
 
-    with _add_lock, Store() as store:
-        project = load(path or None)
-        report = sync(project, store, restore=restore)
-        queued = _build_in_sequence(store, report["documents"])
+    # No _add_lock for the sync: the lock of the folder excludes the other calls for
+    # this project, and the store takes the writes of more connections (as of the
+    # CLI). _add_lock would stop the calls for the other projects during the sync.
+    with Store() as store:  # no write before the lock (lock.py)
+        report, _ = sync_project(store, path or None, restore)
+        with _add_lock:
+            queued = _build_in_sequence(store, report["documents"])
     lines = format_report(report, True, PROJECT_ADD_HINT)
     if queued:
         lines.append(f"element map: a background thread builds the maps of {queued} documents, one after "
@@ -802,10 +813,9 @@ def project_add_part(
     into the CAD project too (Value with the MPNs in parentheses, MPN,
     Value_Confirmed, LCSC; kicad-workbench: set_symbol_fields), then
     project_check. Gives the part and its documents."""
-    from .project import add_part, load
+    from .project import add_part, open_project
 
-    with _add_lock, Store() as store:
-        project = load(path or None)
+    with open_project(path or None) as project, _add_lock, Store() as store:
         part = add_part(project, store, mpn, manufacturer, document, role, category, base)
         from .identify import project_base_note
 
@@ -1230,7 +1240,7 @@ def project_check(
     "LCSC:" compare the JLCPCB number of each symbol (the LCSC column of the
     BOM, or lcsc of the parts) with the purchase source and with the JLCPCB
     parts library. It changes nothing in the project."""
-    from .project import bom_files, check_parts, dry_run, format_check, load, sync_steps
+    from .project import bom_files, check_parts, dry_run, find_project, format_check, open_project, sync_steps
     from .version_check import version_notes
 
     if (parts is None) == (not bom):
@@ -1240,23 +1250,26 @@ def project_check(
     files = [bom] if isinstance(bom, str) else list(bom)
     if parts is None and not all(f.strip() for f in files):
         raise LensError("an item of bom is empty: give the path of each BOM file")
-    project = load(path or None)
+    root = find_project(path or None)
     options = {"column": "bom_column", "delimiter": "bom_delimiter", "quote": "bom_quote",
                "confirmed": "bom_confirmed_column"}
     # A relative path is relative to the project folder (the folder of the project
     # file), as the other paths of a project: not to the working folder of the server.
     reads = bom_files(files, bom_column, bom_delimiter, bom_quote, options, bom_confirmed_column,
-                      base=str(project.root)) if parts is None else []
+                      base=str(root)) if parts is None else []
     cad = [s for r in reads for s in r.cad] if reads else [p.model_dump() for p in parts or []]
     from .teamsync import model_notes, sync_before_answer
 
     with Store() as store:
         # The rows of the team server first: a datasheet that a different person
-        # added is then not missing (decision 20 of the team server).
+        # added is then not missing (decision 20 of the team server). Not under the
+        # lock of the folder: the network can be slow. The writes of the team sync
+        # are committed before the lock (the order of the locks, lock.py).
         team = sync_before_answer(store)
-        result = check_parts(project, store, cad)
-        result["sync"] = sync_steps(dry_run(project, store, details=False)[0])  # with the lock of the folder
         team += model_notes(store)
+        with open_project(root) as project:
+            result = check_parts(project, store, cad)
+            result["sync"] = sync_steps(dry_run(project, store, details=False)[0])
     return "\n".join(version_notes() + team + [r.summary for r in reads] + format_check(result))
 
 
@@ -1293,10 +1306,9 @@ def project_update_part(
     in parentheses, MPN, Value_Confirmed, LCSC; kicad-workbench:
     set_symbol_fields), then project_check. Gives each changed field with its
     old and new value, then the part and its documents."""
-    from .project import document_ref, load, update_part
+    from .project import document_ref, open_project, update_part
 
-    with _add_lock, Store() as store:
-        project = load(path or None)
+    with open_project(path or None) as project, _add_lock, Store() as store:
         part = update_part(project, store, mpn, manufacturer, new_mpn, base, category, new_manufacturer,
                            document_ref(store, pin_document), document_ref(store, unpin_document))
     notes = part.pop("notes", [])
@@ -1330,10 +1342,9 @@ def project_remove_part(
     projects can use the part. To change the MPN of a part, use
     project_update_part. Gives the removed part and the deleted and kept
     files."""
-    from .project import load, remove_part
+    from .project import open_project, remove_part
 
-    with _add_lock, Store() as store:
-        project = load(path or None)
+    with open_project(path or None) as project, _add_lock, Store() as store:
         result = remove_part(project, mpn, manufacturer, delete_pinned, not dry_run, store)
     return _removal(result, project.folder, dry_run, f"part {result['part']}")
 
@@ -1362,10 +1373,9 @@ def project_remove_source(
     only when the user agrees. The CAD BOM is the master: the LCSC field of the
     symbol must give a number that the part keeps (write it with
     kicad-workbench set_symbol_fields), then project_check."""
-    from .project import load, remove_source
+    from .project import open_project, remove_source
 
-    with _add_lock, Store() as db:
-        project = load(path or None)
+    with open_project(path or None) as project, _add_lock, Store() as db:
         result = remove_source(project, db, mpn, number, source, manufacturer, store, not dry_run)
     removed = ", ".join(f"{s['source']} {s['number']}" for s in result["removed"])
     verb = "would remove" if dry_run else "removed"
@@ -1391,11 +1401,10 @@ def project_remove_document(
     would add (a "new reference" of project_status): use it to stop the sync of
     a document that the store links to a part. The copy is deleted when no part
     uses it; a pinned file stays. The central store does not change."""
-    from .project import document_ref, load, remove_document
+    from .project import document_ref, open_project, remove_document
 
-    with _add_lock, Store() as store:
+    with open_project(path or None) as project, _add_lock, Store() as store:
         document = document_ref(store, document)
-        project = load(path or None)
         result = remove_document(project, document, mpn, manufacturer, delete_pinned, not dry_run, store)
     return _removal(result, project.folder, dry_run,
                     f"document {result['document']} from {', '.join(result['parts'])}")
@@ -1405,9 +1414,11 @@ def main() -> None:
     """Run the MCP server on stdin and stdout. A background thread asks PyPI for
     a newer release (see version_check). A store that is connected to a team
     server syncs at the start and each teamsync.SYNC_INTERVAL seconds."""
+    from . import lock
     from .teamsync import background
     from .version_check import start_update_check
 
+    previous, lock.TIMEOUT = lock.TIMEOUT, FOLDER_LOCK_TIMEOUT
     start_update_check()
     stop = threading.Event()
     threading.Thread(target=background, args=(stop, Store), name="team-sync", daemon=True).start()
@@ -1415,6 +1426,7 @@ def main() -> None:
         mcp.run("stdio")
     finally:
         stop.set()
+        lock.TIMEOUT = previous
 
 
 __all__ = ["mcp", "main", "__version__"]

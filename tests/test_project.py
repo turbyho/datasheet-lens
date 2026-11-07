@@ -38,11 +38,12 @@ def test_copies_and_new_files(setup):
         part = prj.add_part(project, store, "opa2134")
         assert part["manufacturer"] == "TI" and part["documents"][0]["file"] == "opa2134.pdf"
         # The document came into the store with no index: the index says so,
-        # and sync builds the index.
+        # and the index comes after sync, as in sync_project (after the lock of the folder).
         doc_id = store.document(sha256_file(opa)).id
         with pytest.raises(LensError, match="has no index"):
             index_markdown(store, doc_id)
         report = prj.sync(project, store)
+        prj.build_indexes(store, report)
         assert report["copied"] == ["opa2134.pdf"]
         assert "## Page map\n\n- p.1:" in index_markdown(store, doc_id)
         copy = project.folder_path / "opa2134.pdf"

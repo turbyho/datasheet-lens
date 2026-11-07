@@ -316,7 +316,7 @@ def _not_used_line(c: dict, not_used: list[str]) -> list[str]:
 
 def _download(url: str, lock, failed: list[str]):
     """The document of a URL: the download (no lock), then the store (with the
-    lock) and its index. None, with a line in failed, when the URL gives no
+    lock), then its index (no lock). None, with a line in failed, when the URL gives no
     file or a file that is not a readable PDF: the next URL can give one."""
     import pypdfium2 as pdfium
 
@@ -329,8 +329,10 @@ def _download(url: str, lock, failed: list[str]):
         with downloaded(url, store_home()) as path:
             with lock, Store() as store:
                 doc = store.add_document(path, source_url=url, move=True)
+            # Not under the lock: build_index makes one build at a time (indexer).
+            with Store() as store:
                 build_index(store, doc.id)
-                return doc
+            return doc
     except (LensError, Unavailable, OSError, pdfium.PdfiumError) as e:
         # The errors of fetch start with the URL: the line gives it one time.
         reason = str(e)
@@ -341,13 +343,15 @@ def _download(url: str, lock, failed: list[str]):
 
 def _commit(c: dict, source: str, base: str, category: str, project, lock, lines: list[str], doc,
             new: bool) -> dict:
-    """The changes of the store and of the project, under the lock. The project
-    file is read again under the lock: a different tool can change it during the
-    downloads."""
+    """The changes of the store and of the project, under the locks: the lock of
+    the project folder first, then lock (the MCP server), then the store (the
+    order of lock.py). The project file is read again under the lock of the
+    folder: a different tool or process can change it during the downloads."""
+    from .lock import folder_lock
     from .project import add_part_with_id, load, store_part
     from .store import Store
 
-    with lock, Store() as store:
+    with folder_lock(project.root) if project is not None else contextlib.nullcontext(), lock, Store() as store:
         owner = base.strip() if base.strip().lower() != c["mpn"].lower() else ""
         document = doc.sha256 if doc is not None else ""
         part = None
