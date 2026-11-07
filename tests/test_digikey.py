@@ -523,3 +523,34 @@ def test_a_filter_that_digikey_does_not_apply(api, monkeypatch):
     searches = _searches(api)[-3:]
     assert [[f["ParameterId"] for f in s["FilterOptionsRequest"]["ParameterFilterRequest"]["ParameterFilters"]]
             for s in searches] == [[12, 6], [12], [12, 6]]
+
+
+def test_availability_of_the_digikey_purchase_source(api, store_home, tmp_path):
+    """A part with a DigiKey purchase source: the product of its number."""
+    from datasheet_lens import project as prj
+    from datasheet_lens.store import Store
+
+    api["products"] = {"DUP-1": [_second_source("DUP-1", "Maker One", "1-DUP-1-CT-ND", 70),
+                                 _second_source("DUP-1", "Maker Two", "2-DUP-1-CT-ND", 5)]}
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "DUP-1")
+    project = prj.load(project.root)
+    prj.set_source(project, project.parts[0], "digikey", "2-dup-1-ct-nd")
+    lines = distributors.availability(prj.load(project.root))
+    assert lines[1] == "DUP-1 (2-dup-1-ct-nd, the purchase source): Active, stock 5"
+
+
+def test_offer_of_one_packaging():
+    """The offer of a DigiKey number of a purchase source: the prices, the
+    minimum and the stock of its packaging."""
+    product = dict(PRODUCT, ProductVariations=[
+        {"DigiKeyProductNumber": "1-TR-ND", "PackageType": {"Name": "Tape & Reel (TR)"}, "MinimumOrderQuantity": 3000,
+         "QuantityAvailableforPackageType": 0, "StandardPricing": [{"BreakQuantity": 3000, "UnitPrice": 0.1}]},
+        {"DigiKeyProductNumber": "1-CT-ND", "PackageType": {"Name": "Cut Tape (CT)"}, "MinimumOrderQuantity": 1,
+         "QuantityAvailableforPackageType": 900, "StandardPricing": [{"BreakQuantity": 1, "UnitPrice": 0.5}]}])
+    reel = digikey.offer_of(product, "USD", "1-tr-nd")
+    assert (reel.distributor_pn, reel.stock, reel.minimum, reel.prices) == ("1-TR-ND", 0, 3000, [(3000, "0.1 USD")])
+    assert digikey.offer_of(product, "USD").distributor_pn == "1-CT-ND"
+    with pytest.raises(LensError, match="has no packaging 9-ND"):
+        digikey.offer_of(product, "USD", "9-ND")

@@ -560,19 +560,31 @@ def stock(product: dict) -> int | None:
     return max(counts) if counts else None
 
 
-def offer_of(product: dict, currency: str):
-    """An Offer of distributors.py for a DigiKey product: the cut tape packaging,
-    else the first packaging, gives the DigiKey number and the prices."""
+def offer_of(product: dict, currency: str, number: str = ""):
+    """An Offer of distributors.py for a DigiKey product. number: the DigiKey
+    number of one packaging (a purchase source): its prices, its minimum and
+    its stock (QuantityAvailableforPackageType, else the stock of the product).
+    No number: the cut tape packaging, else the first packaging, gives the
+    DigiKey number and the prices, and the stock is the stock of the product."""
     from .distributors import Offer, price_text
 
     chosen = _chosen_variation(product)
+    count = stock(product)
+    if number.strip():
+        chosen = next((v for v in product.get("ProductVariations") or []
+                       if str(v.get("DigiKeyProductNumber") or "").strip().upper() == number.strip().upper()), {})
+        if not chosen:
+            raise LensError(f"the DigiKey product {product.get('ManufacturerProductNumber')} has no packaging "
+                            f"{number}")
+        own = _count(chosen.get("QuantityAvailableforPackageType"))
+        count = own if own is not None else count
     status = str((product.get("ProductStatus") or {}).get("Status") or "").strip()
     return Offer(
         source="DigiKey", mpn=str(product.get("ManufacturerProductNumber") or "").strip(),
         manufacturer=str((product.get("Manufacturer") or {}).get("Name") or "").strip(),
         description=str((product.get("Description") or {}).get("ProductDescription") or "").strip(),
         lifecycle=status, discontinued=status.lower() == "obsolete",
-        stock=stock(product), minimum=_count(chosen.get("MinimumOrderQuantity")),
+        stock=count, minimum=_count(chosen.get("MinimumOrderQuantity")),
         prices=[(quantity, price) for quantity, price in (
             (int(float(p.get("BreakQuantity") or 0)), price_text(p.get("UnitPrice"), currency))
             for p in chosen.get("StandardPricing") or []) if price],

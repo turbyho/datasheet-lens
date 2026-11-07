@@ -323,6 +323,28 @@ LCSC.
 `find` (`search_distributors`) and `stock` (`project_availability`) also give the
 JLCPCB stock and the library class of a part, when the database is on your machine.
 
+### Purchase sources and replacements
+
+`stock` (`project_availability`) uses the purchase source of a part
+(`[[part.source]]`, see [Take a found part](#take-a-found-part)): it asks for its
+number (the JLCPCB C number, the DigiKey number, the Mouser number), thus for the
+packaging that the project orders. A part with no purchase source gets the offers of
+its MPN. A number of a different MPN gives a warning.
+
+For a part with no JLCPCB stock, or with a loading fee (Extended), the JLCPCB
+section gives up to 3 replacements with JLCPCB stock, Basic and Preferred first:
+
+- The same MPN with a different C number (an other manufacturer or listing).
+- For a resistor, a capacitor (MLCC) or an inductor: a part with the same package,
+  the same value, and parameters that are not worse (tolerance, power, voltage,
+  dielectric, current, DC resistance). A part that does not give a parameter is not
+  a replacement: the tool cannot verify it.
+
+For a part with stock, only Basic and Preferred parts are replacements. The tool
+does not replace semiconductors and ICs: find them with `pick jlcpcb`
+(`find_parts`) and the values of the datasheet. The values of a replacement come
+from the LCSC listings: read its datasheet before you use it.
+
 ## Take a found part
 
 When you select a part of a search, take it in one step:

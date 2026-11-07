@@ -931,9 +931,14 @@ def project_availability(path: ProjectPath = "") -> str:
     """The lifecycle state and the stock of each part of the user project at
     the enabled distributors (official APIs). Gives one line for each part, and
     a warning for a part that is not orderable (obsolete, discontinued, with the
-    replacement), that the distributor does not have, or that has no stock. Tell
-    the user about each warning, and give the user each note about a missing
-    API key (see search_distributors)."""
+    replacement), that the distributor does not have, or that has no stock. A
+    part with a purchase source ([[part.source]]): the offer of its number. For
+    a part with no JLCPCB stock or with a loading fee (Extended), the JLCPCB
+    section gives replacements (the same MPN; resistors, capacitors, inductors
+    with the same parameters), Basic and Preferred first: read the datasheet of
+    a replacement before you propose it. Tell the user about each warning, and
+    give the user each note about a missing API key (see
+    search_distributors)."""
     from .distributors import availability
     from .project import load
 
@@ -1087,6 +1092,12 @@ class CadPart(BaseModel):
     confirmed_field: str = Field("", description=(
         "The name of the field Value_Confirmed in the CAD tool, when it has an other name. Empty: "
         "Value_Confirmed."))
+    lcsc: str | None = Field(None, description=(
+        "The JLCPCB (LCSC) part number field of the symbol (C47616), as it is. Null when the symbol has no such "
+        "field. Give it for the JLCPCB assembly."))
+    lcsc_field: str = Field("", description=(
+        "The name of the field of the JLCPCB (LCSC) number in the CAD tool, for example 'LCSC Part #'. Empty: "
+        "LCSC."))
 
 
 @tool
@@ -1145,8 +1156,11 @@ def project_check(
     and tells you to ask the user. In KiCad, write the fields with
     set_symbol_fields of the MCP server kicad-workbench. When the store is
     connected to a team server, it gets the rows of the server first: a
-    datasheet that a different person added is not missing. It changes
-    nothing in the project."""
+    datasheet that a different person added is not missing. In a project
+    that uses JLCPCB (a JLCPCB purchase source, or an LCSC field), the lines
+    "LCSC:" compare the JLCPCB number of each symbol (the LCSC column of the
+    BOM, or lcsc of the parts) with the purchase source and with the JLCPCB
+    parts library. It changes nothing in the project."""
     from .project import bom_files, check_parts, format_check, load
     from .version_check import version_notes
 

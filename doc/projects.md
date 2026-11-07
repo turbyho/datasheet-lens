@@ -649,6 +649,29 @@ CLI command gives CLI commands as the next steps.
 The reader does not depend on one CAD tool. `project_check` also takes a list of parts
 (`parts`) from any source, for example the MCP server of a CAD tool.
 
+### The JLCPCB number of a symbol
+
+For the JLCPCB assembly, each symbol needs the JLCPCB (LCSC) number of its part, for
+example `C47616`. The reader finds the LCSC column by the names that the KiCad
+plugins for JLCPCB use: `LCSC`, `LCSC Part #`, `LCSC Part Number`, `LCSC Part`,
+`LCSC PN`, `JLCPCB Part #` and other forms. With `parts`, give the field `lcsc` of
+each part, and `lcsc_field` when the field has a different name.
+
+The check runs only in a project that uses JLCPCB: a project part has a JLCPCB
+purchase source (`[[part.source]]`), or the CAD data has an LCSC field. The lines
+`LCSC:` give:
+
+| Line | Meaning |
+|---|---|
+| The numbers that agree | The number of symbols whose number is the JLCPCB purchase source of the part. |
+| The field has no JLCPCB number | The part has a JLCPCB purchase source: write it into the field (the column of the BOM, else `LCSC`). |
+| The project has no JLCPCB purchase source | The field has a number: save it with `adopt` when the user agrees. |
+| The field gives X, the purchase source is Y | One of them is wrong: tell the user. |
+| Not a JLCPCB number | The text is not `C` and digits. |
+| X is a different MPN in the library | The number or the MPN is wrong (needs the JLCPCB parts library). |
+| The library does not have X | A wrong number, or an old database (`datasheet-lens jlc update`). |
+| No JLCPCB number | Select a part of the JLCPCB library with the user, and save it with `adopt`. |
+
 ## Team workflow
 
 Put these files into the repository of the design:

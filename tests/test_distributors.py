@@ -34,7 +34,8 @@ def fake_api(monkeypatch, parts, errors=()):
     def urlopen(request, timeout):
         sent.append((request.full_url, json.loads(request.data)))
         mpn = sent[-1][1]["SearchByPartRequest"]["mouserPartNumber"]
-        found = [p for p in parts if p["ManufacturerPartNumber"].startswith(mpn)]
+        found = [p for p in parts if p["ManufacturerPartNumber"].startswith(mpn)
+                 or str(p.get("MouserPartNumber", "")).startswith(mpn)]
         return Answer(json.dumps({"Errors": [{"Message": m} for m in errors],
                                   "SearchResults": {"NumberOfResult": len(found), "Parts": found}}).encode())
 
@@ -308,3 +309,29 @@ def test_price_text_of_each_source():
     assert distributors.price_text(1e-05, "EUR") == "0.00001 EUR"
     for number, currency in ((None, "USD"), (True, "USD"), ("n/a", "USD"), ("NaN", "USD"), (1.5, "")):
         assert distributors.price_text(number, currency) == ""
+
+
+def test_availability_of_the_purchase_source(monkeypatch, store_home, tmp_path):
+    """A part with a purchase source of the distributor: the offer of its number
+    (the packaging that the project orders), not each offer of the MPN. A
+    number of a different MPN gives a warning; a number that the distributor
+    does not have too. The parts with no purchase source: one line."""
+    reel = dict(PART, MouserPartNumber="595-A", AvailabilityInStock="100")
+    tape = dict(PART, MouserPartNumber="595-B", AvailabilityInStock="5")
+    other = dict(PART, ManufacturerPartNumber="TMP112D0IDPWR", MouserPartNumber="595-T", AvailabilityInStock="7")
+    fake_api(monkeypatch, [reel, tape, other])
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        for mpn in ("TPS7A0233PYCHR", "OPA2134PA", "LM358DR", "TMP112D0IDPWR"):
+            prj.add_part(project, store, mpn)
+    project = prj.load(project.root)
+    prj.set_source(project, project.parts[0], "mouser", "595-B")
+    prj.set_source(project, project.parts[1], "mouser", "595-T")  # a number of a different MPN
+    prj.set_source(project, project.parts[2], "mouser", "595-X")  # Mouser does not have it
+    lines = distributors.availability(prj.load(project.root))
+    assert "TPS7A0233PYCHR (595-B, the purchase source): New Product, stock 5" in lines
+    assert any(line.startswith("OPA2134PA (595-T, the purchase source): New Product, stock 7. WARNING: 595-T is "
+                               "TMP112D0IDPWR (Texas Instruments), not OPA2134PA") for line in lines)
+    assert "LM358DR (595-X, the purchase source): WARNING: Mouser does not have 595-X, the purchase source in the project file" in lines
+    assert ("No purchase source of Mouser in the project file (checked by the MPN): TMP112D0IDPWR. adopt_part "
+            "saves one.") in lines

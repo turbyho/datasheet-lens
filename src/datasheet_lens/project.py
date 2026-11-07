@@ -18,6 +18,7 @@ import copy
 import os
 import re
 import shutil
+import sqlite3
 import string
 import tomllib
 from dataclasses import dataclass, field
@@ -1347,6 +1348,11 @@ class CadSymbol:
     mpn_known: bool = True
     confirmed_fields: list[str] = field(default_factory=lambda: ["Value_Confirmed"])
     confirmed_known: bool = True
+    # The JLCPCB (LCSC) part number of the symbol (C47616), as it is. None: the CAD
+    # data has no such field (a BOM with no LCSC column). lcsc_fields: the names of
+    # the field to write.
+    lcsc: str | None = None
+    lcsc_fields: list[str] = field(default_factory=lambda: [LCSC_FIELD])
 
 
 @dataclass
@@ -1540,8 +1546,12 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
         **{k: str(item.get(k) or "") for k in ("reference", "value", "mpn", "datasheet", "variant")},
         value_confirmed=None if item.get("value_confirmed") is None else str(item["value_confirmed"]),
         mpn_fields=_field_names(item.get("mpn_fields"), "MPN"),
-        confirmed_fields=_field_names([item.get("confirmed_field")], "Value_Confirmed"))
+        confirmed_fields=_field_names([item.get("confirmed_field")], "Value_Confirmed"),
+        lcsc=None if item.get("lcsc") is None else str(item["lcsc"]),
+        lcsc_fields=_field_names([item.get("lcsc_field")], LCSC_FIELD))
         for item in cad]
+    lcsc_symbols: list[tuple[str, CadSymbol, str]] = []  # (label, symbol, the fitted MPN)
+    lcsc_seen: set = set()
     # The tool finds the line of the default variant of a variant line by its
     # reference: with no reference, a message and a count come two times.
     if any(s.variant for s in symbols):
@@ -1592,6 +1602,12 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
                  "value_confirmed": state.complete if has_field else None})
         if state.no_mpn and not reference.startswith("#"):  # not a power symbol (#PWR01)
             add("no_mpn", symbol, "", label)
+        # The JLCPCB number of the fitted part (a variant line with the same number
+        # and part as its default line gives no second message).
+        key = (frozenset(refs) or label, (symbol.lcsc or "").strip().upper(), state.parts[0] if state.parts else "")
+        if state.parts and not state.no_part and not reference.startswith("#") and key not in lcsc_seen:
+            lcsc_seen.add(key)
+            lcsc_symbols.append((label, symbol, state.parts[0]))
         # The Datasheet field of a variant line that is the field of the default variant
         # is inherited (KiCad 10): it is not the datasheet of an other part of the variant.
         datasheet = _filled(symbol.datasheet)
@@ -1637,7 +1653,89 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
         out["missing"].append({**entry, "documents": [d["sha256"][:12] for d in docs],
                                "bases": store.prefix_parts(entry["mpn"])[:3]})
     out["extra"] = [p["mpn"] for p in project.parts if id(p) not in exact | near_found]
+    # A CAD MPN that is a project part with an other MPN (different): its purchase source.
+    renamed = {d["cad"].lower(): d["mpn"] for d in out["different"] if not d["ambiguous"]}
+    missing = {m["mpn"].lower() for m in out["missing"]}
+    out["lcsc"], out["lcsc_ok"] = _lcsc_findings(project, lcsc_symbols, any(s.lcsc is not None for s in symbols),
+                                                 renamed, missing)
     return out
+
+
+def _lcsc_findings(project: Project, symbols: list[tuple[str, CadSymbol, str]], bom_column: bool,
+                   renamed: dict[str, str] | None = None, missing: set[str] | None = None) -> tuple[list, int]:
+    """The JLCPCB (LCSC) numbers of the CAD symbols, compared with the JLCPCB
+    purchase sources of the project parts and with the JLCPCB parts library. Only
+    in a project that uses JLCPCB: a part has a JLCPCB purchase source, or the CAD
+    data has an LCSC field. renamed: the CAD MPNs of project parts with an other
+    MPN (check_parts "different"); missing: the CAD MPNs that the project does not
+    have (check_parts gives them as missing: no line here about a number to
+    select). The numbers compare by their ID (C047616 is C47616). Gives the
+    findings ({"kind", "reference", "mpn", "bom", "source", "fields", "library"})
+    and the number of symbols whose number agrees with the purchase source. The
+    kinds: write (the purchase source is not in the field), no_source,
+    different, not_number, not_in_library, other_mpn (the number is a different
+    MPN in the library), none (no number at all)."""
+    from . import jlcpcb
+    from .distributors import fits, jlcpcb_ready, source_number
+
+    if not (bom_column or any(source_number(p, "jlcpcb") for p in project.parts)):
+        return [], 0
+    renamed, missing = renamed or {}, missing or set()
+
+    def normal(number: str) -> str:
+        """C and the ID of a JLCPCB number, or "" for a text that is not one."""
+        try:
+            return f"C{jlcpcb.number_id(number)}" if number.strip() else ""
+        except LensError:
+            return ""
+
+    db = None
+    if jlcpcb_ready():
+        with contextlib.suppress(LensError, sqlite3.Error):
+            db = jlcpcb.connect()
+    findings, ok = [], 0
+    try:
+        for label, symbol, mpn in symbols:
+            part = project.find(mpn) or (project.find(renamed[mpn.lower()]) if mpn.lower() in renamed else None)
+            source = source_number(part, "jlcpcb") if part is not None else ""
+            text = (symbol.lcsc or "").strip()
+            bom = normal(text)
+            item = {"reference": label, "mpn": mpn, "bom": bom or text, "source": source,
+                    "fields": symbol.lcsc_fields, "library": ""}
+            found: list[dict] = []  # the findings of this symbol
+            if text and not bom:
+                found.append({**item, "kind": "not_number"})
+            elif bom and source:
+                if bom == normal(source):
+                    ok += 1
+                else:
+                    found.append({**item, "kind": "different"})
+            elif bom and part is not None:
+                found.append({**item, "kind": "no_source"})
+            elif source and not text:
+                found.append({**item, "kind": "write"})
+            elif not text and part is not None and mpn.lower() not in missing:
+                found.append({**item, "kind": "none"})
+            # The library: each number is the MPN of the symbol (also the purchase
+            # source when the field has a text that is not a number).
+            for number in dict.fromkeys(n for n in (bom, normal(source)) if n) if db is not None else []:
+                try:
+                    offer = jlcpcb.offer_of_number(number, db)
+                except (LensError, sqlite3.Error):
+                    continue
+                if offer is None:
+                    found.append({**item, "kind": "not_in_library", "library": number})
+                elif not fits(offer.mpn, mpn, True) and not (part is not None and fits(offer.mpn, part["mpn"], True)):
+                    found.append({**item, "kind": "other_mpn", "library": number,
+                                  "other": f"{offer.mpn} ({offer.manufacturer or 'manufacturer unknown'})"})
+            # A number of the field that the library does not give for this MPN is not a
+            # purchase source to save.
+            wrong = {f["library"] for f in found if f["kind"] in ("not_in_library", "other_mpn")}
+            findings += [f for f in found if not (f["kind"] == "no_source" and f["bom"] in wrong)]
+    finally:
+        if db is not None:
+            db.close()
+    return findings, ok
 
 
 # Placeholders at the end of a symbol name: any characters (STM32F103C8Tx, nRF9151-LAXX).
@@ -1676,6 +1774,12 @@ MPN_COLUMNS = ("MPN", "Manufacturer Part Number", "Manufacturer Part Number 1", 
 REFERENCE_COLUMNS = ("Reference", "References", "Refs", "Designator", "Designators", "RefDes", "Parts")
 DNP_COLUMNS = ("DNP", "Do not populate", "Do not place", "Not fitted")
 DATASHEET_COLUMNS = ("Datasheet", "Datasheet URL", "Datasheet Link")
+# The column of the JLCPCB (LCSC) part number: the names that the KiCad plugins
+# for JLCPCB use (Fabrication Toolkit, kicad-jlcpcb-bom-plugin), checked
+# 2026-11-07. JLCPCB has no official list.
+LCSC_COLUMNS = ("LCSC", "LCSC Part #", "LCSC Part Number", "LCSC Part", "LCSC PN", "LCSC P/N", "LCSC Part No.",
+                "JLCPCB Part #", "JLCPCB Part", "JLCPCB PN", "JLCPCB P/N", "JLCPCB Part No.", "JLCPCB")
+LCSC_FIELD = "LCSC"  # the field to write when the BOM has no LCSC column (decision of the user)
 
 
 def _column_key(name: str) -> str:
@@ -2064,10 +2168,11 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
     labels = [f"{n} (column {i + 1})" if n and names.count(n) > 1 else n for i, n in enumerate(names)]
     shown = [label for label in labels if label]
     roles = {"Value": ["Value"], "DNP": DNP_COLUMNS, "Reference": REFERENCE_COLUMNS, "Datasheet": DATASHEET_COLUMNS,
-             "Value_Confirmed": [confirmed_column or "Value_Confirmed"]}
+             "Value_Confirmed": [confirmed_column or "Value_Confirmed"], "LCSC": LCSC_COLUMNS}
     # Each column of each name of a role, for example DNP and "Do not populate".
     keys = [_column_key(n) for n in names]
-    found = {role: [i for w in wanted for i in _bom_columns(keys, w)] for role, wanted in roles.items()}
+    found = {role: list(dict.fromkeys(i for w in wanted for i in _bom_columns(keys, w)))
+             for role, wanted in roles.items()}
     value_columns = found["Value"]
     if confirmed_column and not found["Value_Confirmed"]:
         raise LensError(f"{path}: no column {confirmed_column!r} for {options['confirmed']} ({', '.join(shown)})")
@@ -2106,7 +2211,8 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
     compare = {"Value": _value_key,
                "Reference": _references,
                "Datasheet": lambda v: v,
-               "Value_Confirmed": _value_key}
+               "Value_Confirmed": _value_key,
+               "LCSC": lambda v: v.strip().upper()}
 
     def role(row: list[str], name: str) -> tuple[str, str]:
         """The first filled value of the columns of a role, and the conflict text
@@ -2132,6 +2238,7 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
         datasheet, datasheet_conflict = role(row, "Datasheet")
         confirmed, confirmed_conflict = role(row, "Value_Confirmed")
         confirmed = confirmed if found["Value_Confirmed"] else None
+        lcsc, lcsc_conflict = role(row, "LCSC")
         # An empty DNP value is a state too (fitted).
         dnp_conflict = (", ".join(f"{labels[i]} {_filled(row[i]) or '(empty)'}" for i in found["DNP"])
                         if len(set(states)) > 1 else "")
@@ -2151,8 +2258,10 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
             reference=reference, value=values[0][1] if values else "", mpn=field_mpn,
             value_confirmed=confirmed, datasheet=datasheet, other_mpns=filled_mpns[1:],
             other_values=[text for _, text in values[1:]], variant=variant,
+            lcsc=lcsc if found["LCSC"] else None,
+            lcsc_fields=list(dict.fromkeys(names[i] for i in found["LCSC"])) or [LCSC_FIELD],
             conflict="; ".join(c for c in (value_conflict, mark_conflict, dnp_conflict, reference_conflict,
-                                           datasheet_conflict, confirmed_conflict) if c))
+                                           datasheet_conflict, confirmed_conflict, lcsc_conflict) if c))
         group = len(_references(reference)) > 1
         symbol.mpn_fields, symbol.mpn_known = _write_fields(names, filled or marked, field_columns, "MPN", group)
         symbol.confirmed_fields, symbol.confirmed_known = _write_fields(
@@ -2162,11 +2271,13 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
             cad.append(symbol)
     references = ", ".join(labels[i] for i in found["Reference"])
     confirmed_columns = ", ".join(labels[i] for i in found["Value_Confirmed"])
+    lcsc_columns = ", ".join(labels[i] for i in found["LCSC"])
     mpn_columns = ", ".join(dict.fromkeys(labels[i] for i in field_columns)) or "(no column)"
     values = ", ".join(dict.fromkeys(labels[i] for i in value_columns))
     summary = (f"{path}: MPN from {mpn_columns}" + (f"; Value from {values}" if values else "")
                + (f"; references from {references}" if references else "")
                + (f"; Value_Confirmed from {confirmed_columns}" if confirmed_columns else "; no column Value_Confirmed")
+               + (f"; LCSC from {lcsc_columns}" if lcsc_columns else "")
                + ("; read as cp1252" if encoding == "cp1252" else ""))
     return BomParts(cad, summary)
 
@@ -2268,6 +2379,49 @@ def format_check(result: dict, cli: bool = False) -> list[str]:
     for mpn in result["extra"]:
         lines.append(f"extra: {mpn}: the CAD project does not have it. Tell the user; remove it only when the "
                      "user agrees.")
+    lines += _lcsc_lines(result, cli)
+    return lines
+
+
+def _lcsc_lines(result: dict, cli: bool) -> list[str]:
+    """The lines of the JLCPCB (LCSC) numbers of check_parts (_lcsc_findings)."""
+    findings = result.get("lcsc", [])
+    if not findings and not result.get("lcsc_ok"):
+        return []
+    lines = [f"LCSC: the JLCPCB numbers that agree with the purchase sources: {result.get('lcsc_ok', 0)}"]
+
+    def adopt(number: str) -> str:
+        return f"datasheet-lens adopt jlcpcb {number}" if cli else f"adopt_part(source='jlcpcb', number='{number}')"
+
+    none = []
+    for f in findings:
+        ref, mpn, kind = f["reference"], f["mpn"], f["kind"]
+        if kind == "write":
+            write = " and ".join(f"{name} = '{f['source']}'" for name in f["fields"])
+            lines.append(f"LCSC: {ref}: the field has no JLCPCB number; the purchase source of {mpn} is "
+                         f"{f['source']}. Write {write} into the symbol.")
+        elif kind == "no_source":
+            lines.append(f"LCSC: {ref}: the field gives {f['bom']} for {mpn}, and the project has no JLCPCB purchase "
+                         f"source. When the user agrees, save it: {adopt(f['bom'])}.")
+        elif kind == "different":
+            lines.append(f"LCSC: {ref}: the field gives {f['bom']}, the JLCPCB purchase source of {mpn} is "
+                         f"{f['source']}. Tell the user: one of them is wrong.")
+        elif kind == "not_number":
+            lines.append(f"LCSC: {ref}: the field has '{f['bom']}': not a JLCPCB number (C and digits, for example "
+                         "C47616). Tell the user.")
+        elif kind == "not_in_library":
+            lines.append(f"LCSC: {ref}: the JLCPCB parts library does not have {f['library']} (a wrong number, or "
+                         "an old database: datasheet-lens jlc update).")
+        elif kind == "other_mpn":
+            lines.append(f"LCSC: {ref}: {f['library']} is {f['other']} in the JLCPCB parts library, not {mpn}. "
+                         "Tell the user: the number or the MPN is wrong.")
+        elif kind == "none":
+            none.append(f"{ref} ({mpn})")
+    if none:
+        find = "datasheet-lens pick jlcpcb, datasheet-lens find" if cli else "find_parts with source jlcpcb, " \
+            "search_distributors"
+        lines.append(f"LCSC: no JLCPCB number: {', '.join(none)}. For the JLCPCB assembly, select the part of the "
+                     f"JLCPCB library with the user ({find}), and save it with {adopt('<C number>')}.")
     return lines
 
 

@@ -18,7 +18,6 @@ limits). The result tells which URL it used, and the URLs that failed.
 from __future__ import annotations
 
 import contextlib
-import re
 import sqlite3
 from collections.abc import Iterator
 from urllib.parse import urlparse
@@ -29,7 +28,6 @@ from .store import SOURCES
 # The hosts of the distributors: a datasheet URL on a different host is on the
 # site of the manufacturer.
 DISTRIBUTOR_HOSTS = ("digikey.", "mouser.", "lcsc.", "jlcpcb.", "octopart.")
-JLCPCB_NUMBER = re.compile(r"C(\d+)", re.IGNORECASE)
 
 
 def _part(source: str, number: str, mpn: str) -> dict:
@@ -50,24 +48,19 @@ def _jlcpcb(number: str, mpn: str) -> dict:
     from . import jlcpcb
 
     if number:
-        match = JLCPCB_NUMBER.fullmatch(number)
-        if not match:
-            raise LensError(f"{number!r} is not a JLCPCB number: it is C and digits, for example C47616. Give an "
-                            "MPN as mpn")
-        db = jlcpcb.connect()
         try:
-            row = db.execute("SELECT * FROM jlc_components WHERE lcsc = ? AND present = 1",
-                             (int(match[1]),)).fetchone()
-        finally:
-            db.close()
-        if row is None:
-            raise LensError(f"the JLCPCB parts library has no part C{match[1]}")
-        if not (row["mfr"] or "").strip():
-            raise LensError(f"the JLCPCB part C{match[1]} has no MPN in the library: take the part from a "
+            offer = jlcpcb.offer_of_number(number)
+        except LensError:
+            raise LensError(f"{number!r} is not a JLCPCB number: it is C and digits, for example C47616. Give an "
+                            "MPN as mpn") from None
+        if offer is None:
+            raise LensError(f"the JLCPCB parts library has no part C{jlcpcb.number_id(number)}")
+        if not offer.mpn.strip():
+            raise LensError(f"the JLCPCB part {offer.distributor_pn} has no MPN in the library: take the part from a "
                             "different source")
-        return {"mpn": row["mfr"], "manufacturer": row["manufacturer"] or "", "package": row["package"] or "",
-                "number": f"C{row['lcsc']}", "url": jlcpcb.PART_URL.format(lcsc=row["lcsc"]),
-                "library": jlcpcb.library(row), "datasheet": row["datasheet"] or ""}
+        return {"mpn": offer.mpn, "manufacturer": offer.manufacturer, "package": offer.package,
+                "number": offer.distributor_pn, "url": offer.product_url, "library": offer.library,
+                "datasheet": offer.datasheet_url}
     return _one(jlcpcb.offers(mpn, exact=True), mpn, "the JLCPCB parts library")
 
 

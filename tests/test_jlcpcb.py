@@ -166,7 +166,7 @@ def test_offers_search_lines_and_availability(jlc, tmp_path):
     assert "FET-A: JLCPCB stock 500, library Extended (C1001)" in lines
     assert ("FET-C: JLCPCB stock 0, library Extended (C1003). WARNING: NOT IN STOCK at JLCPCB: the assembly "
             "needs an order of the part") in lines
-    assert "NO-PART: WARNING: the JLCPCB parts library does not have this MPN" in lines
+    assert "NO-PART: WARNING: the JLCPCB parts library does not have this MPN (a base part, or a wrong MPN?)" in lines
 
 
 def test_source_is_required_and_cli(jlc, capsys):
@@ -307,3 +307,97 @@ def test_temporary_files_of_other_updates(jlc):
     os.utime(running, (old, old))
     assert "an update that stopped (the next update deletes them)" in "\n".join(jlcpcb.status_lines())
     assert jlcpcb.remove() and not list(folder.glob("*.tmp"))
+
+
+def test_availability_of_the_jlcpcb_purchase_source(jlc, tmp_path):
+    """A part with a JLCPCB purchase source: the part of its C number. A C
+    number of a different MPN gives a warning."""
+    from datasheet_lens import project as prj
+
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        for mpn in ("FET-A", "FET-C"):
+            prj.add_part(project, store, mpn)
+    project = prj.load(project.root)
+    prj.set_source(project, project.parts[0], "jlcpcb", "C1001", "Extended")
+    prj.set_source(project, project.parts[1], "jlcpcb", "C1002", "Basic")  # the C number of FET-B
+    lines = distributors.availability(prj.load(project.root))
+    assert "FET-A (C1001, the purchase source): JLCPCB stock 500, library Extended (C1001)" in lines
+    assert any(line.startswith("FET-C (C1002, the purchase source): JLCPCB stock") and "WARNING: C1002 is FET-B (Maker B), not FET-C" in line
+               for line in lines)
+    assert jlcpcb.offer_of_number("c1001").mpn == "FET-A" and jlcpcb.offer_of_number("C9999") is None
+    with pytest.raises(LensError, match="not a JLCPCB number"):
+        jlcpcb.offer_of_number("1001")
+
+
+RESISTORS = "Chip Resistor - Surface Mount"
+MLCC = "Multilayer Ceramic Capacitors MLCC - SMD/SMT"
+
+
+def _add(db, lcsc, sub, mfr, pkg, lib, pref, stock, attrs, maker="Maker R"):
+    db.execute(f"INSERT INTO jlc_components VALUES ({', '.join('?' * len(COLUMNS))})",
+               (lcsc, 1, "Resistors" if sub == RESISTORS else "Capacitors", sub, mfr, pkg, maker, lib, pref,
+                "", "", stock, "1-:0.01", json.dumps(attrs)))
+
+
+def test_replacements(jlc, tmp_path):
+    """The replacements of a part: the same MPN with an other C number, and for a
+    passive part the same package and parameters (not worse). Basic and
+    Preferred first. For a part with stock, only parts with no loading fee."""
+    r = {"Resistance": "10kΩ", "Tolerance": "±5%", "Power(Watts)": "62.5mW", "Temperature Coefficient": "±100ppm/℃"}
+    db = sqlite3.connect(jlcpcb.db_path())
+    _add(db, 2001, RESISTORS, "R-EXT", "0402", "expand", 0, 5000, r)                       # the part
+    _add(db, 2002, RESISTORS, "R-BASIC", "0402", "base", 0, 900, dict(r, Tolerance="±1%"))  # better: yes
+    _add(db, 2003, RESISTORS, "R-PREF", "0402", "expand", 1, 99000, r)                     # Preferred: yes
+    _add(db, 2004, RESISTORS, "R-WORSE", "0402", "base", 0, 99000, dict(r, Tolerance="±10%"))  # worse tolerance
+    _add(db, 2005, RESISTORS, "R-0603", "0603", "base", 0, 99000, r)                       # other package
+    _add(db, 2006, RESISTORS, "R-NOPWR", "0402", "base", 0, 99000,
+         {k: v for k, v in r.items() if k != "Power(Watts)"})                              # cannot verify
+    _add(db, 2007, RESISTORS, "R-OTHER", "0402", "base", 0, 99000, dict(r, Resistance="10Ω"))  # other value
+    _add(db, 2008, RESISTORS, "R-EXT", "0402", "base", 0, 10, r, maker="Maker S")          # the same MPN
+    _add(db, 2009, RESISTORS, "R-EXT2", "0402", "expand", 0, 99000, r)                     # Extended: no
+    c = {"Capacitance": "100nF", "Voltage Rating": "16V", "Temperature Coefficient": "X7R", "Tolerance": "±10%"}
+    _add(db, 3001, MLCC, "C-EXT", "0402", "expand", 0, 0, c)                               # no stock
+    _add(db, 3002, MLCC, "C-50V", "0402", "base", 0, 10, dict(c, **{"Voltage Rating": "50V"}))   # higher voltage
+    _add(db, 3003, MLCC, "C-X5R", "0402", "base", 0, 9999, dict(c, **{"Temperature Coefficient": "X5R"}))
+    _add(db, 3004, MLCC, "C-10V", "0402", "base", 0, 9999, dict(c, **{"Voltage Rating": "10V"}))
+    _add(db, 3005, MLCC, "C-EXT3", "0402", "expand", 0, 50, c)                             # Extended: yes (no stock)
+    db.commit()
+    db.close()
+    found = [(o.distributor_pn, o.library, why) for o, why in jlcpcb.replacements("C2001", limit=10)]
+    assert found == [("C2002", "Basic", "the same package and parameters"), ("C2008", "Basic", "the same MPN"),
+                     ("C2003", "Preferred", "the same package and parameters")]
+    assert [o.distributor_pn for o, _ in jlcpcb.replacements("C3001", limit=10)] == ["C3002", "C3005"]
+    assert jlcpcb.replacements("C1001") == []  # a MOSFET: only the same MPN, and there is none
+    assert jlcpcb.replacements("C9999") == []
+    # In the availability: the replacements of a part with no stock or with a loading fee.
+    from datasheet_lens import project as prj
+
+    project = prj.init_project(tmp_path / "board")
+    with Store() as store:
+        prj.add_part(project, store, "C-EXT")
+    lines = distributors.availability(prj.load(project.root))
+    assert ("  replacement: C3002 C-50V (Maker R), library Basic, JLCPCB stock 10, 0402 (the same package and "
+            "parameters): read its datasheet before you use it") in lines
+
+
+def test_tolerance_in_other_units():
+    """A tolerance in % and a tolerance in pF do not compare."""
+    assert jlcpcb._agrees("worst<=", "±5%", "±1%") and not jlcpcb._agrees("worst<=", "±5%", "±10%")
+    assert not jlcpcb._agrees("worst<=", "±5%", "±0.5pF") and not jlcpcb._agrees("worst<=", "±0.5pF", "±1%")
+    assert jlcpcb._agrees("worst<=", "-20%~+80%", "±20%") and not jlcpcb._agrees("worst<=", "±20%", "-20%~+80%")
+
+
+def test_replacements_that_fail_are_told(jlc, tmp_path, monkeypatch):
+    """An error of the replacement search is a line, not an empty list."""
+    from datasheet_lens import project as prj
+
+    def fail(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(jlcpcb, "replacements", fail)
+    project = prj.init_project(tmp_path / "board")
+    with Store() as store:
+        prj.add_part(project, store, "FET-C")  # no JLCPCB stock
+    lines = distributors.availability(prj.load(project.root))
+    assert "  replacements: not checked: database is locked" in lines

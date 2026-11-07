@@ -21,7 +21,9 @@ from __future__ import annotations
 import collections
 import http.client
 import json
+import math
 import os
+import re
 import sqlite3
 import struct
 import threading
@@ -562,7 +564,7 @@ def parameter_lines(category: str) -> list[str]:
 def offers(mpn: str, exact: bool = True) -> list:
     """The parts of the JLCPCB library for an MPN: exact, or each MPN that
     starts with it (up to 50). As Offer objects of distributors.py."""
-    from .distributors import MIN_PREFIX, Offer, price_text
+    from .distributors import MIN_PREFIX
 
     mpn = mpn.strip()
     if not mpn:
@@ -580,18 +582,163 @@ def offers(mpn: str, exact: bool = True) -> list:
                               "ORDER BY stock DESC LIMIT 50", (escaped + "%",)).fetchall()
     finally:
         db.close()
-    out = []
-    for row in rows:
-        out.append(Offer(
-            source="JLCPCB", mpn=row["mfr"], manufacturer=row["manufacturer"] or "",
-            description=row["description"] or "", stock=row["stock"] or 0,
-            prices=[(int(q), price) for q, price in
-                    ((q.split("-")[0], price_text(p, "USD")) for q, _, p in
-                     (x.partition(":") for x in str(row["price"] or "").split(",") if ":" in x))
-                    if q.isdigit() and price],
-            package=row["package"] or "", library=library(row), datasheet_url=row["datasheet"] or "",
-            product_url=PART_URL.format(lcsc=row["lcsc"]), distributor_pn=f"C{row['lcsc']}"))
-    return out
+    return [_offer(row) for row in rows]
+
+
+def _offer(row):
+    """The Offer of distributors.py for a row of the library."""
+    from .distributors import Offer, price_text
+
+    return Offer(
+        source="JLCPCB", mpn=row["mfr"], manufacturer=row["manufacturer"] or "",
+        description=row["description"] or "", stock=row["stock"] or 0,
+        prices=[(int(q), price) for q, price in
+                ((q.split("-")[0], price_text(p, "USD")) for q, _, p in
+                 (x.partition(":") for x in str(row["price"] or "").split(",") if ":" in x))
+                if q.isdigit() and price],
+        package=row["package"] or "", library=library(row), datasheet_url=row["datasheet"] or "",
+        product_url=PART_URL.format(lcsc=row["lcsc"]), distributor_pn=f"C{row['lcsc']}")
+
+
+# A JLCPCB number (LCSC number): "C" and digits, for example C47616.
+NUMBER_RE = re.compile(r"C(\d+)", re.IGNORECASE)
+
+
+def number_id(number: str) -> int:
+    """The LCSC ID of a JLCPCB number (C47616 and c047616 give 47616). A
+    LensError for a text that is not a JLCPCB number."""
+    match = NUMBER_RE.fullmatch(number.strip())
+    if not match:
+        raise LensError(f"{number!r} is not a JLCPCB number: it is C and digits, for example C47616")
+    return int(match[1])
+
+
+def row_of_number(db, number: str):
+    """The row of the library for a JLCPCB number, or None (see number_id)."""
+    return db.execute("SELECT * FROM jlc_components WHERE lcsc = ? AND present = 1",
+                      (number_id(number),)).fetchone()
+
+
+def offer_of_number(number: str, db=None):
+    """The Offer of the part with a JLCPCB number (C47616), or None when the
+    library does not have it. db: an open connection (connect) for more
+    numbers; else the function opens one. A LensError for a text that is not a
+    JLCPCB number."""
+    own = db is None
+    db = connect() if own else db
+    try:
+        row = row_of_number(db, number)
+    finally:
+        if own:
+            db.close()
+    return _offer(row) if row is not None else None
+
+
+# Replacements (phase 7 of plans/parametric-search.md). -------------------------
+
+# The rules of a replacement of a passive part, for each subcategory of the library:
+# (attribute in lower case, rule). "=": the same quantity; "text=": the same text
+# (the dielectric); ">=" and "<=": the quantity of the replacement is not worse;
+# "worst<=": the largest absolute number of the replacement is not larger (a
+# tolerance "±5%", "-20%~+80%"). An attribute that the part has and the
+# replacement does not have stops the replacement: the tool cannot verify it.
+# Decision of the user (2026-11-07): resistors, capacitors and inductors only.
+_INDUCTOR = (("inductance", "="), ("tolerance", "worst<="), ("current rating", ">="),
+             ("current - saturation(isat)", ">="), ("dc resistance(dcr)", "<="))
+PASSIVE_RULES = {
+    "Chip Resistor - Surface Mount": (("resistance", "="), ("tolerance", "worst<="), ("power(watts)", ">="),
+                                      ("voltage-supply(max)", ">="), ("temperature coefficient", "worst<=")),
+    "Multilayer Ceramic Capacitors MLCC - SMD/SMT": (("capacitance", "="), ("voltage rating", ">="),
+                                                     ("temperature coefficient", "text="), ("tolerance", "worst<=")),
+    "Power Inductors": _INDUCTOR,
+    "Inductors (SMD)": _INDUCTOR,
+}
+LIBRARY_RANK = {"Basic": 0, "Preferred": 1, "Extended": 2}  # no loading fee first
+_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _worst(text: str) -> float | None:
+    """The largest absolute number of a text ("-20%~+80%" gives 80), or None."""
+    numbers = [float(n) for n in _NUMBER_RE.findall(text)]
+    return max(numbers) if numbers else None
+
+
+def _agrees(rule: str, mine: str, theirs: str) -> bool:
+    """True if the value of a replacement (theirs) is not worse than the value
+    of the part (mine) by the rule (see PASSIVE_RULES)."""
+    from .parametric import quantity
+
+    if rule == "text=":
+        return " ".join(mine.split()).casefold() == " ".join(theirs.split()).casefold()
+    if rule == "worst<=":
+        # The same unit only: a tolerance in % and a tolerance in pF do not compare.
+        unit_a, unit_b = quantity(mine), quantity(theirs)
+        if unit_a is None or unit_b is None or unit_a.unit != unit_b.unit:
+            return False
+        a, b = _worst(mine), _worst(theirs)
+        return a is not None and b is not None and b <= a * (1 + 1e-9)
+    a, b = quantity(mine), quantity(theirs)
+    if a is None or b is None or a.unit != b.unit:
+        return False
+    if rule == "=":
+        return math.isclose(a.value, b.value, rel_tol=1e-6, abs_tol=1e-15)
+    return b.value >= a.value * (1 - 1e-9) if rule == ">=" else b.value <= a.value * (1 + 1e-9)
+
+
+def _same_parameters(rules, mine: dict, other) -> bool:
+    """True if a passive part (other) has the parameters of the part (mine: its
+    attributes) by the rules of its subcategory."""
+    theirs = _attributes(other)
+    for name, rule in rules:
+        if name not in mine:
+            continue
+        if name not in theirs or not _agrees(rule, mine[name][1], theirs[name][1]):
+            return False
+    return True
+
+
+def replacements(number: str, limit: int = 3, db=None) -> list[tuple]:
+    """The replacements in the JLCPCB library for the part of a C number, with
+    JLCPCB stock: (Offer, reason). The same MPN with a different C number (an
+    other manufacturer or an other listing), and for a resistor, a capacitor or
+    an inductor the parts with the same package and parameters (PASSIVE_RULES).
+    Basic and Preferred first (no loading fee), then the stock. For a part with
+    stock, only Basic and Preferred parts: an other Extended part does not help.
+    The values come from the LCSC listings: read the datasheet of a replacement
+    before you use it. No replacement of semiconductors and ICs (decision of the
+    user): the agent uses find_parts with the values of the datasheet."""
+    number_id(number)  # a LensError for a text that is not a JLCPCB number
+    own = db is None
+    db = connect() if own else db
+    try:
+        row = row_of_number(db, number)
+        if row is None:
+            return []
+        found = [(r, "the same MPN") for r in db.execute(
+            "SELECT * FROM jlc_components WHERE present = 1 AND stock > 0 AND mfr = ? COLLATE NOCASE AND lcsc != ?",
+            (row["mfr"], row["lcsc"]))]
+        rules = PASSIVE_RULES.get(row["subcategory"])
+        mine = _attributes(row)
+        value = rules[0][0] if rules else ""  # the value of the part (resistance, capacitance, inductance)
+        if rules and row["package"] and value in mine:
+            # The SQL filter of the value first (the listings write its name as "Resistance" or
+            # "resistance"), then the rules in Python: only the rows of the same value are read.
+            db.create_function("same_value", 1, lambda text, wanted=mine[value][1]: (
+                text is not None and _agrees("=", wanted, text)), deterministic=True)
+            name = mine[value][0]
+            found += [(r, "the same package and parameters") for r in db.execute(
+                "SELECT * FROM jlc_components WHERE present = 1 AND stock > 0 AND subcategory = ? AND package = ?"
+                " AND lcsc != ? AND NOT (mfr = ? COLLATE NOCASE) AND same_value(COALESCE("
+                "json_extract(attributes, ?), json_extract(attributes, ?)))",
+                (row["subcategory"], row["package"], row["lcsc"], row["mfr"], f'$."{name}"', f'$."{name.lower()}"'))
+                if _same_parameters(rules, mine, r)]
+    finally:
+        if own:
+            db.close()
+    if row["stock"]:  # the part has stock: only a part with no loading fee helps
+        found = [(r, why) for r, why in found if library(r) != "Extended"]
+    found.sort(key=lambda item: (LIBRARY_RANK[library(item[0])], -(item[0]["stock"] or 0)))
+    return [(_offer(r), why) for r, why in found[:limit]]
 
 
 # The update in the background (the MCP tool jlcpcb_library). -------------------
