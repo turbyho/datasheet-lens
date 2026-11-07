@@ -1,6 +1,6 @@
 import pytest
 
-from datasheet_lens.errors import LensError
+from datasheet_lens.errors import Choose, LensError
 from datasheet_lens.parametric import Parameter, Quantity, matching_values, parse_filter, quantity, resolve
 
 
@@ -64,8 +64,14 @@ def test_resolve():
     assert resolve("drain to source voltage (vdss)", PARAMS, {}).id == "1"  # the full name
     assert resolve("vds", PARAMS, {"vds": "Drain to Source Voltage (Vdss)"}).id == "1"  # an alias
     assert resolve("Vdss", PARAMS, {}).id == "1"  # the only name that holds the text
-    with pytest.raises(LensError, match="fits more parameters: Supplier Device Package; Package / Case"):
-        resolve("package", PARAMS, {})
+    # More parameters: the candidates as a Choose (a normal result of the tools), the
+    # parameters of most parts first, with the short names. The tool selects none.
+    params = PARAMS + [Parameter("4", "Package Type", [("a", "SMD"), ("b", "THT")], {"a": 7, "b": 2})]
+    with pytest.raises(Choose, match="fits more parameters: the search did not run") as e:
+        resolve("package", params, {"pkg": "Package / Case"})
+    assert e.value.lines[1:] == ['  "Package Type": 9 parts, 2 values',
+                                 '  "Supplier Device Package": 0 parts, 0 values',
+                                 '  "Package / Case" (short name pkg): 0 parts, 0 values']
     with pytest.raises(LensError, match="no parameter 'foo'"):
         resolve("foo", PARAMS, {})
     assert matching_values(parse_filter("vdss >= 25 V"), PARAMS[0]) == [("30 V", "30 V")]

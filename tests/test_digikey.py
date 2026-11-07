@@ -165,8 +165,12 @@ def test_category_and_parameter_errors(api):
     assert distributors.pick_lines("digikey", "mosfet", [])[0].startswith("The category 'mosfet' fits more")
     with pytest.raises(LensError, match="no DigiKey category"):
         digikey.search("capacitor", [])
-    with pytest.raises(LensError, match="fits more parameters"):  # Vdss and Drive Voltage
+    with pytest.raises(Choose, match="fits more parameters"):  # Vdss and Drive Voltage
         digikey.search("100", ["voltage >= 2 V"])
+    # find_parts and the CLI give the candidates as a normal result, not as a tool error.
+    lines = distributors.pick_lines("digikey", "100", ["voltage >= 2 V"])
+    assert lines[0].startswith("The filter name 'voltage' fits more parameters: the search did not run.")
+    assert '  "Drain to Source Voltage (Vdss)" (short name vdss): parts unknown, 4 values' in lines
     with pytest.raises(LensError, match="no parameter 'foo'"):
         digikey.search("100", ["foo = bar"])
     with pytest.raises(LensError, match="give NAME OP VALUE"):  # before a request

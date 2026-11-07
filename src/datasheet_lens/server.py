@@ -920,7 +920,8 @@ def find_parts(
         category: Category,
         filters: Annotated[list[str], Field(description=(
             "The filters, each \"NAME OP VALUE\". OP: = < <= > >= has. NAME: a parameter of part_parameters "
-            "(full name, short name or a unique part of the name). = and has accept more values with | "
+            "(full name, short name or a unique part of the name; a part of the name that fits more parameters "
+            "gives the candidates, and the search does not run). = and has accept more values with | "
             "(one of them). Examples: \"vdss >= 20 V\", \"channel = N-Channel\", \"package has 3x3|3.3x3.3\", "
             "\"drive <= 2.5V\" (the short names differ for each source: part_parameters gives them; drive is "
             "a name of DigiKey only). A condition after \"at\" (\"rds_on <= 10 mOhm at Vgs<=2.5V\"): DigiKey "

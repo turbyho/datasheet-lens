@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from .errors import LensError
+from .errors import Choose, LensError
 
 OPS = ("<=", ">=", "<", ">", "=", "has")
 PREFIXES = {"p": 1e-12, "n": 1e-9, "µ": 1e-6, "μ": 1e-6, "u": 1e-6, "m": 1e-3, "k": 1e3, "K": 1e3, "M": 1e6,
@@ -206,7 +206,9 @@ def by_parts(parameters: list[Parameter]) -> list[Parameter]:
 def resolve(name: str, parameters: list[Parameter], aliases: dict[str, str]) -> Parameter:
     """The parameter for a filter name: the same name (case is ignored), an
     alias of the source, or the only parameter whose name holds the text. A
-    LensError for no parameter or for more parameters, with the names."""
+    LensError for no parameter. For more parameters a Choose: the tools give the
+    candidates as a normal result, and the agent or the user selects one. The
+    tool does not select one."""
     key = name.strip().lower()
     by_name = {p.name.lower(): p for p in parameters}
     if key in by_name:
@@ -218,8 +220,15 @@ def resolve(name: str, parameters: list[Parameter], aliases: dict[str, str]) -> 
     if len(found) == 1:
         return found[0]
     if found:
-        raise LensError(f"filter name {name!r} fits more parameters: " + "; ".join(p.name for p in found)
-                        + ". Give the full name.")
+        short: dict[str, str] = {}
+        for alias_name, full in aliases.items():
+            short.setdefault(full.lower(), alias_name)
+        lines = [f"The filter name {name!r} fits more parameters: the search did not run. Select one, and give "
+                 "its full name (the text in quotes) or its short name as NAME of the filter:"]
+        for p in by_parts(found):
+            alias_text = f" (short name {short[p.name.lower()]})" if p.name.lower() in short else ""
+            lines.append(f"  \"{p.name}\"{alias_text}: {p.parts_text()}, {len(p.values)} values")
+        raise Choose(lines)
     raise LensError(f"no parameter {name!r} in this category. The parameters: "
                     + "; ".join(p.name for p in parameters))
 
