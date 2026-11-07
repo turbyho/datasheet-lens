@@ -45,7 +45,8 @@ ProjectPath = Annotated[str, Field(description=(
     "datasheet-lens.toml is in it or in a parent folder."))]
 DryRun = Annotated[bool, Field(description="True: change nothing, only tell what would change.")]
 DeletePinned = Annotated[bool, Field(description=(
-    "True: also delete a file that the user put into the project folder (pinned = true)."))]
+    "True: also delete a pinned file (pinned = true: a file outside the subfolder of the layout of its "
+    "part, or a file that project_update_part pinned)."))]
 
 # The PDF of get_pdf_pages goes into one tool result: a larger request must
 # use more calls.
@@ -714,14 +715,16 @@ def project_status(path: ProjectPath = "") -> str:
     variants) and one line for each document (reference, role, file). A first
     line can tell about a newer release or a necessary restart of the LLM
     client, or about the team server (a failed sync, a conflict): tell the user."""
-    from .project import format_parts, format_report, load, sync
+    from .project import add_details, dry_run, format_parts, format_report, load
     from .version_check import version_notes
 
     from .teamsync import model_notes
 
     project = load(path or None)
     with Store() as store:
-        report = sync(project, store, apply=False)
+        with _add_lock:  # a project_sync does not move the files during the dry run of the folder
+            report = dry_run(project, store, details=False)[0]
+        add_details(report, project, store)
         team = model_notes(store)
     return "\n".join(version_notes() + team + format_parts(project) + format_report(report, False, PROJECT_ADD_HINT))
 
@@ -951,7 +954,11 @@ def part_parameters(source: Source, category: Category, path: ProjectPath = "") 
 
 
 @tool
-def project_availability(path: ProjectPath = "") -> str:
+def project_availability(
+        not_fitted: Annotated[list[str], Field(description=(
+            "The MPNs of the parts that no symbol fits (DNP): project_check gives them in its line next steps. "
+            "The assembly does not place them: their verdict is information only, with no WARNING."))] = [],
+        path: ProjectPath = "") -> str:
     """The lifecycle state and the stock of each part of the user project at
     the enabled distributors (official APIs) and in the JLCPCB parts library.
     Gives one verdict for each part from all sources:
@@ -975,12 +982,13 @@ def project_availability(path: ProjectPath = "") -> str:
     lines of the sources (parts with no purchase source, a source that does not
     answer, the age of the JLCPCB library). Tell the user about each warning,
     and give the user each note about a missing API key (see
-    search_distributors)."""
+    search_distributors). A part of not_fitted (DNP) gets "not fitted (DNP),
+    information only": tell the user, it is no step for the production."""
     from .distributors import availability
     from .project import load
 
     with Store() as store:
-        return "\n".join(availability(load(path or None), store))
+        return "\n".join(availability(load(path or None), store, not_fitted))
 
 
 @tool
@@ -1202,8 +1210,14 @@ def project_check(
       for each part that is different (one part with two MPNs), missing (with
       the documents of the store or the Datasheet field, and the next call) or
       extra.
+    - project folder: the folder does not agree with the project file and the
+      store (new references, missing copies, copies to move, new files): run
+      project_sync; project_status gives the files.
     - next steps: when the two hold the same parts and no symbol needs a step
-      of the user: project_sync, then project_availability.
+      of the user: project_sync (when the folder needs it), then
+      project_availability.
+    A JLCPCB (LCSC) finding of a symbol that is not fitted (DNP) is
+    information for the user, not a step.
     A message of an other variant names it. A message names the fields to
     write by the columns of the BOM (the BOM must name its columns as the
     fields of the symbols: export_bom of kicad-workbench does), or by
@@ -1216,7 +1230,7 @@ def project_check(
     "LCSC:" compare the JLCPCB number of each symbol (the LCSC column of the
     BOM, or lcsc of the parts) with the purchase source and with the JLCPCB
     parts library. It changes nothing in the project."""
-    from .project import bom_files, check_parts, format_check, load
+    from .project import bom_files, check_parts, dry_run, format_check, load, sync_steps
     from .version_check import version_notes
 
     if (parts is None) == (not bom):
@@ -1241,6 +1255,8 @@ def project_check(
         # added is then not missing (decision 20 of the team server).
         team = sync_before_answer(store)
         result = check_parts(project, store, cad)
+        with _add_lock:  # a project_sync of a different call does not move the files during the dry run
+            result["sync"] = sync_steps(dry_run(project, store, details=False)[0])
         team += model_notes(store)
     return "\n".join(version_notes() + team + [r.summary for r in reads] + format_check(result))
 
@@ -1259,26 +1275,39 @@ def project_update_part(
         new_manufacturer: Annotated[str, Field(description=(
             "The new manufacturer, any name of the manufacturer of the part in the store (TI or Texas "
             "Instruments). The project file and its layout use this name. Empty: no change."))] = "",
+        pin_document: Annotated[str, Field(description=(
+            "A document of the part (its reference, a SHA-256 prefix, its document ID or its file name) to pin: "
+            "project_sync does not move its file, and project_remove_part keeps it. Empty: no change."))] = "",
+        unpin_document: Annotated[str, Field(description=(
+            "A document of the part to unpin: project_sync manages its file as a copy (it moves it to the "
+            "subfolder of the layout, and a removal deletes it). Empty: no change."))] = "",
         path: ProjectPath = "") -> str:
-    """Change a part of the user project in place: its MPN, base part, category
-    or manufacturer. The part keeps its place in datasheet-lens.toml and its
-    copies (project_remove_part and project_add_part would delete and copy them
-    again). Then project_sync moves a copy when the layout gives it a different
-    subfolder. The CAD BOM is the master: write the change that the user confirmed
-    into the CAD project too (Value with the MPNs in parentheses, MPN,
-    Value_Confirmed, LCSC; kicad-workbench: set_symbol_fields), then
-    project_check. Gives the part and its documents."""
-    from .project import load, update_part
+    """Change a part of the user project in place: its MPN, base part, category,
+    manufacturer, or a pinned document. A file of the folder with the content of
+    a document is a copy of sync when it is in the subfolder of the layout of
+    its part, else it is pinned: project_sync tells it for each new reference,
+    and pin_document or unpin_document changes it. The part keeps its place in
+    datasheet-lens.toml and its copies (project_remove_part and project_add_part
+    would delete and copy them again). Then project_sync moves a copy when the
+    layout gives it a different subfolder. The CAD BOM is the master: write the
+    change that the user confirmed into the CAD project too (Value with the MPNs
+    in parentheses, MPN, Value_Confirmed, LCSC; kicad-workbench:
+    set_symbol_fields), then project_check. Gives each changed field with its
+    old and new value, then the part and its documents."""
+    from .project import document_ref, load, update_part
 
     with _add_lock, Store() as store:
         project = load(path or None)
-        part = update_part(project, store, mpn, manufacturer, new_mpn, base, category, new_manufacturer)
+        part = update_part(project, store, mpn, manufacturer, new_mpn, base, category, new_manufacturer,
+                           document_ref(store, pin_document), document_ref(store, unpin_document))
     notes = part.pop("notes", [])
-    return "\n".join([f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'})"
-                      + (f", base part {part['base']}" if part.get("base") else "")
-                      + f": {len(part['documents'])} documents"]
+    changes = [f"changed: {text}" for text in part.pop("changes")] or ["no change"]
+    return "\n".join(changes
+                     + [f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'})"
+                        + (f", base part {part['base']}" if part.get("base") else "")
+                        + f": {len(part['documents'])} documents"]
                      + [f"  {d['sha256'][:12]}  {d['role']:9} {project.folder}/{d['file']}"
-                        for d in part["documents"]] + notes)
+                        + ("  (pinned)" if d.get("pinned") else "") for d in part["documents"]] + notes)
 
 
 def _removal(result: dict, folder: str, dry_run: bool, what: str) -> str:
@@ -1297,7 +1326,7 @@ def project_remove_part(
         dry_run: DryRun = False,
         path: ProjectPath = "") -> str:
     """Remove a part from the user project, and delete its copies that no other
-    part uses. A file that the user put into the folder (pinned) stays, unless
+    part uses. A pinned file stays (see project_update_part), unless
     delete_pinned is true. The central store does not change, because other
     projects can use the part. To change the MPN of a part, use
     project_update_part. Gives the removed part and the deleted and kept
@@ -1358,13 +1387,15 @@ def project_remove_document(
         path: ProjectPath = "") -> str:
     """Remove a document from the parts of the user project; the parts stay. The
     project remembers it (exclude), so that project_sync does not add it again;
-    project_add_part with this document adds it again. The copy is deleted when
-    no part uses it. The central store does not change."""
-    from .project import load, remove_document
+    project_add_part with this document adds it again. It also accepts a
+    document that the project file does not name yet, but that project_sync
+    would add (a "new reference" of project_status): use it to stop the sync of
+    a document that the store links to a part. The copy is deleted when no part
+    uses it; a pinned file stays. The central store does not change."""
+    from .project import document_ref, load, remove_document
 
     with _add_lock, Store() as store:
-        if document.strip().isdigit() and len(document.strip()) < 8:  # a document ID
-            document = _doc(store, document.strip()).sha256
+        document = document_ref(store, document)
         project = load(path or None)
         result = remove_document(project, document, mpn, manufacturer, delete_pinned, not dry_run, store)
     return _removal(result, project.folder, dry_run,

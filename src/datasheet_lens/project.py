@@ -87,8 +87,8 @@ class Project:
     root: Path
     folder: str = DEFAULT_FOLDER
     # {"mpn", "manufacturer", "documents": [{"sha256", "file", "role"} and
-    # "pinned": True for a file that the user put into the folder: sync does not
-    # move it]}
+    # "pinned": True for a file of the user (_pinned_file): sync does not move
+    # it, and a removal keeps it]}
     parts: list[dict] = field(default_factory=list)
     layout: str = DEFAULT_LAYOUT
     # The text of the project file that load() read or save() wrote.
@@ -927,23 +927,47 @@ def _free_name(rel: str, sha: str, files: dict[str, str], used: dict[str, str]) 
     return f"{stem}-{sha[:8]}.{suffix}" if dot else f"{rel}-{sha[:8]}"
 
 
-def _copy_name(project: Project, doc: Document, files: dict[str, str], subdir: str) -> tuple[str, bool]:
-    """The file name of the copy of a document, and True if it is a file that the
-    user put into the folder (it has the content, and no reference has the name).
-    A copy that sync made for a different part is shared, not pinned."""
+def _pinned_file(rel: str, subdir: str) -> bool:
+    """True if a file of the folder with the content of a document of a part is
+    a file of the user (pinned), False if it is a copy of sync. No reference
+    tells it: the project file can be older than the folder (git restored it,
+    or an other branch). Decision of the user (2026-11-07, D2 of
+    plans/session-review-plan.md): a file in the subfolder of the layout of
+    its part is a copy of sync, a file in an other folder is pinned.
+    project_update_part changes it."""
+    return rel.rpartition("/")[0] != subdir
+
+
+def _copy_name(project: Project, doc: Document, files: dict[str, str], subdir: str) -> tuple[str, str]:
+    """The file name of the copy of a document, and the state of a file of the
+    folder with its content: "copy" (in subdir, the subfolder of the part: a
+    copy of sync), "shared" (a reference of a different part names it), or
+    "pinned" (_pinned_file). "" for a new copy. Of more files with the content:
+    the one in subdir first, then the one of a different part."""
     used = _used(project)
-    for rel, sha in files.items():
-        if sha == doc.sha256:
-            return rel, rel not in used
+    same = [rel for rel, sha in files.items() if sha == doc.sha256]
+    if same:
+        rel = (next((r for r in same if not _pinned_file(r, subdir)), None)
+               or next((r for r in same if r in used), None) or same[0])
+        return rel, _file_state(rel, subdir, used)
     name = _safe(doc.filename) or f"{doc.sha256[:12]}.pdf"
-    return _free_name(f"{subdir}/{name}" if subdir else name, doc.sha256, files, used), False
+    return _free_name(f"{subdir}/{name}" if subdir else name, doc.sha256, files, used), ""
 
 
-def _refresh(project: Project, store: Store, part: dict, part_id: int, files: dict[str, str]) -> list[str]:
+def _file_state(rel: str, subdir: str, used: dict[str, str]) -> str:
+    """The state of a file of the folder for a new reference (see _copy_name)."""
+    if rel in used:
+        return "shared"
+    return "pinned" if _pinned_file(rel, subdir) else "copy"
+
+
+def _refresh(project: Project, store: Store, part: dict, part_id: int, files: dict[str, str],
+             found: list[tuple[str, str]] | None = None) -> list[str]:
     """Add the documents that the store links to the part. Give their file names.
-    A reference to a file that the user put into the folder gets pinned = true.
-    The base part of a concrete part, and the variants of a base part (the parts
-    with the same datasheet), come from the store."""
+    A reference to a file of the folder gets pinned when _copy_name gives
+    "pinned"; found gets (file name, state) of each such file. The base part of
+    a concrete part, and the variants of a base part (the parts with the same
+    datasheet), come from the store."""
     base = store.base_of(part_id)
     if base is not None:
         part["base"] = base["mpn"]
@@ -965,10 +989,12 @@ def _refresh(project: Project, store: Store, part: dict, part_id: int, files: di
         if row["sha256"] in refs:
             refs[row["sha256"]]["role"] = row["role"]
             continue
-        name, pinned = _copy_name(project, store.document(row["id"]), files, subdir)
+        name, state = _copy_name(project, store.document(row["id"]), files, subdir)
         ref = {"sha256": row["sha256"], "file": name, "role": row["role"]}
-        if pinned:
+        if state == "pinned":
             ref["pinned"] = True
+        if state and found is not None:
+            found.append((name, state))
         part["documents"].append(ref)
         added.append(name)
     return added
@@ -1133,8 +1159,8 @@ def _prune_empty(project: Project, folder: Path) -> None:
 
 def _drop_copies(project: Project, removed: list[dict], delete_pinned: bool, apply: bool) -> dict:
     """Delete the copies of removed references that no other reference of the
-    project uses. A file that the user put into the folder (pinned) stays,
-    unless delete_pinned is true. A file with a different content (for example a
+    project uses. A pinned file (_pinned_file) stays, unless delete_pinned is
+    true. A file with a different content (for example a
     new revision that the user put there) stays. Give {"deleted": [...],
     "kept": [...]}."""
     used = _used(project)
@@ -1144,7 +1170,7 @@ def _drop_copies(project: Project, removed: list[dict], delete_pinned: bool, app
         if d["file"] in used:
             out["kept"].append(f"{d['file']} (a different part uses it)")
         elif d.get("pinned") and not delete_pinned:
-            out["kept"].append(f"{d['file']} (pinned: you put it there; sync shows it as a file with no part; "
+            out["kept"].append(f"{d['file']} (pinned; sync shows it as a file with no part; "
                                "delete_pinned deletes it)")
         elif path.is_file() and _hash(path) != d["sha256"]:
             out["kept"].append(f"{d['file']} (its content is not the document: not deleted)")
@@ -1200,10 +1226,15 @@ def _store_part(store: Store, mpn: str, manufacturer: str, create: bool) -> int 
 
 
 def update_part(project: Project, store: Store, mpn: str, manufacturer: str = "", new_mpn: str = "",
-                base: str = "", category: str | None = None, new_manufacturer: str = "") -> dict:
+                base: str = "", category: str | None = None, new_manufacturer: str = "", pin: str = "",
+                unpin: str = "") -> dict:
     """Change a part of the project in place: its MPN (TMP112D0 to the concrete
     TMP112D0IDPWR), its base part, its category or its manufacturer. An empty
-    value does not change; category "" removes the category. The part keeps its
+    value does not change; category "" removes the category. pin and unpin: a
+    document of the part (see _reference_test) that gets pinned = true (sync does
+    not move its file, and a removal keeps it) or loses it (see _pinned_file).
+    Gives the part, with "changes": the old and the new value of each changed
+    field. The part keeps its
     place in the project file and its copies: sync moves a copy when the layout
     gives a different subfolder. In the store, the part with the new MPN gets
     the base part; with no base part, it gets the documents of the old MPN. The
@@ -1211,6 +1242,20 @@ def update_part(project: Project, store: Store, mpn: str, manufacturer: str = ""
     in the registry), so that the store does not get a second part with the same
     MPN."""
     part = _one_part(project, mpn, manufacturer, store)
+    pins = []
+    for key, state in ((pin, True), (unpin, False)):
+        if key.strip():
+            found = [d for d in part["documents"] if _reference_test(project, key)(d)]
+            if len({d["sha256"] for d in found}) != 1:
+                raise LensError(f"part {part['mpn']} has {'more documents' if found else 'no document'} {key}"
+                                + (": give a longer SHA-256 prefix" if found else ""))
+            pins.append((found[0], state))
+    if len(pins) == 2 and pins[0][0]["sha256"] == pins[1][0]["sha256"]:
+        raise LensError(f"pin and unpin give the same document {pins[0][0]['file']}: give one of the two")
+    before = {k: part.get(k, "") for k in ("mpn", "manufacturer", "base", "category")}
+    # pinned is a state of the file (see sync): the references of each part to the file.
+    refs = {d["file"]: [x for p in project.parts for x in p["documents"] if x["file"] == d["file"]] for d, _ in pins}
+    before_pins = {f: any(x.get("pinned") for x in refs[f]) for f in refs}
     target = new_mpn.strip() or part["mpn"]
     maker = new_manufacturer.strip() or part["manufacturer"]
     if any(p is not part and p["mpn"].lower() == target.lower() and store.same_maker(p["manufacturer"], maker)
@@ -1256,11 +1301,21 @@ def update_part(project: Project, store: Store, mpn: str, manufacturer: str = ""
     # save finds the table of the part in the file by the old MPN and manufacturer.
     part["was"] = (part["mpn"], part["manufacturer"])
     part["mpn"], part["manufacturer"] = target, maker
+    for d, state in pins:
+        for x in refs[d["file"]]:
+            if state:
+                x["pinned"] = True
+            else:
+                x.pop("pinned", None)
     _refresh(project, store, part, part_id, _folder_files(project))
     try:
         save(project)
     finally:
         del part["was"]
+    part["changes"] = [f"{k}: {before[k] or '(none)'} -> {part.get(k, '') or '(none)'}"
+                       for k in before if before[k] != part.get(k, "")]
+    part["changes"] += [f"pinned {d['file']}: {str(before_pins[d['file']]).lower()} -> {str(state).lower()}"
+                        for d, state in pins if before_pins[d["file"]] != state]
     return part
 
 
@@ -1671,6 +1726,9 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
     - no_value_confirmed: the number of symbols with no field Value_Confirmed in a
       BOM file of one or more variants (a change of a general value is not found
       for them).
+    - not_fitted_parts: the CAD parts that no symbol fits (each symbol with the
+      part is DNP): their availability is information only (project_availability
+      not_fitted).
     - not_fitted: "references (parts)" of the parts of the symbols that are not
       fitted (DNP), when no BOM file of a variant fits the symbol with this part.
       They stay parts of the CAD project (see CadSymbol.fitted): they are not
@@ -1717,7 +1775,9 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
     # label, parts) of the symbols that are not fitted: a part of a symbol is not
     # fitted when no BOM file of a variant fits the symbol with this part.
     fitted_parts: dict[str, set[str]] = {}
-    dnp_symbols: list[tuple[frozenset[str], str, list[str]]] = []
+    fitted_mpns: set[str] = set()  # the parts (_norm) of each fitted symbol, also with no reference
+    part_mpns: set[str] = set()  # the parts (_norm) of each symbol with a part (has_part)
+    dnp_symbols: list[tuple[frozenset[str], str, list[str], CadSymbol]] = []
     lcsc_symbols: list[tuple[str, CadSymbol, str]] = []  # (label, symbol, the fitted MPN)
     lcsc_seen: set = set()
     # The tool finds the line of the default variant of a variant line by its
@@ -1744,11 +1804,14 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
             counted |= refs
             lines += 1
         has_part = bool(state.parts) and not state.no_part and not power
+        if has_part:
+            part_mpns.update(_norm(m) for m in state.parts)
         if has_part and symbol.fitted:
+            fitted_mpns.update(_norm(m) for m in state.parts)
             for ref in refs:
                 fitted_parts.setdefault(ref, set()).update(_norm(m) for m in state.parts)
         elif has_part:
-            dnp_symbols.append((refs, label, state.parts))
+            dnp_symbols.append((refs, label, state.parts, symbol))
         for c in state.conflicts:
             add("conflicts", symbol, c, f"{label}: {c}")
         # The fields that a confirmation writes: the MPNs of the parentheses of Value.
@@ -1805,17 +1868,24 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
             if i == 0 and not state.change and not state.removed and not entry["datasheet"] and datasheet:
                 entry["datasheet"] = datasheet
     out = {"ok": [], "different": [], "missing": [], "extra": [], **out_lists, "no_value_confirmed": no_confirmed,
-           "lines": lines, "not_fitted": []}
-    for refs, label, parts in dnp_symbols:
+           "lines": lines, "not_fitted": [],
+           "not_fitted_parts": [e["mpn"] for key, e in merged.items() if key in part_mpns - fitted_mpns]}
+    # The symbols whose fitted part (the first part) no variant fits: id(CadSymbol).
+    # Their JLCPCB findings are information only (see below).
+    dnp_ids: set[int] = set()
+    for refs, label, parts, symbol in dnp_symbols:
         # The references of each part that no variant fits on them (a line of a group,
         # R1,R2, can have a symbol that a variant fits), and the parts of the same
-        # references in one text: "R1, R2 (XQ1001)".
+        # references in one text: "R1, R2 (XQ1001)". A symbol with no reference has
+        # no line of an other variant (each variant line needs its reference).
         groups: dict[tuple[str, ...], list[str]] = {}
-        for mpn in parts:
+        for i, mpn in enumerate(parts):
             left = tuple(sorted((r for r in refs if _norm(mpn) not in fitted_parts.get(r, set())), key=_natural)
                          ) if refs else (label,)
             if left:
                 groups.setdefault(left, []).append(mpn)
+            if i == 0 and len(left) == max(len(refs), 1):
+                dnp_ids.add(id(symbol))
         for left, mpns in groups.items():
             text = f"{', '.join(left)} ({', '.join(mpns)})"
             if text not in out["not_fitted"]:
@@ -1847,6 +1917,11 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
     missing = {m["mpn"].lower() for m in out["missing"]}
     out["lcsc"], out["lcsc_ok"] = _lcsc_findings(project, lcsc_symbols, any(s.lcsc is not None for s in symbols),
                                                  renamed, missing)
+    # A symbol whose part no variant fits (dnp_ids): the assembly does not place it,
+    # thus its JLCPCB number is information for the user, not a step (decision of
+    # the user, 2026-11-07). A symbol of a group (R1,R2) with a fitted symbol is fitted.
+    for finding in out["lcsc"]:
+        finding["dnp"] = finding.pop("symbol") in dnp_ids
     return out
 
 
@@ -1859,7 +1934,8 @@ def _lcsc_findings(project: Project, symbols: list[tuple[str, CadSymbol, str]], 
     MPN (check_parts "different"); missing: the CAD MPNs that the project does not
     have (check_parts gives them as missing: no line here about a number to
     select). The numbers compare by their ID (C047616 is C47616). Gives the
-    findings ({"kind", "reference", "mpn", "bom", "source", "fields", "library"})
+    findings ({"kind", "reference", "mpn", "bom", "source", "fields", "library", and
+    "symbol": id of the CadSymbol, which check_parts replaces with "dnp"})
     and the number of symbols whose number agrees with the purchase source. The
     kinds: write (the purchase source is not in the field), no_source,
     different, not_number, not_in_library, other_mpn (the number is a different
@@ -1891,7 +1967,8 @@ def _lcsc_findings(project: Project, symbols: list[tuple[str, CadSymbol, str]], 
             text = (symbol.lcsc or "").strip()
             bom = normal(text)
             item = {"reference": label, "mpn": mpn, "part": part["mpn"] if part is not None else mpn,
-                    "bom": bom or text, "source": ", ".join(sources), "fields": symbol.lcsc_fields, "library": ""}
+                    "bom": bom or text, "source": ", ".join(sources), "fields": symbol.lcsc_fields, "library": "",
+                    "symbol": id(symbol)}
             found: list[dict] = []  # the findings of this symbol
             if text and not bom:
                 found.append({**item, "kind": "not_number"})
@@ -2583,15 +2660,33 @@ def format_check(result: dict, cli: bool = False) -> list[str]:
         lines.append(f"extra: {mpn}: the CAD project does not have it. Tell the user; remove it only when the "
                      "user agrees.")
     lines += _lcsc_lines(result, cli)
+    sync, stock, status = (("datasheet-lens sync", "datasheet-lens stock", "datasheet-lens ls") if cli
+                           else ("project_sync", "project_availability", "project_status"))
+    # The state of the project folder (sync_steps of dry_run), when the caller gives it.
+    state = result.get("sync")
+    steps = None if state is None else state["sync"]
+    if steps:
+        lines.append(f"project folder: {', '.join(steps)}. Run {sync}; {status} gives the files.")
+    if state and state["user"]:
+        lines.append(f"project folder: {', '.join(state['user'])}: {sync} cannot do these steps. {status} gives "
+                     "the files and the steps: tell the user.")
     # The project file holds the parts of the CAD project, and no symbol needs a
     # step of the user: the next steps of the project (the server instructions).
     # Not with no part at all (an empty BOM, or a BOM with no MPN or Value column).
-    if result["ok"] and not any(result.get(kind) for kind in (
-            "conflicts", "changes", "unconfirmed", "complete", "no_mpn", "different", "missing", "extra", "lcsc")):
-        sync, stock = ("datasheet-lens sync", "datasheet-lens stock") if cli else ("project_sync", "project_availability")
-        lines.append(f"next steps: {sync} copies the documents into the project folder. Then {stock} gives the "
-                     "lifecycle state and the stock of each part: tell the user about each part that is not "
-                     "orderable or has no stock.")
+    # A JLCPCB finding of a symbol that is not fitted is information only.
+    blocking = [f for f in result.get("lcsc", []) if not f.get("dnp")]
+    if result["ok"] and not blocking and not any(result.get(kind) for kind in (
+            "conflicts", "changes", "unconfirmed", "complete", "no_mpn", "different", "missing", "extra")):
+        dnp = result.get("not_fitted_parts", [])
+        if dnp:  # the parts that the assembly does not place: their availability is information only
+            stock = ("datasheet-lens stock --dnp " + " ".join(f'"{m}"' for m in dnp) if cli
+                     else f"project_availability(not_fitted={dnp!r})")
+        stock_text = (f"{stock} gives the lifecycle state and the stock of each part: tell the user about each "
+                      "part that is not orderable or has no stock.")
+        if steps is None or steps:
+            lines.append(f"next steps: {sync} copies the documents into the project folder. Then {stock_text}")
+        else:  # the folder agrees with the project file and the store
+            lines.append(f"next step: {stock_text}")
     return lines
 
 
@@ -2609,9 +2704,10 @@ def _lcsc_lines(result: dict, cli: bool) -> list[str]:
         return (f'datasheet-lens rm "{mpn}" -s {number}' if cli
                 else f"project_remove_source(mpn='{mpn}', number='{number}')")
 
-    none = []
+    none, none_dnp = [], []
     for f in findings:
         ref, mpn, kind = f["reference"], f["mpn"], f["kind"]
+        before = len(lines)
         if kind == "write":
             write = " and ".join(f"{name} = '{f['source']}'" for name in f["fields"])
             lines.append(f"LCSC: {ref}: the field has no JLCPCB number; the purchase source of {mpn} is "
@@ -2643,13 +2739,45 @@ def _lcsc_lines(result: dict, cli: bool) -> list[str]:
             lines.append(f"LCSC: {ref}: {f['library']} is {f['other']} in the JLCPCB parts library, not {mpn}. "
                          "Tell the user: the number or the MPN is wrong.")
         elif kind == "none":
-            none.append(f"{ref} ({mpn})")
+            (none_dnp if f.get("dnp") else none).append(f"{ref} ({mpn})")
+        if f.get("dnp") and len(lines) > before:
+            lines[-1] += f" {DNP_NOTE}"
+    find = "datasheet-lens pick jlcpcb, datasheet-lens find" if cli else "find_parts with source jlcpcb, " \
+        "search_distributors"
     if none:
-        find = "datasheet-lens pick jlcpcb, datasheet-lens find" if cli else "find_parts with source jlcpcb, " \
-            "search_distributors"
         lines.append(f"LCSC: no JLCPCB number: {', '.join(none)}. For the JLCPCB assembly, select the part of the "
                      f"JLCPCB library with the user ({find}), and save it with {adopt('<C number>')}.")
+    if none_dnp:
+        lines.append(f"LCSC: no JLCPCB number: {', '.join(none_dnp)}. {DNP_NOTE} When the user fits it, select the "
+                     f"part of the JLCPCB library ({find}).")
     return lines
+
+
+# The note of a JLCPCB finding of a symbol that no variant fits (DNP).
+DNP_NOTE = ("Not fitted (DNP): the assembly does not place it. Tell the user; it is no step for the next "
+            "production.")
+
+
+def document_ref(store: Store, text: str) -> str:
+    """A document ID of the store (a number of fewer than 8 digits:
+    list_documents, CLI docs) as its SHA-256; else the text as it is (a
+    reference, a SHA-256 prefix or a file name). The CLI and the MCP server use
+    it."""
+    if text.strip().isdigit() and len(text.strip()) < 8:
+        doc = store.document(text.strip())
+        if doc is None:
+            raise LensError(f"document not found: {text.strip()} (list_documents, CLI: datasheet-lens docs)")
+        return doc.sha256
+    return text
+
+
+def _reference_test(project: Project, document: str):
+    """The test of a document reference for a text: a SHA-256 prefix of 8 or more
+    characters, or its file name, with or without the folder."""
+    key = document.strip()
+    if key.startswith(project.folder + "/"):
+        key = key[len(project.folder) + 1:]
+    return lambda d: (len(key) >= 8 and d["sha256"].startswith(key.lower())) or d["file"] == _norm_rel(key)
 
 
 def remove_document(project: Project, document: str, mpn: str = "", manufacturer: str = "",
@@ -2660,16 +2788,25 @@ def remove_document(project: Project, document: str, mpn: str = "", manufacturer
     again (add_part with the document adds it again). The copies are deleted when
     no part uses them (see _drop_copies). The central store does not change.
     store: its manufacturer registry finds the part by any name of its
-    manufacturer."""
-    key = document.strip()
-    if key.startswith(project.folder + "/"):
-        key = key[len(project.folder) + 1:]
+    manufacturer.
+
+    A document that the project file does not name, but that sync would add to
+    a part (the store links it to the part: see dry_run), is removed in the same
+    way: the part gets it in exclude, and a file of the folder with its content
+    is a copy of sync or a pinned file (_pinned_file). This needs store."""
+    matches = _reference_test(project, document)
     parts = [_one_part(project, mpn, manufacturer, store)] if mpn else project.parts
-    hits = [(p, d) for p in parts for d in p["documents"]
-            if (len(key) >= 8 and d["sha256"].startswith(key.lower())) or d["file"] == _norm_rel(key)]
+    hits = [(p, d) for p in parts for d in p["documents"] if matches(d)]
+    if store is not None:
+        # And the references that sync would add to the parts: dry_run keeps the parts
+        # in their order. Else the next sync adds the document to a part again.
+        wanted = {id(p) for p in parts}
+        hits += [(p, d) for p, later in zip(project.parts, dry_run(project, store, details=False)[1].parts)
+                 if id(p) in wanted for d in later["documents"]
+                 if matches(d) and d["sha256"] not in {x["sha256"] for x in p["documents"]}]
     if not hits:
         raise LensError(f"no part of the project has the document {document}"
-                        + (f" (part {mpn})" if mpn else ""))
+                        + (f" (part {mpn})" if mpn else "") + ", and sync would not add it to a part")
     if len({d["sha256"] for _, d in hits}) > 1:
         raise LensError(f"{document} gives more documents: give a longer SHA-256 prefix")
     sha = hits[0][1]["sha256"]
@@ -2745,15 +2882,52 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
     command datasheet-lens index builds it again), and save the project file. If
     restore is true, a changed copy is copied again from the store. Give the
     report: lists of file names (and of document IDs in "documents"). If apply is
-    false, the project does not change."""
-    from .indexer import build_index
+    false, the project does not change (see dry_run)."""
+    return _sync(project if apply else copy.deepcopy(project), store, apply, restore)
 
-    if not apply:
-        project = copy.deepcopy(project)
+
+def dry_run(project: Project, store: Store, details: bool = True) -> tuple[dict, Project]:
+    """The state of the documents of a project: the report of sync with no
+    change, and a copy of the project as sync would leave it (the references
+    that sync adds, with their file names and pinned). It is the one state
+    model of the documents: project_status, project_check and remove_document
+    use it. details false: no proposals of parts for the new files (they are
+    in "unassigned"), and no search for PDF files outside the folder: the
+    counts of sync_steps do not need them, and add_details adds them later."""
+    after = copy.deepcopy(project)
+    return _sync(after, store, False, False, details), after
+
+
+def sync_steps(report: dict) -> dict[str, list[str]]:
+    """The state of the folder from the report of dry_run, as counts (for
+    example "1 new reference"): "sync" gives the changes that sync does, "user"
+    the files that need a step of the user (sync cannot do it). Two empty
+    lists: the folder agrees with the project file and the store."""
+    def count(items) -> list[str]:
+        return [f"{n} {one if n == 1 else more}" for n, one, more in items if n]
+
+    return {"sync": count((
+        (len(report["added"]), "new reference", "new references"),
+        (len(report["copied"]), "copy missing", "copies missing"),
+        (len(report["moved"]), "copy to move to its subfolder", "copies to move to their subfolders"),
+        (sum(len(report[k]) for k in ("inbox_assigned", "inbox_known", "inbox_new")), "file of the inbox to take",
+         "files of the inbox to take"))),
+        "user": count((
+            (len(report["suggested"]) + len(report["unassigned"]), "file of the folder with no part",
+             "files of the folder with no part"),
+            (len(report["changed"]), "changed copy", "changed copies"),
+            (len(report["missing"]), "document that the store does not have", "documents that the store does not have"),
+            (len(report["inbox_waiting"]), "file of the inbox with no part", "files of the inbox with no part")))}
+
+
+def _sync(project: Project, store: Store, apply: bool, restore: bool, details: bool = True) -> dict:
+    """sync on the given project: with apply false, the caller gives a copy.
+    details: see dry_run (only with apply false)."""
+    from .indexer import build_index
 
     report = {k: [] for k in ("ok", "copied", "restored", "changed", "missing", "imported", "added", "moved",
                               "suggested", "unassigned", "unknown_parts", "problems", "misplaced", "documents",
-                              "inbox_assigned", "inbox_known", "inbox_waiting", "inbox_new")}
+                              "inbox_assigned", "inbox_known", "inbox_waiting", "inbox_new", "found")}
     # 0. The inbox: its documents go into the store, linked to their parts.
     from_inbox = _inbox(project, store, apply, report)
     files = _folder_files(project)
@@ -2816,10 +2990,11 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
                 if apply:
                     store.fill_manufacturer(rows[0]["id"], base["manufacturer"])
                 part["manufacturer"] = base["manufacturer"]
-            report["added"] += _refresh(project, store, part, rows[0]["id"], files)
+            report["added"] += _refresh(project, store, part, rows[0]["id"], files, report["found"])
             part_ids[id(part)] = rows[0]["id"]
 
     # 2. The copies of the referenced documents.
+    pinned_files = {d["file"] for part in project.parts for d in part["documents"] if d.get("pinned")}
     referenced = set()
     done: dict[str, str] = {}  # the copies that this step copied or found changed: file -> SHA-256
     imported: set[str] = set()  # the documents that this sync put into the store
@@ -2846,10 +3021,11 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
                             store.link(owner, doc.id, d["role"])
                         except LensError as e:
                             report["problems"].append(f"{rel}: not linked to a part: {e}")
-                # A copy that the user did not pin goes to the subfolder of the layout.
+                # A copy goes to the subfolder of the layout. A pinned file stays: pinned
+                # is a state of the file, thus one pinned reference of any part keeps it.
                 # A misplaced reference does not move it: its part is not sure.
                 moved = False
-                if doc is not None and not d.get("pinned") and not misplaced and d["sha256"] not in placed:
+                if doc is not None and rel not in pinned_files and not misplaced and d["sha256"] not in placed:
                     try:
                         new = move(rel, part, d["sha256"])
                         moved, rel = new != rel, new
@@ -2899,15 +3075,16 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
         for row in linked:
             part = project.find(row["mpn"], row["manufacturer"], store)
             if part is not None and sha not in part.get("exclude", []):
-                if apply:  # the user put the file there: it stays there
-                    part["documents"].append({"sha256": sha, "file": rel, "role": row["role"], "pinned": True})
+                state = _file_state(rel, layout_dir(project, part), _used(project))
+                part["documents"].append({"sha256": sha, "file": rel, "role": row["role"]}
+                                         | ({"pinned": True} if state == "pinned" else {}))
                 report["added"].append(rel)
+                report["found"].append((rel, state))
                 assigned = True
         if not assigned:
-            proposals = linked or suggest_parts(store, rel)
-            key = "suggested" if proposals else "unassigned"
+            key = "suggested" if linked else "unassigned"  # add_details proposes parts for the others
             report[key].append({"file": rel, "sha256": sha, "parts": [
-                f"{p['mpn']}" + (f" ({p['manufacturer']})" if p["manufacturer"] else "") for p in proposals]})
+                f"{p['mpn']}" + (f" ({p['manufacturer']})" if p["manufacturer"] else "") for p in linked]})
         if doc is not None:
             report["documents"].append(doc.id)
         known.add(sha)
@@ -2925,8 +3102,28 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
                 report["problems"].append(f"{doc.filename} ({doc.sha256[:12]}): no index: {e}")
         save(project)
         _remove_from_inbox(project, from_inbox, report)
-    report["outside"], report["outside_complete"] = outside_pdfs(project, store)
+    report["outside"], report["outside_complete"] = [], True
+    if details:
+        add_details(report, project, store)
     return report
+
+
+def add_details(report: dict, project: Project, store: Store) -> None:
+    """Add the details of a report of sync that need no access to the files of
+    the folder: the proposals of parts for the new files with no part (from
+    their file names), and the PDF files outside the folder. Thus a caller can
+    hold a lock only for the dry run of the folder (dry_run with details
+    false)."""
+    still = []
+    for item in report["unassigned"]:
+        proposals = suggest_parts(store, item["file"])
+        if proposals:
+            report["suggested"].append({**item, "parts": [
+                f"{p['mpn']}" + (f" ({p['manufacturer']})" if p["manufacturer"] else "") for p in proposals]})
+        else:
+            still.append(item)
+    report["unassigned"] = still
+    report["outside"], report["outside_complete"] = outside_pdfs(project, store)
 
 
 def format_parts(project: Project) -> list[str]:
@@ -2942,17 +3139,31 @@ def format_parts(project: Project) -> list[str]:
     return lines
 
 
-def format_report(report: dict, apply: bool, add_hint: tuple[str, str]) -> list[str]:
+def format_report(report: dict, apply: bool, add_hint: tuple[str, str], cli: bool = False) -> list[str]:
     """The report of sync as lines. add_hint tells how to assign a document to a
     part: a template with {part} (the concrete MPN), {base} and {sha}, and the
-    template of the base argument with {base} (left out when there is no base)."""
+    template of the base argument with {base} (left out when there is no base).
+    cli: the commands of the CLI, else the MCP tools."""
     template, base_arg = add_hint
 
     def hint(part: str, sha: str, base: str = "") -> str:
         return template.format(part=part, base=base_arg.format(base=base) if base else "", sha=sha[:12])
 
-    lines = []
-    for key, text in (("added", "new reference"), ("copied", "copied" if apply else "copy missing"),
+    # A new reference to a file of the folder: its state (_copy_name). "found" has
+    # one entry for each such reference, in the order of "added" (one file can get
+    # a reference of two parts).
+    states: dict[str, list[str]] = {}
+    for rel, state in report.get("found", []):
+        states.setdefault(rel, []).append(state)
+    change = ("; datasheet-lens set MPN --pin FILE or --unpin FILE changes it)" if cli
+              else "; project_update_part with pin_document or unpin_document changes it)")
+    texts = {"pinned": " (pinned: the file is not in the subfolder of its part; sync does not move it, and a "
+                       "removal of the part keeps it" + change,
+             "copy": " (a copy of sync: the file is in the subfolder of its part" + change,
+             "shared": " (the copy of a different part of the project)"}
+    lines = [f"new reference: {rel}" + (texts[states[rel].pop(0)] if states.get(rel) else "")
+             for rel in report["added"]]
+    for key, text in (("copied", "copied" if apply else "copy missing"),
                       ("restored", "copied again" if apply else "copy to restore"),
                       ("moved", "moved to its subfolder" if apply else "to move to its subfolder"),
                       ("imported", "imported into the store")):

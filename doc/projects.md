@@ -146,7 +146,7 @@ come before the first `[[part]]`.
 | `sha256` | Necessary. The SHA-256 of the document (64 hexadecimal digits). It identifies the document in the central store. |
 | `file` | Necessary. The path of the copy, relative to the document folder. |
 | `role` | `datasheet` (default), `manual`, `errata`, `appnote` or `other`. |
-| `pinned` | `true` for a file that a person put into the folder. Sync does not move it, and a removal does not delete it. |
+| `pinned` | `true` for a file of a person. Sync does not move it, and a removal does not delete it. See [Copies and pinned files](#copies-and-pinned-files). |
 
 ### Keys of `[[part.source]]`
 
@@ -306,9 +306,28 @@ The report gives a line for each change and each problem:
 
 You can put a PDF file into the document folder yourself. Sync imports it into the
 store. When the store links the document to a project part, sync adds it to that
-part with `pinned = true`. Else sync proposes a part from the file name. Assign the
-file with `datasheet-lens project add-part MPN --document DOC` (CLI) or
-`project_add_part` (MCP).
+part (see [Copies and pinned files](#copies-and-pinned-files)). Else sync proposes a
+part from the file name. Assign the file with
+`datasheet-lens project add-part MPN --document DOC` (CLI) or `project_add_part`
+(MCP).
+
+### Copies and pinned files
+
+A file of the folder with the content of a document of a part can be a copy that
+sync wrote, or a file that a person put there. No reference tells it when the
+project file is older than the folder, for example after git restored the project
+file or after a change of the branch. The rule (decision of the user, 2026-11-07):
+
+- A file in the subfolder of the layout of its part is a copy of sync. Sync moves
+  it when the layout changes, and a removal deletes it.
+- A file in a different folder is pinned (`pinned = true`). Sync does not move it,
+  and a removal keeps it.
+
+With the layout `""`, the subfolder of each part is the document folder itself. The
+content is never lost: the store keeps each document. The line `new reference` of
+the report gives the decision for each such file. Change it with
+`datasheet-lens set MPN --pin DOC` or `--unpin DOC` (MCP: `project_update_part`
+with `pin_document` or `unpin_document`).
 
 ### The inbox
 
@@ -360,12 +379,14 @@ of the project file to that folder.
 | Set the base part | `datasheet-lens set TLV75533PDBVR -b TLV755P` | `project_update_part(mpn, base)` |
 | Set or remove the category | `datasheet-lens set MPN -c LDO` (`-c ""` removes it) | `project_update_part(mpn, category)` |
 | Change the manufacturer | `datasheet-lens set MPN -M "Texas Instruments"` | `project_update_part(mpn, new_manufacturer)` |
+| Pin or unpin a document | `datasheet-lens set MPN --pin DOC` (`--unpin DOC`) | `project_update_part(mpn, pin_document)` (`unpin_document`) |
 | Remove a part | `datasheet-lens rm MPN` | `project_remove_part(mpn)` |
 | Remove a document | `datasheet-lens rm -d DOC` | `project_remove_document(document)` |
 | Remove a purchase source | `datasheet-lens rm MPN -s NUMBER` | `project_remove_source(mpn, number)` |
 
 `set` keeps the part at its place in the project file, and keeps its copies. Use it,
-not a removal and a new addition. After a change, run `datasheet-lens sync` to move
+not a removal and a new addition. The result gives each changed field with its old
+and its new value. After a change, run `datasheet-lens sync` to move
 the copies to the subfolders of the layout. Give a name of the manufacturer that the
 store knows (`datasheet-lens maker`). With a name that the store does not relate to
 the manufacturer of the part, the command stops with an error and tells how to record
@@ -380,7 +401,10 @@ part uses. `rm -d DOC` removes a document from each part that has it, or only fr
 the part `MPN` when you give it. The tool writes the SHA-256 of the document into the
 `exclude` list of each of these parts, so that sync does not add it again.
 `project add-part MPN --document DOC` adds it again. `DOC` is the document ID, a
-SHA-256 prefix of 8 characters or more, or the file name of the copy.
+SHA-256 prefix of 8 characters or more, or the file name of the copy. `rm -d DOC`
+also accepts a document that the project file does not name yet, but that sync
+would add (`ls` shows it as `new reference`): use it to stop the sync of a document
+that the store links to the part.
 
 A removal does not delete:
 
@@ -434,8 +458,17 @@ a number), the agent asks the user.
    - `extra`: in the project file, not in the CAD project. The agent tells the user
      and removes it only when the user agrees.
 
-   When the two hold the same parts and no symbol needs a step of the user, the
-   last line `next steps` gives `project_sync` and then `project_availability`.
+   The line `project folder` tells when the folder does not agree with the project
+   file and the store (new references, missing copies, copies to move, new files):
+   run `project_sync`, and `project_status` gives the files. When the two hold the
+   same parts and no symbol needs a step of the user, the last line gives the next
+   steps: `project_sync` and then `project_availability`, or only
+   `project_availability` when the folder agrees.
+
+   A JLCPCB (LCSC) finding of a symbol that no variant fits (DNP) is information
+   for the user, not a step: the assembly does not place the part. For the same
+   reason, the line `next steps` gives the parts that no symbol fits to
+   `project_availability` (`not_fitted`): their availability is information only.
 4. After the changes, the agent runs `project_sync` and `project_check` again.
 
 ### MPN and Value fields
@@ -675,8 +708,9 @@ The reader uses these rules:
   their datasheets. The line `not fitted (DNP)` of the result names these symbols
   and their parts. A part that a BOM file of a different variant fits on the same
   symbol is not in this line. A symbol that is not fitted gets the same check of
-  its fields (changes, confirmation, LCSC number) as a fitted symbol, because the
-  user can fit it at any time.
+  its fields (changes, confirmation) as a fitted symbol, because the user can fit
+  it at any time. Its JLCPCB (LCSC) findings are information for the user, not
+  steps: the assembly does not place the part.
 
 The first line of the result gives the MPN, Value and reference columns of each BOM
 file. The other lines are the lines of `project_check`, with the number of CAD

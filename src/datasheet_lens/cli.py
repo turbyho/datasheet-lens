@@ -423,7 +423,7 @@ def cmd_project_status(args: argparse.Namespace) -> int:
     project = load(args.path)
     with Store() as store:
         report = sync(project, store, apply=False)
-    print("\n".join(user_notes() + format_parts(project) + format_report(report, False, PROJECT_ADD_HINT)))
+    print("\n".join(user_notes() + format_parts(project) + format_report(report, False, PROJECT_ADD_HINT, cli=True)))
     for line in user_defects():
         print(line, file=sys.stderr)
     return 0
@@ -438,7 +438,7 @@ def cmd_project_sync(args: argparse.Namespace) -> int:
     project = load(args.path)
     with Store() as store:
         report = sync(project, store, restore=args.restore)
-        print("\n".join(format_report(report, True, PROJECT_ADD_HINT)))
+        print("\n".join(format_report(report, True, PROJECT_ADD_HINT, cli=True)))
         backend, failed = element_backend(), 0
         for doc_id in report["documents"]:
             try:
@@ -452,21 +452,9 @@ def cmd_project_sync(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
-def _document_key(ref: str) -> str:
-    """A document ID of the store (docs, list_documents) as its SHA-256; else the
-    reference as it is (a SHA-256 prefix or a file name)."""
-    if ref.strip().isdigit() and len(ref.strip()) < 8:
-        with Store() as store:
-            doc = store.document(ref.strip())
-        if doc is None:
-            raise LensError(f"document not found: {ref}")
-        return doc.sha256
-    return ref
-
-
 def cmd_rm(args: argparse.Namespace) -> int:
     """The command rm: remove a part, or a document (-d), from the project."""
-    from .project import load, remove_document, remove_part, remove_source
+    from .project import document_ref, load, remove_document, remove_part, remove_source
 
     if not args.mpn and not args.document:
         raise LensError("give a part (MPN) or a document (-d)")
@@ -493,7 +481,7 @@ def cmd_rm(args: argparse.Namespace) -> int:
         raise LensError("--store needs -s")
     with Store() as store:
         if args.document:
-            result = remove_document(project, _document_key(args.document), args.mpn or "",
+            result = remove_document(project, document_ref(store, args.document), args.mpn or "",
                                      args.manufacturer or "", args.pinned, apply, store)
         else:
             result = remove_part(project, args.mpn, args.manufacturer or "", args.pinned, apply, store)
@@ -716,7 +704,7 @@ def cmd_stock(args: argparse.Namespace) -> int:
     from .project import load
 
     with Store() as store:
-        print("\n".join(availability(load(args.path), store)))
+        print("\n".join(availability(load(args.path), store, args.dnp or [])))
     return 0
 
 
@@ -761,13 +749,15 @@ def cmd_codes(args: argparse.Namespace) -> int:
 def cmd_check(args: argparse.Namespace) -> int:
     """The command check: compare the project with a BOM file (CSV) of the CAD
     project, for example from "kicad-cli sch export bom"."""
-    from .project import bom_files, check_parts, format_check, load
+    from .project import bom_files, check_parts, dry_run, format_check, load, sync_steps
 
     reads = bom_files(args.bom, args.column or "", args.delimiter, args.quote,
                       {"column": "--column", "delimiter": "--delimiter", "quote": "--quote",
                        "confirmed": "--confirmed-column"}, args.confirmed_column or "")
+    project = load(args.path)
     with Store() as store:
-        result = check_parts(load(args.path), store, [s for r in reads for s in r.cad])
+        result = check_parts(project, store, [s for r in reads for s in r.cad])
+        result["sync"] = sync_steps(dry_run(project, store, details=False)[0])
     for read in reads:
         print(read.summary)
     print("\n".join(format_check(result, cli=True)))
@@ -776,15 +766,18 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 def cmd_set(args: argparse.Namespace) -> int:
     """The command set: change a part of the project in place (MPN, base part,
-    category, manufacturer)."""
-    from .project import load, update_part
+    category, manufacturer, pinned documents)."""
+    from .project import document_ref, load, update_part
 
     project = load(args.path)
     with Store() as store:
         part = update_part(project, store, args.part, args.of or "", args.mpn or "", args.base or "",
-                           args.category, args.manufacturer or "")
+                           args.category, args.manufacturer or "", document_ref(store, args.pin or ""),
+                           document_ref(store, args.unpin or ""))
     print(f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'})"
           + (f", base part {part['base']}" if part.get("base") else ""))
+    for text in part.pop("changes") or ["no change"]:
+        print(f"  {text}")
     for text in part.pop("notes", []):
         print(text)
     print("run 'datasheet-lens sync' to move the copies to the subfolders of the layout")
@@ -832,11 +825,11 @@ def build_parser() -> argparse.ArgumentParser:
     rm.add_argument("--store", action="store_true",
                     help="with -s: also remove it from the central store (a number that is wrong for the part)")
     rm.add_argument("-M", "--manufacturer", help="the manufacturer, if the project has more parts with the MPN")
-    rm.add_argument("--pinned", action="store_true", help="also delete a file that you put into the folder")
+    rm.add_argument("--pinned", action="store_true", help="also delete a pinned file (pinned = true)")
     rm.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
     rm.set_defaults(func=cmd_rm)
-    st = sub.add_parser("set", help="change a part of the project in place: its MPN, base part, category or "
-                                    "manufacturer")
+    st = sub.add_parser("set", help="change a part of the project in place: its MPN, base part, category, "
+                                    "manufacturer, or a pinned document")
     st.add_argument("part", metavar="MPN", help="the part of the project now")
     st.add_argument("-m", "--mpn", help="the new MPN, for example the concrete orderable MPN")
     st.add_argument("-b", "--base", metavar="MPN", help="the base part of the datasheet")
@@ -844,6 +837,9 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("-M", "--manufacturer", help="the new manufacturer")
     st.add_argument("--of", metavar="MANUFACTURER", help="the manufacturer now, if the project has more parts "
                                                          "with the MPN")
+    st.add_argument("--pin", metavar="DOC", help="pin a document of the part (its ID, a SHA-256 prefix or its "
+                                                 "file): sync does not move its file, and rm keeps it")
+    st.add_argument("--unpin", metavar="DOC", help="unpin a document of the part: sync manages its file as a copy")
     st.set_defaults(func=cmd_set)
     ck = sub.add_parser("check", help="compare the project with a BOM file (CSV) of the CAD project")
     ck.add_argument("bom", metavar="BOM.csv", nargs="+",
@@ -945,6 +941,8 @@ def build_parser() -> argparse.ArgumentParser:
         rel.add_argument("other", metavar=other)
     mk.set_defaults(func=cmd_maker)
     sk = sub.add_parser("stock", help="show the lifecycle state and the stock of each project part")
+    sk.add_argument("--dnp", nargs="+", metavar="MPN", help="the parts that no symbol fits (check gives them): "
+                                                           "their availability is information only")
     sk.set_defaults(func=cmd_stock)
     ls = sub.add_parser("ls", help="show the parts and documents of the project (project status)")
     ls.set_defaults(func=cmd_project_status)

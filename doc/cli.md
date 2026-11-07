@@ -376,11 +376,12 @@ Add a part to the project, with the documents that the store links to it.
 
 ```text
 datasheet-lens set [-m MPN] [-b MPN] [-c CATEGORY] [-M MANUFACTURER] [--of MANUFACTURER]
-                   [-p PATH] MPN
+                   [--pin DOC] [--unpin DOC] [-p PATH] MPN
 ```
 
 Change a part of the project in place. The part keeps its place in the project file
-and its copies. Then run `sync` to move the copies to the subfolders of the layout.
+and its copies. The result gives each changed field with its old and its new value.
+Then run `sync` to move the copies to the subfolders of the layout.
 A new MPN removes the purchase sources (`[[part.source]]`) of the part, because
 they are the numbers of the old MPN: the result tells them. Take the new part with
 `adopt` to save its sources.
@@ -393,6 +394,8 @@ they are the numbers of the old MPN: the result tells them. Take the new part wi
 | `-c CATEGORY`, `--category` | The function of the part. `""` removes it. |
 | `-M MANUFACTURER`, `--manufacturer` | The new manufacturer. |
 | `--of MANUFACTURER` | The manufacturer now, when the project has more parts with the MPN. |
+| `--pin DOC` | Pin a document of the part (its ID, a SHA-256 prefix or its file name): sync does not move its file, and `rm` keeps it. See [projects.md](projects.md#copies-and-pinned-files). |
+| `--unpin DOC` | Unpin a document of the part: sync manages its file as a copy. |
 
 ### rm
 
@@ -406,11 +409,11 @@ that no other part uses. The central store does not change, except with `--store
 | Argument or option | Effect |
 |---|---|
 | `MPN` | The part to remove. With `-d`: remove the document only from this part. |
-| `-d DOC`, `--document` | A document to remove: its ID, a SHA-256 prefix or its file name. |
+| `-d DOC`, `--document` | A document to remove: its ID, a SHA-256 prefix or its file name. Also a document that sync would add (a `new reference` of `ls`). |
 | `-s NUMBER`, `--source` | A purchase source of the part `MPN` to remove (`[[part.source]]`): its part number, for example a JLCPCB C number. The part stays. |
 | `--store` | With `-s`: also remove the purchase source from the central store and the team server, for a number that is wrong for the part. Else the store keeps it: the store tells where the part is available. |
 | `-M MANUFACTURER`, `--manufacturer` | The manufacturer, when the project has more parts with the MPN. |
-| `--pinned` | Also delete a file that you put into the folder yourself. |
+| `--pinned` | Also delete a pinned file (see [projects.md](projects.md#copies-and-pinned-files)). |
 | `-n`, `--dry-run` | Only show what would change. |
 
 Give `MPN`, `-d DOC`, or the two. `-s` needs `MPN`.
@@ -434,7 +437,12 @@ the next command for each one:
   with the purchase source of its part and with the JLCPCB parts library (lines
   `LCSC:`). The command finds the LCSC column of the BOM by its name (`LCSC`,
   `LCSC Part #`, `JLCPCB Part #` and other forms). See
-  [projects.md](projects.md#the-jlcpcb-number-of-a-symbol).
+  [projects.md](projects.md#the-jlcpcb-number-of-a-symbol). A finding of a symbol
+  that is not fitted (DNP) is information only.
+- The state of the project folder (line `project folder`), when `sync` would change
+  it.
+- The next steps (`sync`, then `stock`), when the project holds the parts of the
+  CAD project and no symbol needs a step.
 
 | Argument or option | Effect |
 |---|---|
@@ -546,8 +554,11 @@ action: `status`. See [distributors.md](distributors.md#jlcpcb-parts-library).
 ### stock
 
 ```text
-datasheet-lens stock [-p PATH]
+datasheet-lens stock [--dnp MPN ...] [-p PATH]
 ```
+
+`--dnp MPN ...`: the parts that no symbol fits (DNP). `check` gives them in its line
+`next steps`. Their availability is information only.
 
 Show one verdict for each project part from all sources (the distributors and the
 JLCPCB parts library), then the details of each source. See

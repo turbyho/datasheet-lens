@@ -586,7 +586,7 @@ class _SourceState:
     lines: list[str] = field(default_factory=list)  # more lines: the replacements in the library
 
 
-def availability(project, store=None) -> list[str]:
+def availability(project, store=None, not_fitted=()) -> list[str]:
     """The availability of each project part at all enabled sources, as lines:
     one verdict for each part from all sources, then the details of each source
     (see _verdict). A purchase source at a source that the tool cannot ask (no
@@ -594,7 +594,10 @@ def availability(project, store=None) -> list[str]:
     it. After the parts: the lines of the sources (the parts with no purchase
     source, a source that does not answer, the age of the JLCPCB library), and
     a note for each enabled distributor with no key. store: its manufacturer
-    registry selects the offers of the manufacturer of the part."""
+    registry selects the offers of the manufacturer of the part. not_fitted:
+    the MPNs of the parts that no symbol fits (DNP, check_parts
+    not_fitted_parts): the assembly does not place them, thus their verdict is
+    information only (decision of the user, 2026-11-07)."""
     keys, notes = keys_of(project)
     jlc = jlcpcb_ready()
     if not keys and not jlc:
@@ -609,6 +612,7 @@ def availability(project, store=None) -> list[str]:
         for row, state in zip(states, _states_jlcpcb(project, store, risks, after)):
             row.append(state)
     asked = set(keys) | ({"jlcpcb"} if jlc else set())
+    dnp = {m.strip().lower() for m in not_fitted}
     lines: list[str] = []
     for part, row in zip(project.parts, states):
         for source in dict.fromkeys(s["source"] for s in part.get("sources", [])):
@@ -617,11 +621,11 @@ def availability(project, store=None) -> list[str]:
                 row.append(_SourceState(label, source_numbers(part, source), error=(
                     "the JLCPCB parts library is not on this machine (datasheet-lens jlc update)"
                     if source == "jlcpcb" else f"{label} is not enabled or has no API key")))
-        lines += _verdict(part, row)
+        lines += _verdict(part, row, part["mpn"].lower() in dnp)
     return lines + after + notes
 
 
-def _verdict(part: dict, states: list[_SourceState]) -> list[str]:
+def _verdict(part: dict, states: list[_SourceState], dnp: bool = False) -> list[str]:
     """The lines of one part: the verdict from all sources, then the details.
 
     The verdict starts with a lifecycle risk of the manufacturer at any source,
@@ -630,7 +634,8 @@ def _verdict(part: dict, states: list[_SourceState]) -> list[str]:
     purchase source can deliver, or the reasons why not and the other sources
     with stock. A part with no purchase source: the sources with stock. A part
     with no warning gets one line with the details of each source; a part with
-    a warning gets one line for each source."""
+    a warning gets one line for each source. dnp: no symbol fits the part, thus
+    the verdict is information, with no WARNING."""
     numbers = [n for s in states for n in s.numbers]
     head = part["mpn"] + (f" ({', '.join(numbers)}, the purchase source{'s' if len(numbers) > 1 else ''})"
                           if numbers else "")
@@ -676,10 +681,16 @@ def _verdict(part: dict, states: list[_SourceState]) -> list[str]:
     if risk:
         sources = "; ".join(f"{s.label}: {s.lifecycle}" + (f", replacement {s.replacement}" if s.replacement else "")
                             for s in states if s.lifecycle)
-        order = (f"WARNING: {risk.upper()} at the manufacturer ({sources}). {order[0].upper()}{order[1:]}. Select a "
-                 "replacement with the user (find_parts with the values of the datasheet)")
+        order = (f"WARNING: {risk.upper()} at the manufacturer ({sources}). {order[0].upper()}{order[1:]}"
+                 # A part that the assembly does not place needs no replacement now.
+                 + ("" if dnp else ". Select a replacement with the user (find_parts with the values of the "
+                                   "datasheet)"))
     elif warn:
         order = f"WARNING: {order}"
+    if dnp:
+        order = order.replace("WARNING: ", "")
+        order = ("not fitted (DNP), information only: the assembly does not place the part. "
+                 f"{order[0].upper()}{order[1:]}")
     details = [(s.label, f"not checked: {s.error}" if s.error else s.text) for s in states]
     more = [f"  {line}" for s in states for line in s.lines]
     if not (risk or warn or unchecked or any(s.warning for s in states)):

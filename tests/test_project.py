@@ -634,10 +634,18 @@ def test_check_dnp_and_next_steps(store_home, tmp_path):
         result = prj.check_parts(project, store, cad)
         assert result["extra"] == [] and result["missing"] == [] and result["lines"] == 3
         assert result["not_fitted"] == ["U2 (YQ2002)", "R1, R2 (ZQ3003)"]
+        # The parts that no symbol fits go to project_availability: their availability
+        # is information only.
+        assert result["not_fitted_parts"] == ["YQ2002", "ZQ3003"]
         text = prj.format_check(result)
         assert text[-1].startswith("next steps: project_sync copies the documents into the project folder. "
-                                   "Then project_availability gives the lifecycle state")
-        assert prj.format_check(result, cli=True)[-1].startswith("next steps: datasheet-lens sync copies")
+                                   "Then project_availability(not_fitted=['YQ2002', 'ZQ3003']) gives the "
+                                   "lifecycle state")
+        assert prj.format_check(result, cli=True)[-1].startswith(
+            'next steps: datasheet-lens sync copies the documents into the project folder. Then datasheet-lens '
+            'stock --dnp "YQ2002" "ZQ3003" gives')
+        # Fitted symbols only: no list.
+        assert prj.check_parts(project, store, cad[:1])["not_fitted_parts"] == []
         # A variant that fits U2 and R1: only R2 is not fitted in each variant.
         variant = [{"mpn": "YQ2002", "reference": "U2", "variant": "b"},
                    {"mpn": "ZQ3003", "reference": "R1", "variant": "b"},
@@ -658,6 +666,21 @@ def test_check_dnp_and_next_steps(store_home, tmp_path):
         # A symbol that is not fitted gets the check of its fields: the user can fit it.
         lines = [{"value": "op amp (YQ2002)", "mpn": "", "value_confirmed": "", "reference": "U2", "dnp": True}]
         assert "not confirmed: U2:" in "\n".join(prj.format_check(prj.check_parts(project, store, lines)))
+        # A JLCPCB number of a symbol that no variant fits: information, no step (the
+        # assembly does not place it). A fitted symbol with no number: a step.
+        prj.set_source(project, project.parts[0], "jlcpcb", "C1")
+        lines = [{"mpn": "XQ1001", "reference": "U1", "lcsc": ""},
+                 {"mpn": "YQ2002", "reference": "U2", "lcsc": "", "dnp": True},
+                 {"mpn": "ZQ3003", "reference": "R1, R2", "lcsc": "", "dnp": True}]
+        result = prj.check_parts(project, store, lines[1:] + [dict(lines[0], lcsc="C1")])
+        assert result["lcsc_ok"] == 1
+        assert [f["dnp"] for f in result["lcsc"] if f["kind"] == "none"] == [True, True]
+        text = prj.format_check(result)
+        assert ("LCSC: no JLCPCB number: U2 (YQ2002), R1, R2 (ZQ3003). Not fitted (DNP): the assembly does not place "
+                "it. Tell the user; it is no step for the next production.") in "\n".join(text)
+        assert text[-1].startswith("next steps: project_sync")
+        result = prj.check_parts(project, store, lines)
+        assert "next steps" not in "\n".join(prj.format_check(result))  # U1 needs its number
         # A part that the CAD project does not have: no next steps.
         result = prj.check_parts(project, store, cad[:2])
         assert result["extra"] == ["ZQ3003"] and "next steps" not in "\n".join(prj.format_check(result))

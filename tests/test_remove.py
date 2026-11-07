@@ -58,17 +58,137 @@ def test_rm_document_is_remembered(store_home, text_pdf, tmp_path, capsys):
     assert not (project.folder_path / "errata.pdf").exists()
 
 
-def test_pinned_file_stays(store_home, text_pdf, tmp_path, capsys):
-    rtc = text_pdf("rtc.pdf", [[(50, 60, 12, "RV-3149-C3 RTC")]])
+def test_document_state_of_the_session_review(store_home, text_pdf, tmp_path, capsys):
+    """The cases of the session review (plans/session-review-plan.md, phase 2):
+    the store links a new document to a part, and the project file does not
+    name it. project_check tells that sync is necessary (4.8). A copy that an
+    earlier sync wrote is a copy of sync after git restored the project file
+    (5.3, decision D2). The removal accepts the document that sync would add
+    (5.2). pin and unpin change a reference."""
+    project, d, e = setup_project(store_home, text_pdf, tmp_path)
+    root = str(project.root)
+    cad = [{"mpn": "OPA2134", "reference": "U1"}, {"mpn": "OPA134", "reference": "U2"}]
     with Store() as store:
-        store.add_part("RV-3149-C3", "Micro Crystal")
-        project = prj.init_project(tmp_path / "board", layout="")
-        shutil.copyfile(rtc, project.folder_path / "rv.pdf")
-        sha = prj.sync(project, store)["unassigned"][0]["sha256"]
-        prj.add_part(project, store, "RV-3149-C3", document=sha[:12])
-    assert main(["rm", "RV-3149-C3", "-p", str(project.root)]) == 0
-    assert "kept: datasheets/rv.pdf (pinned" in capsys.readouterr().out
-    assert (project.folder_path / "rv.pdf").is_file()
+        doc = store.add_document(text_pdf("pkg.pdf", [[(50, 60, 12, "OPA2134 package drawing")]]))
+        store.link(store.find_part("OPA2134", "TI", create=False), doc.id, "other")
+        result = prj.check_parts(prj.load(root), store, cad)
+        result["sync"] = prj.sync_steps(prj.dry_run(prj.load(root), store)[0])
+        text = "\n".join(prj.format_check(result))
+        assert "project folder: 1 new reference, 1 copy missing. Run project_sync; project_status gives the files." \
+            in text and "next steps: project_sync copies" in text
+        # A sync writes the copy, then git restores the older project file: the copy is
+        # in the subfolder of its part (layout "": the folder), thus a copy of sync.
+        old = project.path.read_text(encoding="utf-8")
+        prj.sync(prj.load(root), store)
+        project.path.write_text(old, encoding="utf-8")
+        report = prj.sync(prj.load(root), store, apply=False)
+        assert report["found"] == [("pkg.pdf", "copy")]
+        assert ("new reference: pkg.pdf (a copy of sync: the file is in the subfolder of its part; project_update_part "
+                "with pin_document or unpin_document changes it)") in prj.format_report(
+            report, False, ("{part}{base} {sha}", " {base}"))
+        assert ("new reference: pkg.pdf (a copy of sync: the file is in the subfolder of its part; datasheet-lens set "
+                "MPN --pin FILE or --unpin FILE changes it)") in prj.format_report(
+            report, False, ("{part}{base} {sha}", " {base}"), cli=True)
+    # The project file does not name the document, but sync would add it: the removal
+    # remembers it, and deletes the copy of sync.
+    assert main(["rm", "OPA2134", "-d", doc.sha256[:12], "-p", root]) == 0
+    assert "deleted: datasheets/pkg.pdf" in capsys.readouterr().out
+    assert doc.sha256 in prj.load(root).parts[0]["exclude"] and not (project.folder_path / "pkg.pdf").exists()
+    with Store() as store:
+        result = prj.check_parts(prj.load(root), store, cad)
+        result["sync"] = prj.sync_steps(prj.dry_run(prj.load(root), store)[0])
+        assert result["sync"] == {"sync": [], "user": []}
+        assert prj.format_check(result)[-1].startswith("next step: project_availability gives the lifecycle state")
+        # pin and unpin, with the changes in the result. pinned is a state of the file:
+        # OPA134 shares the copy opa2134.pdf, thus its reference changes too.
+        part = prj.update_part(prj.load(root), store, "OPA2134", pin="opa2134.pdf")
+        assert part["changes"] == ["pinned opa2134.pdf: false -> true"]
+        assert [p["documents"][0].get("pinned") for p in prj.load(root).parts] == [True, True]
+        part = prj.update_part(prj.load(root), store, "OPA2134", unpin=d.sha256[:12], category="op amp")
+        assert part["changes"] == ["category: (none) -> op amp", "pinned opa2134.pdf: true -> false"]
+        assert [p["documents"][0].get("pinned") for p in prj.load(root).parts] == [None, None]
+        with pytest.raises(LensError, match="part OPA2134 has no document nope.pdf"):
+            prj.update_part(prj.load(root), store, "OPA2134", pin="nope.pdf")
+        with pytest.raises(LensError, match="pin and unpin give the same document opa2134.pdf"):
+            prj.update_part(prj.load(root), store, "OPA2134", pin="opa2134.pdf", unpin=d.sha256[:12])
+    assert main(["set", "OPA2134", "--pin", str(d.id), "-p", root]) == 0  # a document ID of the store
+    assert "  pinned opa2134.pdf: false -> true" in capsys.readouterr().out
+
+
+def test_rm_document_also_from_the_parts_that_sync_would_give_it(store_home, text_pdf, tmp_path, capsys):
+    """rm -d with no MPN removes the document from each part that has it, and
+    also from each part that sync would give it: else the next sync adds it
+    again."""
+    project, d, e = setup_project(store_home, text_pdf, tmp_path)
+    with Store() as store:
+        store.link(store.find_part("OPA134", "TI", create=False), e.id, "errata")
+    assert main(["rm", "-d", e.sha256[:12], "-p", str(project.root)]) == 0
+    assert "from OPA2134, OPA134" in capsys.readouterr().out
+    assert [p.get("exclude") for p in prj.load(project.root).parts] == [[e.sha256], [e.sha256]]
+    with Store() as store:
+        report = prj.sync(prj.load(project.root), store)
+    assert report["added"] == [] and not (project.folder_path / "errata.pdf").exists()
+
+
+def test_copies_shared_and_pinned_files(store_home, text_pdf, tmp_path):
+    """The rule of the copies with a layout of subfolders (D2): of two files with
+    the content, the one in the subfolder of the part is the copy. A file of a
+    different part is shared. A pinned reference of one part keeps the file at
+    its place for each part. The steps that sync cannot do need the user, and
+    do not stop the next step."""
+    ds = text_pdf("opa.pdf", OPA)
+    with Store() as store:
+        doc = store.add_document(ds)
+        for mpn in ("OPA2134", "OPA134"):
+            store.link(store.add_part(mpn, "TI"), doc.id)
+        project = prj.init_project(tmp_path / "board", layout="{manufacturer}")
+        for folder in ("Other", "Texas Instruments"):  # layout_dir gives the built-in name of TI
+            (project.folder_path / folder).mkdir(parents=True)
+            shutil.copyfile(ds, project.folder_path / folder / "opa.pdf")
+        prj.add_part(project, store, "OPA2134")
+        report = prj.sync(prj.load(project.root), store, apply=False)
+        assert report["found"] == []
+        assert prj.load(project.root).parts[0]["documents"][0]["file"] == "Texas Instruments/opa.pdf"
+        prj.add_part(project, store, "OPA134")
+        assert prj.load(project.root).parts[1]["documents"][0]["file"] == "Texas Instruments/opa.pdf"
+        # A reference to the file of the other part is shared.
+        ti = "Texas Instruments"
+        assert prj._file_state(f"{ti}/opa.pdf", ti, {}) == "copy"
+        assert prj._file_state(f"{ti}/opa.pdf", ti, {f"{ti}/opa.pdf": doc.sha256}) == "shared"
+        assert prj._file_state("Other/opa.pdf", ti, {}) == "pinned"
+        # Other/opa.pdf is a file with the content and no reference: sync does not
+        # assign it (the content is known), it is not a step of sync.
+        steps = prj.sync_steps(prj.dry_run(prj.load(project.root), store)[0])
+        assert steps == {"sync": [], "user": []}
+        # pinned keeps the file: a pin of OPA134 stops the move of the shared file.
+        project = prj.load(project.root)
+        prj.update_part(project, store, "OPA134", pin="Texas Instruments/opa.pdf")
+        project = prj.load(project.root)
+        project.layout = "{manufacturer}/{mpn}"
+        report = prj.sync(project, store, apply=False)
+        assert report["moved"] == [] and "Texas Instruments/opa.pdf" in report["ok"]
+
+
+def test_pinned_file_stays(store_home, text_pdf, tmp_path, capsys):
+    """A file of the user outside the subfolder of the layout of its part is
+    pinned: a removal keeps it. A file in that subfolder (with layout "": the
+    folder itself) is a copy of sync: a removal deletes it, and the store keeps
+    the document (decision D2 of plans/session-review-plan.md)."""
+    rtc = text_pdf("rtc.pdf", [[(50, 60, 12, "RV-3149-C3 RTC")]])
+    for name, pinned in (("mine/rv.pdf", True), ("rv.pdf", False)):
+        with Store() as store:
+            store.add_part("RV-3149-C3", "Micro Crystal")
+            project = prj.init_project(tmp_path / name.replace("/", "-"), layout="")
+            (project.folder_path / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(rtc, project.folder_path / name)
+            report = prj.sync(project, store)  # the second time, the store links the document to the part
+            sha = (report["unassigned"] or report["suggested"])[0]["sha256"]
+            part = prj.add_part(project, store, "RV-3149-C3", document=sha[:12])
+        assert part["documents"][0].get("pinned", False) is pinned
+        assert main(["rm", "RV-3149-C3", "-p", str(project.root)]) == 0
+        out = capsys.readouterr().out
+        assert (f"kept: datasheets/{name} (pinned" if pinned else f"deleted: datasheets/{name}") in out
+        assert (project.folder_path / name).is_file() is pinned
 
 
 def test_short_commands(store_home, text_pdf, tmp_path, capsys, monkeypatch):

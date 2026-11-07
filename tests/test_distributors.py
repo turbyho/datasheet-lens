@@ -128,6 +128,15 @@ def test_verdict_of_a_part():
     assert distributors._verdict(part, [mouser, failed]) == [
         "X1: orderable (Mouser). Not checked: DigiKey", "  Mouser: Active, stock 40",
         "  DigiKey: not checked: DigiKey does not answer"]
+    # A part that no symbol fits (DNP): the verdict is information, with no WARNING.
+    no_stock = state("Mouser", text="Active, stock 0", found=True, orderable=True, lifecycle="Active")
+    assert distributors._verdict(part, [no_stock], dnp=True)[0] == (
+        "X1: not fitted (DNP), information only: the assembly does not place the part. No stock at any source")
+    # A DNP part with a lifecycle risk: information, and no request for a replacement.
+    old = state("Mouser", text="Obsolete, stock 0", found=True, risk="obsolete", lifecycle="Obsolete")
+    assert distributors._verdict(part, [old], dnp=True)[0] == (
+        "X1: not fitted (DNP), information only: the assembly does not place the part. OBSOLETE at the manufacturer "
+        "(Mouser: Obsolete). NOT ORDERABLE at any source")
     # Last time buy: a risk also with stock.
     ltb = state("Mouser", text="Last Time Buy, stock 9", found=True, orderable=True, stock=9, risk="last time buy",
                 lifecycle="Last Time Buy")

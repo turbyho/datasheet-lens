@@ -454,6 +454,11 @@ The verdict has these parts:
    MPN).
 4. The sources that the tool did not check (`Not checked: DigiKey`).
 
+A part that no symbol fits (DNP) is not placed by the assembly: its availability is
+information, not a step. `project_check` gives these parts in its line `next steps`
+(`project_availability(not_fitted=[...])`, CLI: `stock --dnp MPN ...`). Their verdict
+starts with `not fitted (DNP), information only` and has no `WARNING`.
+
 The offers of a different manufacturer (when the MPN has offers of two or more
 manufacturers), and a purchase source number of a different MPN, are not offers of
 the part: they give no stock and no lifecycle risk to the verdict. The details show
