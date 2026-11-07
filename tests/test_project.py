@@ -193,7 +193,7 @@ def test_save_of_unusual_files(setup):
         loaded = prj.load(project.root)
         del loaded.parts[0]
         prj.save(loaded)
-        assert project.path.read_text(encoding="utf-8").startswith("\n# part B: important\n[[part]]")
+        assert project.path.read_text(encoding="utf-8") == '# part B: important\n[[part]]\nmpn = "RV-3149-C3"\n'
 
         # A table goes to the document with the same content first, and only then
         # to the document with the same file name.
@@ -221,6 +221,72 @@ def test_save_of_unusual_files(setup):
         project.path.unlink()
         with pytest.raises(LensError, match="was removed"):
             prj.save(loaded)
+
+
+def test_removed_tables_leave_one_gap(setup):
+    """A removed part, document or purchase source takes one gap with it: the
+    gap between two headers stays as it was, and the end of the file stays as
+    it was."""
+    project = setup[0]
+
+    def part(mpn: str, *sources: str) -> str:
+        text = f'[[part]]\nmpn = "{mpn}"\nmanufacturer = "M"\n'
+        for number in sources:
+            text += f'\n[[part.source]]\nsource = "jlcpcb"\nnumber = "{number}"\n'
+        return text
+
+    head = 'folder = "datasheets"\n\n'
+    full = head + "\n".join([part("A", "C1"), part("B", "C2"), part("C"), part("D")])
+    cases = [
+        ({"B"}, head + "\n".join([part("A", "C1"), part("C"), part("D")])),
+        ({"B", "C"}, head + "\n".join([part("A", "C1"), part("D")])),  # two removed parts in a row
+        ({"D"}, head + "\n".join([part("A", "C1"), part("B", "C2"), part("C")])),  # the last part
+        ({"A"}, head + "\n".join([part("B", "C2"), part("C"), part("D")])),  # the first part
+        ({"A", "B", "C", "D"}, 'folder = "datasheets"\n'),  # all parts
+    ]
+    for removed, expected in cases:
+        project.path.write_text(full, encoding="utf-8")
+        loaded = prj.load(project.root)
+        loaded.parts = [p for p in loaded.parts if p["mpn"] not in removed]
+        prj.save(loaded)
+        assert project.path.read_text(encoding="utf-8") == expected, removed
+
+    # The purchase sources of a part that is not the last part.
+    nested = head + "\n".join([part("A", "C1", "C2"), part("B")])
+    for removed, expected in [({"C2"}, head + "\n".join([part("A", "C1"), part("B")])),
+                              ({"C1"}, head + "\n".join([part("A", "C2"), part("B")])),
+                              ({"C1", "C2"}, head + "\n".join([part("A"), part("B")]))]:
+        project.path.write_text(nested, encoding="utf-8")
+        loaded = prj.load(project.root)
+        loaded.parts[0]["sources"] = [s for s in loaded.parts[0]["sources"] if s["number"] not in removed]
+        prj.save(loaded)
+        assert project.path.read_text(encoding="utf-8") == expected, removed
+
+    # Blank lines at the start of the file: the file starts with the header
+    # of the next part.
+    project.path.write_text("\n\n" + part("A") + "\n" + part("B"), encoding="utf-8")
+    loaded = prj.load(project.root)
+    del loaded.parts[0]
+    prj.save(loaded)
+    assert project.path.read_text(encoding="utf-8") == part("B")
+
+    # A new document in place of the only document of a part, and an array of
+    # purchase sources after it: the comment above the next part stays there.
+    sha_old, sha_new = "1" * 64, "2" * 64
+    a = (f'[[part]]\nmpn = "A"\nmanufacturer = "M"\n\n[[part.document]]\nsha256 = "{{}}"\nfile = "{{}}.pdf"\n'
+         '\n[[part.source]]\nsource = "jlcpcb"\nnumber = "C1"\n\n# above B\n')
+    project.path.write_text(a.format(sha_old, "old") + part("B"), encoding="utf-8")
+    loaded = prj.load(project.root)
+    loaded.parts[0]["documents"] = [{"sha256": sha_new, "file": "new.pdf", "role": "datasheet"}]
+    prj.save(loaded)
+    assert project.path.read_text(encoding="utf-8") == a.format(sha_new, "new") + part("B")
+
+    # A new part in place of the only part, at the start of the file.
+    project.path.write_text(part("A"), encoding="utf-8")
+    loaded = prj.load(project.root)
+    loaded.parts = [dict(loaded.parts[0], mpn="B")]
+    prj.save(loaded)
+    assert project.path.read_text(encoding="utf-8") == part("B")
 
 
 def test_manufacturer_selects_the_part(setup):

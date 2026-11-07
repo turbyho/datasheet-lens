@@ -28,7 +28,7 @@ import pypdfium2 as pdfium
 import tomlkit
 import tomlkit.exceptions
 from tomlkit.container import Container
-from tomlkit.items import AoT, Comment, Whitespace
+from tomlkit.items import AoT, Comment, Null, Table, Whitespace
 
 from . import PROJECT_URL, makers
 from .errors import LensError
@@ -425,6 +425,96 @@ def _take_tail(table) -> list:
     return tail
 
 
+def _starts_gap(items: list) -> bool:
+    """True when a list of comment and blank-line items starts with a blank
+    line, or is empty."""
+    return not items or isinstance(items[0], Whitespace)
+
+
+def _join_gaps(tails: list[list]) -> list:
+    """Join the tails of tables that follow each other. The blank lines at the
+    start of a tail and the blank lines at the end of the tail before it are
+    one gap: only the later blank lines stay."""
+    joined: list = []
+    for tail in tails:
+        if _starts_gap(tail):
+            while joined and isinstance(joined[-1], Whitespace):
+                joined.pop()
+        joined.extend(tail)
+    return joined
+
+
+def _clear_gap(body: list, end: int) -> None:
+    """Make the blank-line items before body[end] empty. The items stay in the
+    list, because tomlkit keeps the index of each key of a body."""
+    i = end - 1
+    while i >= 0 and body[i][0] is None and isinstance(body[i][1], (Whitespace, Null)):
+        body[i] = (None, Whitespace(""))
+        i -= 1
+
+
+def _key_index(container, key: str) -> int:
+    """The index of the key in the body of a tomlkit table or document."""
+    for n, (k, _) in enumerate(_body(container)):
+        if k is not None and k.key == key:
+            return n
+    raise LensError(f"{PROJECT_FILE}: datasheet-lens cannot find the position of '{key}' in the file")
+
+
+def _at_start(container, key: str) -> bool:
+    """True when only blank lines come before the array container[key] in the
+    file: the array is at the start of the document."""
+    if not isinstance(container, Container):
+        return False
+    body = _body(container)
+    return all(k is None and isinstance(v, (Whitespace, Null)) for k, v in body[:_key_index(container, key)])
+
+
+def _remove_tables(container, key: str, old: list, keep: set[int]) -> list:
+    """Remove the tables of old that are not in keep from the array of tables
+    container[key]. The text of a removed table goes, and one gap goes with it:
+    the blank lines before its header, or the blank lines at its end. The
+    comment lines at the end of a removed table stay above the next header.
+    Gives the comment and blank-line items that no kept table can hold (all
+    tables of the array are removed): they come after the array."""
+    aot = container.get(key)
+    rest: list = []
+    b = len(old)
+    while b > 0:
+        if id(old[b - 1]) in keep:
+            b -= 1
+            continue
+        a = b - 1  # old[a:b] is a run of removed tables
+        while a > 0 and id(old[a - 1]) not in keep:
+            a -= 1
+        gap = _join_gaps([_take_tail(t) for t in old[a:b]])
+        previous = old[a - 1] if a > 0 else None
+        following = old[b] if b < len(old) else None
+        if previous is not None:
+            body = _body(_last_table(previous))
+            end = len(body)
+        else:
+            body = _body(container)
+            end = _key_index(container, key)
+        if previous is None and _at_start(container, key):
+            _clear_gap(body, end)  # the start of the file: no blank lines
+            while gap and isinstance(gap[0], Whitespace):
+                gap.pop(0)
+        elif _starts_gap(gap):
+            _clear_gap(body, end)
+        for i in reversed(range(a, b)):
+            del aot[i]
+        if following is not None:
+            following.trivia.indent = "".join(x.as_string() for x in gap) + following.trivia.indent
+        elif previous is not None:
+            for x in gap:
+                _last_table(previous).add(x)
+        else:
+            rest = gap
+        b = a
+    return rest
+
+
 def _set_tables(container, key: str, old: list, new: list) -> None:
     """Make the array of tables container[key] hold the tables of new. The array
     is changed in place: a kept table keeps its position, its text and its
@@ -432,33 +522,44 @@ def _set_tables(container, key: str, old: list, new: list) -> None:
     stay above it. The order of the parts and of the documents has no meaning."""
     keep, before = {id(t) for t in new}, {id(t) for t in old}
     added = [t for t in new if id(t) not in before]
+    # rest: the comment and blank-line items above the header that comes after
+    # the array, when the array keeps no table.
+    rest = _remove_tables(container, key, old, keep)
     aot = container.get(key)
-    for i in reversed(range(len(old))):
-        if id(old[i]) in keep:
-            continue
-        tail = _take_tail(old[i])
-        following = next((t for t in old[i + 1:] if id(t) in keep), None)
-        previous = next((t for t in reversed(old[:i]) if id(t) in keep), None)
-        if following is not None:
-            following.trivia.indent = "".join(x.as_string() for x in tail) + following.trivia.indent
-        elif previous is not None:
-            for x in tail:
-                _last_table(previous).add(x)
-        del aot[i]
     if not new:
         if key in container:
-            del container[key]
+            index = _key_index(container, key)
+            del container[key]  # tomlkit puts a Null item in its place
+            # In a parsed file, the next item after an array is a table or an
+            # array of tables: tomlkit puts the comment lines above a header
+            # at the end of the table before it.
+            following = next((v for _, v in _body(container)[index + 1:] if not isinstance(v, Null)), None)
+            if isinstance(following, AoT) and len(following):
+                following = following[0]
+            if isinstance(following, Table):
+                following.trivia.indent = "".join(x.as_string() for x in rest) + following.trivia.indent
+            else:
+                for x in rest:
+                    container.add(x)
         return
     if not added:
         return
-    # The comment lines at the end of the text before the new tables are above
-    # the header that comes after the array: they go after the new tables.
-    tail = _take_tail(aot[-1] if aot is not None and len(aot) else container)
     if aot is None:
+        # The comment lines at the end of the text before the new array are
+        # above the header that comes after it: they go after the new tables.
+        tail = _take_tail(container)
+        first_gap = "\n"
         container[key] = tomlkit.aot()
         aot = container[key]
-    for t in added:
-        t.trivia.indent = "\n"  # a blank line before the header
+    elif len(aot):
+        # The same for the comment lines at the end of the last table.
+        tail = _take_tail(aot[-1])
+        first_gap = "\n"
+    else:  # the array keeps no table: the new tables come in its place
+        tail = rest
+        first_gap = "" if _at_start(container, key) else "\n"
+    for n, t in enumerate(added):
+        t.trivia.indent = first_gap if n == 0 else "\n"  # a blank line before the header
         aot.append(t)
     for x in tail:
         _last_table(added[-1]).add(x)
