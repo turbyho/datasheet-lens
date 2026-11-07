@@ -466,12 +466,31 @@ def _document_key(ref: str) -> str:
 
 def cmd_rm(args: argparse.Namespace) -> int:
     """The command rm: remove a part, or a document (-d), from the project."""
-    from .project import load, remove_document, remove_part
+    from .project import load, remove_document, remove_part, remove_source
 
     if not args.mpn and not args.document:
         raise LensError("give a part (MPN) or a document (-d)")
     project = load(args.path)
     apply = not args.dry_run
+    if args.source:
+        if not args.mpn or args.document:
+            raise LensError("give the part (MPN) with -s, and no -d")
+        from .store import SOURCES
+
+        name, _, number = args.source.partition(":")
+        source, number = (name.strip().lower(), number) if name.strip().lower() in SOURCES and number else ("",
+                                                                                                         args.source)
+        with Store() as store:
+            result = remove_source(project, store, args.mpn, number, source, args.manufacturer or "",
+                                   args.store, apply)
+        removed = ", ".join(f"{s['source']} {s['number']}" for s in result["removed"])
+        verb = "would remove" if args.dry_run else "removed"
+        print(f"{verb}: the purchase source {removed} of {result['part']}"
+              + (f"; {verb} it from the store too" if result["store"] else
+                 "; the store does not have it" if args.store else ""))
+        return 0
+    if args.store:
+        raise LensError("--store needs -s")
     with Store() as store:
         if args.document:
             result = remove_document(project, _document_key(args.document), args.mpn or "",
@@ -804,9 +823,14 @@ def build_parser() -> argparse.ArgumentParser:
     add.set_defaults(func=cmd_add)
 
     # Short commands for the project (the long forms are under "project").
-    rm = sub.add_parser("rm", help="remove a part (MPN), or a document (-d), from the project")
+    rm = sub.add_parser("rm", help="remove a part (MPN), a document (-d) or a purchase source (-s) from the project")
     rm.add_argument("mpn", nargs="?", metavar="MPN", help="the part; with -d: only from this part")
     rm.add_argument("-d", "--document", metavar="DOC", help="a document: ID, SHA-256 prefix or file name")
+    rm.add_argument("-s", "--source", metavar="NUMBER",
+                    help="a purchase source of the part MPN: its part number (DigiKey, JLCPCB C number, Mouser); "
+                         "SOURCE:NUMBER (jlcpcb:C47616) when more sources have the number")
+    rm.add_argument("--store", action="store_true",
+                    help="with -s: also remove it from the central store (a number that is wrong for the part)")
     rm.add_argument("-M", "--manufacturer", help="the manufacturer, if the project has more parts with the MPN")
     rm.add_argument("--pinned", action="store_true", help="also delete a file that you put into the folder")
     rm.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
@@ -863,7 +887,8 @@ def build_parser() -> argparse.ArgumentParser:
     pk.add_argument("-k", "--keywords", default="", help="words that the parts must have")
     pk.add_argument("-a", "--all", action="store_true", help="also the parts with no stock")
     pk.add_argument("-s", "--sort", choices=("stock", "price"), default="stock", help="default: stock")
-    pk.add_argument("-n", "--limit", type=int, default=20, help="the number of parts (1 to 50, default 20)")
+    pk.add_argument("-n", "--limit", type=int, default=20,
+                    help="the number of parts (digikey 1 to 50, jlcpcb 1 to 100, default 20)")
     pk.add_argument("-o", "--offset", type=int, default=0, help="skip this number of parts (the next page)")
     pk.set_defaults(func=cmd_pick)
     ad = sub.add_parser("adopt", help="take a part of a source into the store and the project: its datasheet, "
@@ -948,7 +973,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     outline = sub.add_parser("outline", help="show the outline under a section")
     outline.add_argument("document", help="document ID or SHA-256 prefix")
-    outline.add_argument("--under", required=True, help="section number, for example 8.27")
+    outline.add_argument("--under", required=True,
+                         help="a section number, for example 8.27, or the title of an outline entry")
     outline.set_defaults(func=cmd_outline)
 
     search = sub.add_parser("search", help="search the text of a document or of a part")

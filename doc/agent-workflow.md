@@ -207,9 +207,20 @@ source: `digikey`, or `jlcpcb` for a board that JLCPCB assembles.
    the datasheet, the part and its purchase source. Then `get_page_image` and
    `save_fact` for each value that the design needs.
 
-The distributor keeps one value of a parameter at its own conditions. Thus the tool
-marks a filter with a condition (`rds_on <= 10 mOhm at Vgs=2.5V`) `NOT APPLIED`. Read
-that value in the datasheet. See [use-cases.md](use-cases.md), use 15.
+A filter with a condition (`rds_on <= 10 mOhm at Vgs<=2.5V`):
+
+- `digikey` keeps one value of a parameter at its own conditions: the tool marks the
+  filter `NOT APPLIED`. Read that value in the datasheet.
+- `jlcpcb` lists more points of a value (`4mΩ@4.5V, 6mΩ@2.5V`): the tool applies the
+  condition to these points. A part with no point at the condition is not in the
+  result. Read the value in the datasheet too: the LCSC listings are not always
+  correct.
+
+The DigiKey API does not apply a filter on some parameters (their values are counts,
+for example `Unidirectional Channels`). When a search gives no part, the tool finds
+such a filter, marks it `NOT APPLIED`, and searches again without it. A part whose
+value does not agree with that filter gets the mark `NOT AGREE`. See
+[use-cases.md](use-cases.md), use 15.
 
 ## Search links
 

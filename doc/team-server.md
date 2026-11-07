@@ -120,7 +120,7 @@ The roles:
 |---|---|
 | `reader` | Read the files. |
 | `contributor` | The permissions of `reader`, and upload files. |
-| `reviewer` | The permissions of `contributor`. (The review of facts comes with the synchronization.) |
+| `reviewer` | The permissions of `contributor`, and the state of a fact: a fact that is not `unchecked`, or a new state of a fact (see [API](#api)). |
 | `admin` | The permissions of `reviewer`, and the uploads of other accounts. |
 
 Other commands:
@@ -153,8 +153,8 @@ On the computer of each person:
    sources, facts and relations of manufacturer names of the local store to the
    server, and gets the rows of the server.
 
-WARNING: THE FIRST START OF THIS VERSION CHANGES THE SCHEMA OF THE LOCAL STORE (VERSION
-3). AN OLDER VERSION OF DATASHEET-LENS CANNOT OPEN IT AFTER THIS. MAKE A BACKUP OF
+WARNING: THE FIRST START OF A NEW VERSION CAN CHANGE THE SCHEMA OF THE LOCAL STORE
+(VERSION 6 IN 0.4.0). AN OLDER VERSION OF DATASHEET-LENS CANNOT OPEN IT AFTER THIS. MAKE A BACKUP OF
 `db/lens.db` OF THE STORE BEFORE THE UPDATE.
 
 | Command | Function |

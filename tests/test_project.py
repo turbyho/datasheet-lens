@@ -854,7 +854,8 @@ def test_check_tells_about_changes(store_home, tmp_path, capsys):
             "Value_Confirmed = '10k (RC0603FR-0710KL)' into the symbol.") in out
     assert ("C5: Value '220nF', Value_Confirmed '100nF (GRM1)': the confirmed MPN 'GRM1' can be wrong now. Not in "
             "Value now: GRM1. Tell the user. When the user confirms the change: First select the new part with the "
-            "user (get_ordering_codes, search_distributors), and write its MPN into Value in parentheses") in out
+            "user (find_parts by its parameters, search_distributors and get_ordering_codes by its MPN), and write "
+            "its MPN into Value in parentheses") in out
     assert "Write MPN = '<the MPN of the new part>' and Value_Confirmed = '<the new Value>'" in out
     assert "Q2" not in out  # the variant gives the same fields as the default variant
     assert "Q3 (variant b)" in out and "into the fields of the symbol in the variant of the BOM file b" in out

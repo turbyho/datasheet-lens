@@ -53,7 +53,10 @@ where the project file and the copies are, and which tools to use:
 - Find the content step by step, and use `find_facts` and `save_fact`.
 - Keep the project file equal to the CAD project (`project_check`).
 - Add a datasheet with `add_document` and `project_add_part`.
+- Find new parts with `find_parts`, and take a part with `adopt_part`.
 - Check the distributors with `project_availability`.
+- Save a downloaded datasheet into the inbox `_inbox`: `project_sync` gives it to
+  its parts.
 - Change a part with `project_update_part`.
 - Keep the copies current with `project_sync`.
 
@@ -162,6 +165,11 @@ source = "jlcpcb"
 number = "C47616"
 library = "Extended"
 ```
+
+A part can have more purchase sources of one source, for example two packagings at
+DigiKey. The availability check asks for each number; the JLCPCB number check of
+`project_check` agrees with each of them. Remove a number with
+`datasheet-lens rm MPN -s NUMBER` (`project_remove_source`).
 
 A `[[part.document]]` block belongs to the `[[part]]` above it. If a person moves a
 block, the document goes to a different part. Sync finds this case when the store
@@ -351,6 +359,7 @@ of the project file to that folder.
 | Change the manufacturer | `datasheet-lens set MPN -M "Texas Instruments"` | `project_update_part(mpn, new_manufacturer)` |
 | Remove a part | `datasheet-lens rm MPN` | `project_remove_part(mpn)` |
 | Remove a document | `datasheet-lens rm -d DOC` | `project_remove_document(document)` |
+| Remove a purchase source | `datasheet-lens rm MPN -s NUMBER` | `project_remove_source(mpn, number)` |
 
 `set` keeps the part at its place in the project file, and keeps its copies. Use it,
 not a removal and a new addition. After a change, run `datasheet-lens sync` to move
@@ -358,6 +367,10 @@ the copies to the subfolders of the layout. Give a name of the manufacturer that
 store knows (`datasheet-lens maker`). With a name that the store does not relate to
 the manufacturer of the part, the command stops with an error and tells how to record
 the name. Thus the store does not get a second part with the same MPN.
+
+A new MPN removes the purchase sources (`[[part.source]]`) of the part: they are the
+numbers of the old MPN. The result tells the removed sources. Take the new part with
+`adopt` (`adopt_part`) to save its sources.
 
 `rm MPN` removes the part from the project file, and deletes its copies that no other
 part uses. `rm -d DOC` removes a document from each part that has it, or only from
@@ -379,6 +392,15 @@ not change the central store, because other projects can use the part.
 
 The project file must hold the same parts as the CAD project. The team uses it as the
 list of the datasheets of the design.
+
+The BOM of the CAD project is the master. A change of a part goes into the two
+places: after each change that the user confirms (a new part, a new MPN, a
+replacement, a JLCPCB number), the agent writes the new or changed part into the
+CAD project (`Value` with the MPNs in parentheses, `MPN`, `Value_Confirmed`, the
+LCSC field; KiCad: `set_symbol_fields` of the MCP server kicad-workbench) and into
+the project file (`project_update_part`, `adopt_part`). When the tool cannot
+process a field of the BOM (a JLCPCB number of a different MPN, a text that is not
+a number), the agent asks the user.
 
 ### With the MCP tools
 

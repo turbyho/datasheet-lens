@@ -522,54 +522,70 @@ def availability(project, store=None) -> list[str]:
     return lines + notes
 
 
-def source_number(part: dict, source: str) -> str:
-    """The part number of a purchase source of a project part ([[part.source]]),
-    or "". A part with more numbers of one source: the first one."""
-    return next((s["number"] for s in part.get("sources", []) if s["source"] == source), "")
+def source_numbers(part: dict, source: str) -> list[str]:
+    """The part numbers of the purchase sources of a source for a project part
+    ([[part.source]]): more than one when the project orders more packagings
+    (cut tape and reel). project_remove_source removes one."""
+    return [s["number"] for s in part.get("sources", []) if s["source"] == source]
 
 
 def _no_source_line(project, source: str, label: str) -> list[str]:
     """One line with the project parts that have no purchase source of the
     source, when other parts have one: they are checked by their MPN."""
-    if not any(source_number(p, source) for p in project.parts):
+    if not any(source_numbers(p, source) for p in project.parts):
         return []
-    missing = [p["mpn"] for p in project.parts if not source_number(p, source)]
+    missing = [p["mpn"] for p in project.parts if not source_numbers(p, source)]
     return [f"No purchase source of {label} in the project file (checked by the MPN): {', '.join(missing)}. "
             f"adopt_part saves one."] if missing else []
 
 
-def _part_offers(part: dict, source: str, by_number, by_mpn, store=None) -> tuple[list, bool, str]:
+def _part_offers(part: dict, source: str, by_number, by_mpn, store=None) -> tuple[list, bool, list, list]:
     """The offers of a project part at one source, for its availability: the
-    offers of its purchase source number when the project file has one (the
-    packaging that the project orders; the selection of the user, thus no
+    offers of its purchase source numbers when the project file has them (the
+    packagings that the project orders; the selection of the user, thus no
     comparison of the manufacturer), else the offers of its MPN from the
-    manufacturer of the part (_of_maker). Gives (offers, own, number): own is
-    False when the source has no offer of the manufacturer of the part."""
-    number = source_number(part, source)
-    if number:
-        return by_number(number), True, number
+    manufacturer of the part (_of_maker). Gives (offers, own, numbers, missing):
+    own is False when the source has no offer of the manufacturer of the part;
+    missing: the numbers that the source does not have."""
+    numbers = source_numbers(part, source)
+    if numbers:
+        offers, missing = [], []
+        for number in numbers:
+            found = by_number(number)
+            offers += found
+            if not found:
+                missing.append(number)
+        return offers, True, numbers, missing
     offers = by_mpn(part["mpn"])
     if not offers:
-        return [], True, ""
+        return [], True, [], []
     offers, own = _of_maker(offers, part.get("manufacturer", ""), store)
-    return offers, own, ""
+    return offers, own, [], []
 
 
-def _head(part: dict, number: str) -> str:
-    """The start of an availability line: the MPN, and the purchase source."""
-    return f"{part['mpn']}" + (f" ({number}, the purchase source)" if number else "")
+def _head(part: dict, numbers: list[str]) -> str:
+    """The start of an availability line: the MPN, and the purchase sources."""
+    if not numbers:
+        return part["mpn"]
+    return f"{part['mpn']} ({', '.join(numbers)}, the purchase source{'s' if len(numbers) > 1 else ''})"
 
 
-def _missing(label: str, number: str) -> str:
-    return (f"WARNING: {label} does not have {number}, the purchase source in the project file" if number
-            else f"WARNING: {label} does not have this MPN (a base part, or a wrong MPN?)")
+def _missing(label: str, numbers: list[str]) -> str:
+    if numbers:
+        return (f"WARNING: {label} does not have {', '.join(numbers)}, "
+                f"{'the purchase sources' if len(numbers) > 1 else 'the purchase source'} in the project file")
+    return f"WARNING: {label} does not have this MPN (a base part, or a wrong MPN?)"
 
 
-def _other_mpn(part: dict, number: str, offer: Offer) -> str:
-    """A warning when the purchase source number is a different MPN, or ""."""
-    if not number or fits(offer.mpn, part["mpn"], True):
+def _number_warnings(part: dict, numbers: list[str], offers: list, missing: list[str], label: str) -> str:
+    """The warnings of the purchase source numbers of a part: a number that is a
+    different MPN, and a number that the source does not have (when other
+    numbers are there). "" with no purchase source."""
+    if not numbers:
         return ""
-    return f". WARNING: {number} is {offer.mpn} ({offer.manufacturer or 'manufacturer unknown'}), not {part['mpn']}"
+    text = "".join(f". WARNING: {o.distributor_pn} is {o.mpn} ({o.manufacturer or 'manufacturer unknown'}), "
+                   f"not {part['mpn']}" for o in offers if not fits(o.mpn, part["mpn"], True))
+    return text + (f". {_missing(label, missing)}" if missing and offers else "")
 
 
 def _availability_jlcpcb(project, store=None) -> list[str]:
@@ -588,32 +604,42 @@ def _availability_jlcpcb(project, store=None) -> list[str]:
     try:
         for part in project.parts:
             try:
-                offers, own, number = _part_offers(
+                offers, own, numbers, missing = _part_offers(
                     part, "jlcpcb", lambda n: [o for o in [jlcpcb.offer_of_number(n, db)] if o is not None],
                     lambda mpn: jlcpcb.offers(mpn, exact=True), store)
             except (LensError, sqlite3.Error) as e:
                 lines.append(f"{part['mpn']}: not checked: {e}")
                 continue
             if not offers:
-                lines.append(f"{_head(part, number)}: {_missing(label, number)}")
+                lines.append(f"{_head(part, numbers)}: {_missing(label, numbers)}")
                 continue
-            o = max(offers, key=lambda x: x.stock or 0)
-            state = (f"{_head(part, number)}: JLCPCB stock {o.stock}, library {o.library} ({o.distributor_pn})"
-                     + _other_mpn(part, number, o))
-            if not o.stock:
-                state += ". WARNING: NOT IN STOCK at JLCPCB: the assembly needs an order of the part"
+            # Each C number is a part of its own: the one with the most stock first, then the others.
+            offers = sorted(offers, key=lambda x: -(x.stock or 0))
+            o = offers[0]
+            others = offers[1:] if numbers else []
+            state = (f"{_head(part, numbers)}: JLCPCB stock {o.stock}, library {o.library} ({o.distributor_pn})"
+                     + "".join(f"; {x.distributor_pn}: JLCPCB stock {x.stock}, library {x.library}" for x in others)
+                     + _number_warnings(part, numbers, offers, missing, label))
+            # Each C number of the project file is a part of its own: its stock warning
+            # and its replacements. With no purchase source: the offer with the most stock.
+            checked = offers if numbers else [o]
+            for x in checked:
+                if not x.stock:
+                    state += (". WARNING: " + (f"{x.distributor_pn} " if len(checked) > 1 else "")
+                              + "NOT IN STOCK at JLCPCB: the assembly needs an order of the part")
             if part.get("manufacturer") and not own:
                 state += (f". WARNING: the JLCPCB library has no part from {part['manufacturer']}: the data is of "
                           + ", ".join(sorted({x.manufacturer or "manufacturer unknown" for x in offers})))
             lines.append(state)
             # Replacements for a part with no JLCPCB stock or with a loading fee (Extended).
-            if not o.stock or o.library == "Extended":
+            for x in (x for x in checked if not x.stock or x.library == "Extended"):
                 try:
-                    found = jlcpcb.replacements(o.distributor_pn, db=db)
+                    found = jlcpcb.replacements(x.distributor_pn, db=db)
                 except (LensError, sqlite3.Error) as e:
-                    lines.append(f"  replacements: not checked: {e}")
+                    lines.append(f"  replacements of {x.distributor_pn}: not checked: {e}")
                     continue
-                lines += [f"  replacement: {r.distributor_pn} {r.mpn} ({r.manufacturer or 'manufacturer unknown'}), "
+                lines += ["  replacement" + (f" of {x.distributor_pn}" if len(checked) > 1 else "")
+                          + f": {r.distributor_pn} {r.mpn} ({r.manufacturer or 'manufacturer unknown'}), "
                           f"library {r.library}, JLCPCB stock {r.stock}, {r.package} ({why}): read its datasheet "
                           "before you use it" for r, why in found]
     finally:
@@ -644,7 +670,7 @@ def _availability_at(name: str, credential, project, store=None) -> list[str]:
     lines = [f"Source: {label}"]
     for i, part in enumerate(project.parts):
         try:
-            offers, own, number = _part_offers(
+            offers, own, numbers, missing = _part_offers(
                 part, name, lambda n: _offers_by_number(name, n, credential),
                 lambda mpn: [o for o in offers_of(name, mpn, True, credential) if fits(o.mpn, mpn, True)], store)
         except Unavailable as e:  # the next parts fail too: do not wait for each one
@@ -654,7 +680,7 @@ def _availability_at(name: str, credential, project, store=None) -> list[str]:
             lines.append(f"{part['mpn']}: not checked: {e}")
             continue
         if not offers:
-            lines.append(f"{_head(part, number)}: {_missing(label, number)}")
+            lines.append(f"{_head(part, numbers)}: {_missing(label, numbers)}")
             continue
         # One MPN can have more offers (cut tape and reel): the part is orderable
         # when one offer is, and its stock is the sum.
@@ -662,8 +688,9 @@ def _availability_at(name: str, credential, project, store=None) -> list[str]:
         o = (orderable or offers)[0]
         stocks = [x.stock for x in orderable or offers if x.stock is not None]
         stock = sum(stocks) if stocks else None
-        state = (f"{_head(part, number)}: " + (f"{o.lifecycle}, " if o.lifecycle else "")
-                 + f"stock {stock if stock is not None else 'unknown'}" + _other_mpn(part, number, o))
+        state = (f"{_head(part, numbers)}: " + (f"{o.lifecycle}, " if o.lifecycle else "")
+                 + f"stock {stock if stock is not None else 'unknown'}"
+                 + _number_warnings(part, numbers, offers, missing, label))
         if not orderable:
             state += f". WARNING: not orderable: {not_orderable(o)}"
         elif not stock and all(restricted(x) for x in offers):

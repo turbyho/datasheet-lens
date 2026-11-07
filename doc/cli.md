@@ -317,7 +317,8 @@ These commands use the project file `datasheet-lens.toml`. See
 datasheet-lens project init [--folder FOLDER] [--layout LAYOUT] [-p PATH]
 ```
 
-Make the project file and the document folder. Put the datasheet-lens block into
+Make the project file and the document folder, with the inbox `_inbox` in it (see
+[projects.md](projects.md#the-inbox)). Put the datasheet-lens block into
 `AGENTS.md` and `CLAUDE.md` when these files exist. A second run updates only the
 block.
 
@@ -343,8 +344,10 @@ datasheet-lens project sync [--restore] [-p PATH]
 datasheet-lens sync [--restore] [-p PATH]
 ```
 
-Copy the documents into the document folder, move the copies to the subfolders of the
-layout, import the new files of the folder into the store, and build the element maps.
+Give the PDF files of the inbox `_inbox` to the project parts that they agree with
+(see [projects.md](projects.md#the-inbox)), copy the documents into the document
+folder, move the copies to the subfolders of the layout, import the new files of the
+folder into the store, and build the element maps.
 
 | Option | Effect |
 |---|---|
@@ -378,6 +381,9 @@ datasheet-lens set [-m MPN] [-b MPN] [-c CATEGORY] [-M MANUFACTURER] [--of MANUF
 
 Change a part of the project in place. The part keeps its place in the project file
 and its copies. Then run `sync` to move the copies to the subfolders of the layout.
+A new MPN removes the purchase sources (`[[part.source]]`) of the part, because
+they are the numbers of the old MPN: the result tells them. Take the new part with
+`adopt` to save its sources.
 
 | Argument or option | Effect |
 |---|---|
@@ -391,21 +397,23 @@ and its copies. Then run `sync` to move the copies to the subfolders of the layo
 ### rm
 
 ```text
-datasheet-lens rm [-d DOC] [-M MANUFACTURER] [--pinned] [-n] [-p PATH] [MPN]
+datasheet-lens rm [-d DOC] [-s NUMBER [--store]] [-M MANUFACTURER] [--pinned] [-n] [-p PATH] [MPN]
 ```
 
-Remove a part, or a document, from the project. Delete the copies that no other part
-uses. The central store does not change.
+Remove a part, a document or a purchase source from the project. Delete the copies
+that no other part uses. The central store does not change, except with `--store`.
 
 | Argument or option | Effect |
 |---|---|
 | `MPN` | The part to remove. With `-d`: remove the document only from this part. |
 | `-d DOC`, `--document` | A document to remove: its ID, a SHA-256 prefix or its file name. |
+| `-s NUMBER`, `--source` | A purchase source of the part `MPN` to remove (`[[part.source]]`): its part number, for example a JLCPCB C number. The part stays. |
+| `--store` | With `-s`: also remove the purchase source from the central store and the team server, for a number that is wrong for the part. Else the store keeps it: the store tells where the part is available. |
 | `-M MANUFACTURER`, `--manufacturer` | The manufacturer, when the project has more parts with the MPN. |
 | `--pinned` | Also delete a file that you put into the folder yourself. |
 | `-n`, `--dry-run` | Only show what would change. |
 
-Give `MPN`, `-d DOC`, or the two.
+Give `MPN`, `-d DOC`, or the two. `-s` needs `MPN`.
 
 ### check
 
@@ -422,6 +430,11 @@ the next command for each one:
 - The symbols with no confirmed fields, the symbols with an MPN that is not in
   Value (the fields to complete), and the symbols with no part.
 - The same, different, missing and extra parts.
+- In a project that uses JLCPCB: the JLCPCB (LCSC) number of each symbol, compared
+  with the purchase source of its part and with the JLCPCB parts library (lines
+  `LCSC:`). The command finds the LCSC column of the BOM by its name (`LCSC`,
+  `LCSC Part #`, `JLCPCB Part #` and other forms). See
+  [projects.md](projects.md#the-jlcpcb-number-of-a-symbol).
 
 | Argument or option | Effect |
 |---|---|
@@ -454,9 +467,11 @@ These commands are described in [distributors.md](distributors.md).
 datasheet-lens find [-x] [-p PATH] MPN
 ```
 
-Find a part at the enabled distributors: the concrete MPNs, the lifecycle state, the
-stock, the prices, the package (DigiKey only) and the datasheet URL. With no key, it
-gives a note with the steps and the search links of `links`.
+Find a part at the enabled distributors and in the JLCPCB parts library (when it is
+on the machine): the concrete MPNs, the part number of each source, the lifecycle
+state, the stock, the prices, the package (DigiKey and JLCPCB; Mouser gives none)
+and the datasheet URL. With no key, it gives a note with the steps and the search
+links of `links`.
 
 | Argument or option | Effect |
 |---|---|
@@ -480,7 +495,7 @@ update`. See
 |---|---|
 | `SOURCE` | `digikey` (the stock and the lifecycle state at DigiKey) or `jlcpcb` (the JLCPCB stock for the assembly and the library class). |
 | `CATEGORY` | The category name, or a part of it, for example `"Single FETs, MOSFETs"` or `mosfet`. DigiKey: also the ID. JLCPCB: a subcategory name or `CATEGORY > SUBCATEGORY`, more with `\|`. A DigiKey category with subcategories, or a name that fits more than one category, gives the list of the categories to select from, with each name in quotes. |
-| `FILTER` | `NAME OP VALUE [at CONDITION]`, for example `"vdss >= 20 V"` or `"package has 3x3"`. The tool does not apply a filter with a condition (after `at` or `@`): read that value in the datasheet. A filter with no value that agrees gives 0 parts and examples of the values. |
+| `FILTER` | `NAME OP VALUE [at CONDITION]`, for example `"vdss >= 20 V"` or `"package has 3x3"`. A condition (after `at` or `@`, for example `at Vgs<=2.5V`): `jlcpcb` applies it to the points that the data lists; `digikey` does not apply it (`NOT APPLIED`): read that value in the datasheet. DigiKey: a filter with no value that agrees gives 0 parts and examples of the values. |
 | `-P`, `--params` | Show the parameters of the category, with their short names, the number of values and examples. Give no `FILTER` with it. |
 | `-a`, `--all` | Also the parts with no stock (JLCPCB: marked `NOT IN STOCK`). |
 | `-s`, `--sort` | `stock` (most first, the default) or `price` (lowest first). |
@@ -535,6 +550,15 @@ datasheet-lens stock [-p PATH]
 Show the lifecycle state and the stock of each project part, with a warning for each
 part that is not orderable, that the distributor does not have, or that has no stock.
 
+- A part with a purchase source (`[[part.source]]`) of a distributor: the offer of
+  its number, the packaging that the project orders. A number of a different MPN
+  gives a warning. A line names the parts with no purchase source of the
+  distributor, when other parts have one.
+- With the JLCPCB parts library: a section with the JLCPCB stock and the library
+  class of each part, and up to 3 replacements for a part with no JLCPCB stock or
+  with a loading fee (see
+  [distributors.md](distributors.md#purchase-sources-and-replacements)).
+
 ### dist
 
 ```text
@@ -553,6 +577,9 @@ distributor.
 | `--currency CUR` | The currency of the prices, for example `CZK` (global, default `USD`). DigiKey uses it. |
 
 `--site` and `--currency` are global: the command does not accept them with `--local`.
+For example, `datasheet-lens dist --site CZ --currency CZK` gives the DigiKey prices
+in Czech crowns, and `datasheet-lens dist --site US --currency USD` sets the defaults
+again.
 
 ### server
 

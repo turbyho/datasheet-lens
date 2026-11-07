@@ -379,3 +379,11 @@ def test_project_check_parts_with_no_value_confirmed(store_home, tmp_path):
     out = text_of(call("project_check", parts=[{"mpn": "2N7002LT1G", "value": "2N7002", "reference": "Q1",
                                                 "value_confirmed": '["2N7002"]'}], path=root))
     assert "no field Value_Confirmed" not in out and "missing: 2N7002LT1G (Q1)" in out
+
+
+def test_a_part_with_no_document(store_home):
+    """search_text and find_facts for a part with no document in the store tell
+    it: the datasheet was not searched."""
+    assert "The store has no document of the part NO-PART: nothing to search" in text_of(
+        call("search_text", text="VDD", part="NO-PART"))
+    assert "The store has no document of the part NO-PART: no facts" in text_of(call("find_facts", part="NO-PART"))

@@ -1,8 +1,11 @@
 """project_check and the JLCPCB (LCSC) numbers of the CAD symbols (phase 7 of
 plans/parametric-search.md). The data is made up (see test_jlcpcb.py)."""
 
+import sqlite3
+
 from test_jlcpcb import jlc  # noqa: F401  (the fixture: a JLCPCB database of made-up parts)
 
+from datasheet_lens import jlcpcb
 from datasheet_lens import project as prj
 from datasheet_lens.store import Store
 
@@ -34,9 +37,11 @@ def test_lcsc_numbers_of_the_symbols(jlc, tmp_path):  # noqa: F811
     assert result["lcsc_ok"] == 1
     text = "\n".join(prj.format_check(result))
     assert "LCSC: the JLCPCB numbers that agree with the purchase sources: 1" in text
-    assert ("LCSC: Q2: the field gives C1002 for FET-B, and the project has no JLCPCB purchase source. When the "
-            "user agrees, save it: adopt_part(source='jlcpcb', number='C1002').") in text
-    assert "LCSC: Q3: the field gives C1001, the JLCPCB purchase source of FET-C is C1003." in text
+    assert ("LCSC: Q2: the field gives C1002 for FET-B, and the project has no JLCPCB purchase source. The BOM is "
+            "the master: save it with adopt_part(source='jlcpcb', number='C1002').") in text
+    # C1001 of the field is FET-A in the library: the BOM cannot be the master, the user decides.
+    assert ("LCSC: Q3: the field gives C1001, the JLCPCB purchase source of FET-C is C1003, and the library does not "
+            "give C1001 for FET-C (see the next line). The BOM cannot be the master here: ask the user") in text
     assert "LCSC: Q3: C1001 is FET-A (Maker A) in the JLCPCB parts library, not FET-C." in text
     assert ("LCSC: Q4: the field has no JLCPCB number; the purchase source of FET-D is C1004. Write LCSC = 'C1004' "
             "into the symbol.") in text
@@ -96,3 +101,81 @@ def test_lcsc_review_fixes(jlc, tmp_path):  # noqa: F811
     assert [(f["reference"], f["kind"]) for f in result["lcsc"]] == [("Q2", "not_number"), ("Q2", "other_mpn"),
                                                                       ("Q5", "other_mpn")]
     assert result["lcsc_ok"] == 2  # Q1 (C01002 is C1002) and Q4 (the purchase source of FET-A)
+
+
+def test_more_purchase_sources_and_their_removal(jlc, tmp_path, capsys):  # noqa: F811
+    """A part can have more numbers of one source (adopt_part adds one). The LCSC
+    check agrees with each of them, asks which one to write, and a wrong number
+    goes with project_remove_source (CLI rm -s), from the store too with store."""
+    from datasheet_lens import distributors, server
+    from datasheet_lens.cli import main
+
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "FET-A")
+        project = prj.load(project.root)
+        prj.set_source(project, project.parts[0], "jlcpcb", "C1001")
+        project = prj.load(project.root)
+        prj.set_source(project, project.parts[0], "jlcpcb", "C1002")  # the C number of FET-B: wrong
+        project = prj.load(project.root)
+        assert distributors.source_numbers(project.parts[0], "jlcpcb") == ["C1001", "C1002"]
+        result = prj.check_parts(project, store, [_symbol("Q1", "FET-A", "C1001"), _symbol("Q2", "FET-A", "")])
+    assert result["lcsc_ok"] == 1
+    assert [(f["reference"], f["kind"]) for f in result["lcsc"]] == [
+        ("Q1", "other_mpn"), ("Q2", "select"), ("Q2", "other_mpn")]
+    text = "\n".join(prj.format_check(result))
+    assert "LCSC: Q2: the field has no JLCPCB number; FET-A has more JLCPCB purchase sources (C1001, C1002)." in text
+    lines = distributors.availability(prj.load(project.root))
+    line = next(x for x in lines if x.startswith("FET-A (C1001, C1002, the purchase sources)"))
+    assert "JLCPCB stock 9000, library Basic (C1002); C1001: JLCPCB stock 500, library Extended" in line
+    assert "WARNING: C1002 is FET-B (Maker B), not FET-A" in line
+    # The removal: the project file, and with store also the store.
+    out = server.project_remove_source("FET-A", "c1002", path=str(project.root))
+    assert out == "removed the purchase source jlcpcb C1002 from FET-A in the project file; the store keeps it"
+    assert distributors.source_numbers(prj.load(project.root).parts[0], "jlcpcb") == ["C1001"]
+    with Store() as store:
+        part_id = store.find_part("FET-A")
+        store.set_part_source(part_id, "jlcpcb", "C1002")
+    project = prj.load(project.root)
+    prj.set_source(project, project.parts[0], "jlcpcb", "C1002")
+    assert main(["rm", "FET-A", "-s", "jlcpcb:C1002", "--store", "-n", "-p", str(project.root)]) == 0
+    assert "would remove: the purchase source jlcpcb C1002 of FET-A; would remove it from the store too" in \
+        capsys.readouterr().out
+    assert main(["rm", "FET-A", "-s", "jlcpcb:C1002", "--store", "-p", str(project.root)]) == 0
+    assert "removed: the purchase source jlcpcb C1002 of FET-A; removed it from the store too" in \
+        capsys.readouterr().out
+    with Store() as store:
+        assert [s["number"] for s in store.part_sources(store.find_part("FET-A"))] == []
+    assert main(["rm", "FET-A", "-s", "C9999", "-p", str(project.root)]) == 2
+    assert "has no purchase source C9999 (its sources: jlcpcb C1001)" in capsys.readouterr().err
+
+
+
+def test_the_bom_is_the_master(jlc, tmp_path):  # noqa: F811
+    """A valid number of the BOM that is not the purchase source: the BOM is the
+    master, the hint saves it and removes the sources that the BOM does not use,
+    by the MPN of the project part. The JLCPCB section warns for each C number
+    with no stock."""
+    from datasheet_lens import distributors
+
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "FET-C")
+        project = prj.load(project.root)
+        prj.set_source(project, project.parts[0], "jlcpcb", "C1003")
+        result = prj.check_parts(prj.load(project.root), store, [_symbol("Q1", "FET-C1", "C1003")])  # renamed
+        assert result["lcsc_ok"] == 1
+        db = sqlite3.connect(jlcpcb.db_path())
+        db.execute("UPDATE jlc_components SET mfr = 'FET-C' WHERE lcsc = 1004")  # a second listing of FET-C
+        db.commit()
+        db.close()
+        result = prj.check_parts(prj.load(project.root), store, [_symbol("Q1", "FET-C1", "C1004")])
+    text = "\n".join(prj.format_check(result))
+    assert ("The BOM is the master: save C1004 with adopt_part(source='jlcpcb', number='C1004'), and remove the "
+            "purchase sources that the BOM does not use with project_remove_source(mpn='FET-C', "
+            "number='C1003').") in text
+    project = prj.load(project.root)
+    prj.set_source(project, project.parts[0], "jlcpcb", "C1004")
+    lines = distributors.availability(prj.load(project.root))
+    line = next(x for x in lines if x.startswith("FET-C (C1003, C1004, the purchase sources)"))
+    assert "WARNING: C1003 NOT IN STOCK at JLCPCB" in line and "C1004 NOT IN STOCK" not in line

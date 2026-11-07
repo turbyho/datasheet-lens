@@ -217,7 +217,7 @@ def index_markdown(store: Store, doc_id: int) -> str:
     if len(outline) > MAX_OUTLINE:
         shown = [o for o in outline if o["level"] <= 1]
         lines += [f"Only the top 2 levels of {len(outline)} entries. Ask for the outline under "
-                  "a section number for the deeper entries.", ""]
+                  "a section number or the title of an entry for the deeper entries.", ""]
     lines += [f"{'  ' * o['level']}- {o['title']} (p.{o['page']})" for o in shown]
     if not outline:
         lines.append("(no bookmarks and no numbered headings)")
@@ -243,12 +243,37 @@ def index_markdown(store: Store, doc_id: int) -> str:
 
 
 def outline_under(store: Store, doc_id: int, section: str) -> list:
-    """The outline entries under a section number (8.27 gives 8.27.1, 8.27.5.143 ...),
-    in the sequence of the document. A LensError if the document has no index."""
+    """The outline entries under a section, in the sequence of the document: a
+    section number (8.27 gives 8.27.1, 8.27.5.143 ...), or the title of an
+    outline entry (a document with no section numbers): the entry and the
+    entries below it, up to the next entry of its level or a higher level. The
+    title agrees with case and spaces ignored; with no such title, an entry
+    whose title starts with it. A LensError if the document has no index."""
     require_index(store, doc_id)
-    return store.db.execute(
-        "SELECT level, title, page FROM outline WHERE document_id = ? AND (title LIKE ? OR title LIKE ?)"
-        " ORDER BY seq", (doc_id, section + ".%", section + " %")).fetchall()
+    section = section.strip()
+    if not section:
+        return []
+    if re.fullmatch(r"\d+(\.\d+)*", section):  # a section number: never a title search ("8.2" is not 8.20)
+        return store.db.execute(
+            "SELECT level, title, page FROM outline WHERE document_id = ? AND (title LIKE ? OR title LIKE ?)"
+            " ORDER BY seq", (doc_id, section + ".%", section + " %")).fetchall()
+    entries = store.db.execute("SELECT level, title, page FROM outline WHERE document_id = ? ORDER BY seq",
+                               (doc_id,)).fetchall()
+    want = " ".join(section.split()).casefold()
+    names = [" ".join(e["title"].split()).casefold() for e in entries]
+    starts = [i for i, n in enumerate(names) if n == want] or [i for i, n in enumerate(names) if n.startswith(want)]
+    out, taken = [], set()
+    for i in starts:
+        if i in taken:
+            continue  # in the subtree of an entry before it
+        out.append(entries[i])
+        taken.add(i)
+        for j in range(i + 1, len(entries)):
+            if entries[j]["level"] <= entries[i]["level"]:
+                break
+            out.append(entries[j])
+            taken.add(j)
+    return out
 
 
 @pdfium_locked

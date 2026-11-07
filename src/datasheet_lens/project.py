@@ -960,6 +960,40 @@ def set_source(project: Project, part: dict, source: str, number: str, library: 
     save(project)
 
 
+def remove_source(project: Project, store: Store, mpn: str, number: str, source: str = "",
+                  manufacturer: str = "", from_store: bool = False, apply: bool = True) -> dict:
+    """Remove a purchase source ([[part.source]]) from a project part: the part
+    number of a source that the project does not order (a different packaging,
+    or a wrong number). source: only of this source, when more sources have the
+    number. from_store: also remove it from the central store (and from the team
+    server), for a number that is wrong for the part (for example a C number of
+    a different MPN). Else the store keeps it: the store tells where the part is
+    available. Gives {"part", "removed" (the sources), "store" (True if the store
+    had it)}. A LensError when the part has no such source."""
+    part = _one_part(project, mpn, manufacturer, store)
+    number = number.strip()
+    wanted = [s for s in part.get("sources", []) if s["number"].upper() == number.upper()
+              and (not source.strip() or s["source"] == source.strip().lower())]
+    if not wanted:
+        have = ", ".join(f"{s['source']} {s['number']}" for s in part.get("sources", [])) or "none"
+        raise LensError(f"the part {part['mpn']} has no purchase source {number} (its sources: {have})")
+    if len({s["source"] for s in wanted}) > 1:
+        raise LensError(f"more sources of {part['mpn']} have the number {number}: give the source "
+                        f"({', '.join(sorted({s['source'] for s in wanted}))})")
+    # The store parts of the project part (each spelling of the manufacturer) that have the number.
+    held = [(r["id"], s) for r in store.match_parts(part["mpn"], part["manufacturer"]) for s in wanted
+            if any(x["source"] == s["source"] and x["number"].upper() == s["number"].upper()
+                   for x in store.part_sources(r["id"]))] if from_store else []
+    if apply:
+        part["sources"] = [s for s in part["sources"] if s not in wanted]
+        if not part["sources"]:
+            del part["sources"]
+        save(project)
+        for part_id, s in held:
+            store.delete_part_source(part_id, s["source"], s["number"])
+    return {"part": part["mpn"], "removed": wanted, "store": bool(held)}
+
+
 def _put_source(part: dict, source: str, number: str, library: str = "") -> None:
     """Add or change a purchase source in a project part (no save)."""
     number, library = check_source(source, number, library)
@@ -1676,9 +1710,9 @@ def _lcsc_findings(project: Project, symbols: list[tuple[str, CadSymbol, str]], 
     different, not_number, not_in_library, other_mpn (the number is a different
     MPN in the library), none (no number at all)."""
     from . import jlcpcb
-    from .distributors import fits, jlcpcb_ready, source_number
+    from .distributors import fits, jlcpcb_ready, source_numbers
 
-    if not (bom_column or any(source_number(p, "jlcpcb") for p in project.parts)):
+    if not (bom_column or any(source_numbers(p, "jlcpcb") for p in project.parts)):
         return [], 0
     renamed, missing = renamed or {}, missing or set()
 
@@ -1697,28 +1731,31 @@ def _lcsc_findings(project: Project, symbols: list[tuple[str, CadSymbol, str]], 
     try:
         for label, symbol, mpn in symbols:
             part = project.find(mpn) or (project.find(renamed[mpn.lower()]) if mpn.lower() in renamed else None)
-            source = source_number(part, "jlcpcb") if part is not None else ""
+            sources = source_numbers(part, "jlcpcb") if part is not None else []
+            normal_sources = [normal(s) or s for s in sources]
             text = (symbol.lcsc or "").strip()
             bom = normal(text)
-            item = {"reference": label, "mpn": mpn, "bom": bom or text, "source": source,
-                    "fields": symbol.lcsc_fields, "library": ""}
+            item = {"reference": label, "mpn": mpn, "part": part["mpn"] if part is not None else mpn,
+                    "bom": bom or text, "source": ", ".join(sources), "fields": symbol.lcsc_fields, "library": ""}
             found: list[dict] = []  # the findings of this symbol
             if text and not bom:
                 found.append({**item, "kind": "not_number"})
-            elif bom and source:
-                if bom == normal(source):
+            elif bom and sources:
+                if bom in normal_sources:
                     ok += 1
                 else:
                     found.append({**item, "kind": "different"})
             elif bom and part is not None:
                 found.append({**item, "kind": "no_source"})
-            elif source and not text:
-                found.append({**item, "kind": "write"})
+            elif sources and not text:
+                # More numbers (packagings): the user selects the one of the symbol.
+                found.append({**item, "kind": "write" if len(sources) == 1 else "select"})
             elif not text and part is not None and mpn.lower() not in missing:
                 found.append({**item, "kind": "none"})
             # The library: each number is the MPN of the symbol (also the purchase
-            # source when the field has a text that is not a number).
-            for number in dict.fromkeys(n for n in (bom, normal(source)) if n) if db is not None else []:
+            # sources when the field has a text that is not a number).
+            numbers = [n for n in dict.fromkeys([bom, *(normal(s) for s in sources)]) if n]
+            for number in numbers if db is not None else []:
                 try:
                     offer = jlcpcb.offer_of_number(number, db)
                 except (LensError, sqlite3.Error):
@@ -1728,10 +1765,11 @@ def _lcsc_findings(project: Project, symbols: list[tuple[str, CadSymbol, str]], 
                 elif not fits(offer.mpn, mpn, True) and not (part is not None and fits(offer.mpn, part["mpn"], True)):
                     found.append({**item, "kind": "other_mpn", "library": number,
                                   "other": f"{offer.mpn} ({offer.manufacturer or 'manufacturer unknown'})"})
-            # A number of the field that the library does not give for this MPN is not a
-            # purchase source to save.
+            # The BOM is the master. A number of the field that the library does not give
+            # for this MPN cannot be processed: no source to save, the user decides.
             wrong = {f["library"] for f in found if f["kind"] in ("not_in_library", "other_mpn")}
-            findings += [f for f in found if not (f["kind"] == "no_source" and f["bom"] in wrong)]
+            findings += [{**f, "bom_wrong": f["bom"] in wrong} for f in found
+                         if not (f["kind"] == "no_source" and f["bom"] in wrong)]
     finally:
         if db is not None:
             db.close()
@@ -2295,7 +2333,9 @@ def format_check(result: dict, cli: bool = False) -> list[str]:
     lines = [f"conflict in the CAD project: {c}. Tell the user: one of the fields is wrong."
              for c in result.get("conflicts", [])]
     again = "datasheet-lens check" if cli else "project_check"
-    codes = "datasheet-lens codes, datasheet-lens find" if cli else "get_ordering_codes, search_distributors"
+    # A new part: by its parameters (a general value such as 10k or 220nF), or by its MPN.
+    codes = ("datasheet-lens pick, datasheet-lens find, datasheet-lens codes" if cli
+             else "find_parts by its parameters, search_distributors and get_ordering_codes by its MPN")
 
     def target(item: dict) -> str:
         """Where a confirmation writes: a variant of KiCad 10 has its own fields."""
@@ -2343,7 +2383,8 @@ def format_check(result: dict, cli: bool = False) -> list[str]:
                      f"symbols and to the BOM, or use an unused custom column of the BOM and give its name with "
                      f"{option}." + ("" if cli else " With parts: give value_confirmed of each part."))
     if result.get("no_mpn"):
-        find = "datasheet-lens find" if cli else "search_distributors"
+        find = ("datasheet-lens pick, datasheet-lens find" if cli
+                else "find_parts by its parameters, search_distributors by its MPN")
         lines.append(f"no part selected (a general value and no MPN): {', '.join(result['no_mpn'])}. A part that "
                      f"needs a datasheet: select it with the user ({find}), then write its MPN into Value in "
                      "parentheses ('10k (RC0603FR-0710KL)'), into the MPN field of the symbol, and the new Value into "
@@ -2369,7 +2410,7 @@ def format_check(result: dict, cli: bool = False) -> list[str]:
                     " (read the ordering information first)")
         elif m["datasheet"]:
             step = (f"the store has no datasheet. Datasheet field: {m['datasheet']}: "
-                    + (f"datasheet-lens add \"{m['datasheet']}\" -m \"{m['mpn']}\"" if cli
+                    + (f"datasheet-lens add \"{m['datasheet']}\" -m \"{m['mpn']}\" -b \"<the part of the datasheet>\"" if cli
                        else f"add_document(path='{m['datasheet']}'), then {add(m['mpn'], '<base part>', '<doc>')}"))
         else:
             step = ("the store has no datasheet, and the CAD part has no Datasheet field: find the datasheet "
@@ -2393,6 +2434,10 @@ def _lcsc_lines(result: dict, cli: bool) -> list[str]:
     def adopt(number: str) -> str:
         return f"datasheet-lens adopt jlcpcb {number}" if cli else f"adopt_part(source='jlcpcb', number='{number}')"
 
+    def remove(mpn: str, number: str) -> str:
+        return (f'datasheet-lens rm "{mpn}" -s {number}' if cli
+                else f"project_remove_source(mpn='{mpn}', number='{number}')")
+
     none = []
     for f in findings:
         ref, mpn, kind = f["reference"], f["mpn"], f["kind"]
@@ -2402,16 +2447,27 @@ def _lcsc_lines(result: dict, cli: bool) -> list[str]:
                          f"{f['source']}. Write {write} into the symbol.")
         elif kind == "no_source":
             lines.append(f"LCSC: {ref}: the field gives {f['bom']} for {mpn}, and the project has no JLCPCB purchase "
-                         f"source. When the user agrees, save it: {adopt(f['bom'])}.")
-        elif kind == "different":
+                         f"source. The BOM is the master: save it with {adopt(f['bom'])}.")
+        elif kind == "different" and f.get("bom_wrong"):
             lines.append(f"LCSC: {ref}: the field gives {f['bom']}, the JLCPCB purchase source of {mpn} is "
-                         f"{f['source']}. Tell the user: one of them is wrong.")
+                         f"{f['source']}, and the library does not give {f['bom']} for {mpn} (see the next line). "
+                         "The BOM cannot be the master here: ask the user for the correct number.")
+        elif kind == "different":
+            removes = " and ".join(remove(f["part"], n) for n in f["source"].split(", "))
+            lines.append(f"LCSC: {ref}: the field gives {f['bom']}, the JLCPCB purchase source of {mpn} is "
+                         f"{f['source']}. The BOM is the master: save {f['bom']} with {adopt(f['bom'])}, and "
+                         f"remove the purchase sources that the BOM does not use with {removes}.")
+        elif kind == "select":
+            lines.append(f"LCSC: {ref}: the field has no JLCPCB number; {mpn} has more JLCPCB purchase sources "
+                         f"({f['source']}). Ask the user which one the board uses, and write it into "
+                         + " and ".join(f["fields"]) + " of the symbol.")
         elif kind == "not_number":
             lines.append(f"LCSC: {ref}: the field has '{f['bom']}': not a JLCPCB number (C and digits, for example "
                          "C47616). Tell the user.")
         elif kind == "not_in_library":
+            update = "datasheet-lens jlc update" if cli else "jlcpcb_library(action='update'), when the user agrees"
             lines.append(f"LCSC: {ref}: the JLCPCB parts library does not have {f['library']} (a wrong number, or "
-                         "an old database: datasheet-lens jlc update).")
+                         f"an old database: {update}).")
         elif kind == "other_mpn":
             lines.append(f"LCSC: {ref}: {f['library']} is {f['other']} in the JLCPCB parts library, not {mpn}. "
                          "Tell the user: the number or the MPN is wrong.")
@@ -2730,11 +2786,14 @@ def format_report(report: dict, apply: bool, add_hint: tuple[str, str]) -> list[
                       ("moved", "moved to its subfolder" if apply else "to move to its subfolder"),
                       ("imported", "imported into the store")):
         lines += [f"{text}: {rel}" for rel in report[key]]
-    lines += [f"changed: {rel} (the copy differs from the store; restore it, or give the file "
-              "a different name to import it as a new document)" for rel in report["changed"]]
+    lines += [f"changed: {rel} (the copy differs from the store). Ask the user: restore it (the file of the "
+              "folder is replaced), or give the file a different name to import it as a new document"
+              for rel in report["changed"]]
     lines += [f"missing: {rel} (the store does not have this document, and the folder does not have "
-              "a file with its content)" for rel in report["missing"]]
-    lines += [f"part not in the store: {mpn}" for mpn in report["unknown_parts"]]
+              "a file with its content). Get the file from the team (git, the team server), or add the "
+              "datasheet again and link it to its part; tell the user" for rel in report["missing"]]
+    lines += [f"part not in the store: {mpn}. The next sync makes it from the copies of the folder; if the "
+              "line stays, link a document to the part" for mpn in report["unknown_parts"]]
     lines += [f"problem: {text}" for text in report["problems"]]
     for item in report["misplaced"]:
         lines.append(f"problem: {item['file']}: the project file has it under part {item['part']}, but the store "

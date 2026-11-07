@@ -118,9 +118,9 @@ The store is shared by all projects of the user:
 - A project keeps only its list of parts and its copies of the documents (see
   [projects.md](projects.md)).
 
-The store is not shared between persons: each person has a store. The repository of
-a design gives the documents to the team (see
-[projects.md](projects.md#team-workflow)).
+Each person has a store. The repository of a design gives the documents to the team
+(see [projects.md](projects.md#team-workflow)). A team server can share the store of
+a team (see [team-server.md](team-server.md)).
 
 The default location is
 `~/.datasheet-lens`. To use a different folder, set the environment variable
@@ -133,8 +133,8 @@ export DATASHEET_LENS_HOME=/data/datasheet-lens
 Set the variable for the CLI and for the MCP server. If the two use different
 folders, they see different documents.
 
-The store folder holds these files. With the key `data` in `config.json`, the
-first four are in a different folder (see
+The store folder holds these files. With the key `data` in `config.json`,
+`db/`, `blobs/`, `render/`, `tmp/` and `jlcpcb/` are in a different folder (see
 [Move the data to a different disk](#move-the-data-to-a-different-disk)).
 
 | Path | Content |
@@ -162,12 +162,14 @@ array. The key `data` in `config.json` gives this data folder:
 To move the data:
 
 1. Stop the MCP clients and each other process that uses datasheet-lens.
-2. Move the folders `db/`, `blobs/` and `render/` to the new folder. `tmp/`
-   holds only temporary files: you can delete it.
+2. Move the folders `db/`, `blobs/` and `render/` to the new folder, and
+   `jlcpcb/` when you have the JLCPCB parts library (else the next `jlc update`
+   downloads it again). `tmp/` holds only temporary files: you can delete it.
 
    ```sh
    mkdir -p /mnt/raid/datasheet-lens
    mv ~/.datasheet-lens/db ~/.datasheet-lens/blobs ~/.datasheet-lens/render /mnt/raid/datasheet-lens/
+   mv ~/.datasheet-lens/jlcpcb /mnt/raid/datasheet-lens/   # only when the folder is there
    ```
 
 3. Add the key `data` to the JSON object in `config.json` in the store folder:
@@ -305,7 +307,7 @@ The project files and the document copies in your design repositories stay.
 if `config.json` gives one):
 
 ```text
-datasheet-lens 0.1.0.dev0
+datasheet-lens 0.4.0
 store: /home/user/.datasheet-lens
 ```
 

@@ -178,3 +178,30 @@ def test_builds_of_the_development_versions_are_format_1(store_home, text_pdf):
     store.db.execute("UPDATE builds SET tool_version = '0' WHERE document_id = ?", (doc.id,))
     store.db.commit()
     assert build_index(store, doc.id)["skipped"] is False
+
+
+def test_outline_under_a_title(store_home, text_pdf):
+    """A document with no section numbers: the outline under the title of an
+    entry (case and spaces ignored), else under an entry whose title starts with
+    the text; up to the next entry of its level."""
+    store = Store()
+    doc = store.add_document(text_pdf("manual.pdf", PAGES))
+    build_index(store, doc.id)
+    store.db.execute("DELETE FROM outline WHERE document_id = ?", (doc.id,))
+    for seq, (level, title) in enumerate([(0, "Overview"), (0, "Electrical  Characteristics"),
+                                          (1, "Static"), (2, "Leakage"), (1, "Dynamic"), (0, "Package")]):
+        store.db.execute("INSERT INTO outline (document_id, seq, level, title, page, source)"
+                         " VALUES (?, ?, ?, ?, 1, 'bookmark')", (doc.id, seq, level, title))
+    store.db.commit()
+    assert [o["title"] for o in outline_under(store, doc.id, "electrical characteristics")] == [
+        "Electrical  Characteristics", "Static", "Leakage", "Dynamic"]
+    assert [o["title"] for o in outline_under(store, doc.id, "Stat")] == ["Static", "Leakage"]
+    assert outline_under(store, doc.id, "Thermal") == []
+    # Two matches, one in the subtree of the other: each entry one time.
+    assert [o["title"] for o in outline_under(store, doc.id, "electrical")] == [
+        "Electrical  Characteristics", "Static", "Leakage", "Dynamic"]
+    # A section number never searches the titles ("8.2" does not give 8.20).
+    store.db.execute("INSERT INTO outline (document_id, seq, level, title, page, source)"
+                     " VALUES (?, 9, 0, '8.20 Timers', 1, 'bookmark')", (doc.id,))
+    store.db.commit()
+    assert outline_under(store, doc.id, "8.2") == []

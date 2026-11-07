@@ -60,6 +60,11 @@ tell the agent:
   Get the parts from the CAD tool, compare them with `project_check`, add the
   missing parts, tell the user about different and extra parts, then run
   `project_sync` and `project_check` again. Then run `project_availability`.
+- The BOM of the CAD project is the master. After each change of a part that the
+  user confirms (`project_update_part`, `adopt_part`, a replacement), write the new
+  or changed part into the CAD project too: `Value` with the MPNs in parentheses,
+  `MPN`, `Value_Confirmed` and the JLCPCB number (KiCad: `set_symbol_fields` of the
+  MCP server kicad-workbench).
 - Use `add_document` only for the documents of the parts. The store identifies a
   document by its SHA-256, not by its file name.
 - Find the content step by step: the document, `find_facts`, `get_index`,
@@ -111,9 +116,10 @@ project folder. The other tools only read.
 | Tool | Function | Main parameters | Changes |
 |---|---|---|---|
 | `project_status` | Give the parts and documents of the project file, and the state of the copies. | `path` | no |
-| `project_check` | Compare the project file with the parts of the CAD project. Give the conflicts in the CAD project, the changes of the fields `Value` and `MPN` that the user must confirm, the symbols with no confirmed fields, the fields to complete by the convention (the MPNs in parentheses in `Value`), the symbols with no part, and the same, different, missing and extra parts, with the next call for each. | `parts` (list of `mpn`, `value`, `value_confirmed`, `datasheet`, `reference`, `variant`; the fields as they are) or `bom` (the path of a BOM file, CSV, or a list of paths: one for each variant), `bom_column`, `bom_delimiter`, `bom_quote`, `bom_confirmed_column`, `path` | no |
+| `project_check` | Compare the project file with the parts of the CAD project. Give the conflicts in the CAD project, the changes of the fields `Value` and `MPN` that the user must confirm, the symbols with no confirmed fields, the fields to complete by the convention (the MPNs in parentheses in `Value`), the symbols with no part, and the same, different, missing and extra parts, with the next call for each. In a project that uses JLCPCB, the lines `LCSC:` compare the JLCPCB number of each symbol with the purchase source and with the JLCPCB parts library. | `parts` (list of `mpn`, `value`, `value_confirmed`, `datasheet`, `reference`, `variant`, `lcsc`; the fields as they are; `mpn_fields`, `confirmed_field` and `lcsc_field`: the names of the fields in the CAD tool) or `bom` (the path of a BOM file, CSV, or a list of paths: one for each variant), `bom_column`, `bom_delimiter`, `bom_quote`, `bom_confirmed_column`, `path` | no |
 | `project_add_part` | Add a part to the project file, with the documents that the store links to it. | `mpn`, `base`, `document`, `manufacturer`, `category`, `role`, `path` | store, project file |
 | `project_update_part` | Change the MPN, base part, category or manufacturer of a project part in place. | `mpn`, `new_mpn`, `base`, `category`, `new_manufacturer`, `manufacturer`, `path` | store, project file |
+| `project_remove_source` | Remove a purchase source (`[[part.source]]`) from a project part: a packaging that the project does not order, or a wrong number. With `store`, also from the central store and the team server. | `mpn`, `number`, `source`, `store`, `manufacturer`, `path` | project file (store with `store`) |
 | `project_remove_part` | Remove a part from the project, and delete its copies that no other part uses. | `mpn`, `manufacturer`, `delete_pinned`, `dry_run`, `path` | project file, project folder |
 | `project_remove_document` | Remove a document from the parts of the project. The parts stay. | `document`, `mpn`, `manufacturer`, `delete_pinned`, `dry_run`, `path` | project file, project folder |
 | `project_sync` | Copy the documents into the project folder, move copies to the subfolders of the layout, import new PDF files of the folder, and give the files of the inbox to their parts. | `path`, `restore` | store, project file, project folder |
@@ -126,7 +132,7 @@ project folder. The other tools only read.
 | `part_parameters` | Give the parameters of a part category at DigiKey or in the JLCPCB parts library, with the number of values and examples of the values, for the filters of `find_parts`. | `category`, `source`, `path` | no |
 | `adopt_part` | Take a found part: download its datasheet, add the part to the store and the project, and save the purchase source. | `source`, `number` or `mpn`, `base`, `category`, `path` | store, project file |
 | `find_parts` | Find new parts or replacement parts by their parameters (a parametric search at DigiKey or in the JLCPCB parts library). | `category`, `filters`, `keywords`, `in_stock`, `sort`, `limit`, `offset`, `source`, `path` | no |
-| `project_availability` | Give the lifecycle state and the stock of each project part at each enabled distributor, with a warning for each problem. | `path` | no |
+| `project_availability` | Give the lifecycle state and the stock of each project part at each enabled distributor (a part with a purchase source: the offer of its number), with a warning for each problem. With the JLCPCB parts library: the JLCPCB stock and library class of each part, and replacements for a part with no JLCPCB stock or with a loading fee. | `path` | no |
 | `set_price_locale` | Set the country and the currency of the DigiKey prices and stock (global), as `datasheet-lens dist --site --currency`. Only when the user asks. | `site`, `currency` | config.json |
 | `jlcpcb_library` | Give the state of the JLCPCB parts library, or start its update in the background (`action="update"`, only when the user asks). `status` gives the progress. | `action` | jlcpcb/ |
 | `distributor_status` | Give the enabled distributors, if each one has an API key (no key values), and the services of each distributor. | `path` | no |

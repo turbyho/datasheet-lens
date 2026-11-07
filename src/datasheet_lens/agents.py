@@ -45,7 +45,10 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
   the confirmed copy of these MPNs, and the hidden field Value_Confirmed a copy
   of the confirmed Value. The confirmation of the user is the truth. A change is
   valid only when the user confirms it. Then write the fields that project_check
-  gives (KiCad: set_symbol_fields of the MCP server kicad-workbench).
+  gives (KiCad: set_symbol_fields of the MCP server kicad-workbench). The CAD
+  BOM is the master: after each change of a part that the user confirms
+  (project_update_part, adopt_part, a replacement), write the new or changed
+  part into the CAD project too (Value, MPN, Value_Confirmed, LCSC).
   project_status (CLI `datasheet-lens ls`) gives the parts and documents of the
   file. If you cannot get a datasheet, tell the user, with the search links of
   part_links (CLI `datasheet-lens links MPN`; also for symbols, footprints and
@@ -59,7 +62,8 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
   datasheet (for example TLV755P). Then project_add_part with the concrete
   orderable MPN of the BOM (for example TLV75533PDBVR; get_ordering_codes, CLI
   `datasheet-lens codes DOC`, gives the codes) and base. CLI:
-  `datasheet-lens add PATH|URL -m MPN`.
+  `datasheet-lens add PATH|URL -m MPN -b BASE` (BASE: the part of the datasheet;
+  the MPN itself when the datasheet is of this MPN).
 - project_availability (CLI `datasheet-lens stock`) gives the lifecycle state
   and the stock of each part at the distributors; tell the user about each
   warning. search_distributors (CLI `datasheet-lens find MPN`) gives the
@@ -74,7 +78,9 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
   the JLCPCB stock and the library class (Basic, Preferred, Extended). When the
   user selects a candidate: adopt_part with the number of the source or the
   MPN (CLI `datasheet-lens adopt SOURCE NUMBER`) adds its datasheet, the part
-  and its purchase source. Read each value that the design needs in
+  and its purchase source. A part can have more purchase sources; remove a
+  wrong one with project_remove_source when the user agrees (CLI
+  `datasheet-lens rm MPN -s NUMBER`). Read each value that the design needs in
   the datasheet of the candidate. part_links
   (CLI `datasheet-lens links MPN`) gives the links to the datasheet, the symbol,
   the footprint and the 3D model: give them to the user.

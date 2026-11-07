@@ -26,11 +26,15 @@ work, not the size of the datasheet.
            CLI (cli.py)          MCP server (server.py)
                   \                   /
                    library modules
-   (indexer, elements, pages, knowledge, identify, project, distributors,
-    digikey, jlcpcb, parametric, links)
+   (indexer, elements, pages, knowledge, identify, project, adopt,
+    distributors, digikey, jlcpcb, parametric, links, makers)
                           |
              central store (store.py)
        SQLite database + content-addressed files
+                          |
+          team server client (teamsync.py, bundles.py)
+                          |
+        team server, optional (team/: API, PostgreSQL, objects)
 ```
 
 The CLI and the MCP server use the same library. Most tools of the server also have a
@@ -44,7 +48,8 @@ store, then `add_document` moves it into the store. datasheet-lens does not sear
 the web: the URL comes from the user, a distributor or the Datasheet field of a CAD
 symbol. The file must start with `%PDF`: a login page or a block page gives an error.
 The limit is 300 MB. When a server blocks the download, the error tells the user to
-download the file and put it into the document folder of the project.
+download the file and put it into the inbox `_inbox` of the project, where `sync`
+gives it to its parts (see `project._inbox`).
 
 ## Central store
 
@@ -191,15 +196,27 @@ the values that changed. Before a write, it parses the new text and compares it 
 the data. When the file changed after the read, it writes nothing. All writes are
 atomic (`fileutil.py`): a temporary file, then a replace.
 
-`sync` compares the project with the store and the document folder. It makes the
-copies, moves them to the subfolders of the layout, and imports the new files. The
-central store is the source of the copies. The project file is the source of the base
-parts: on a new machine, sync writes them into the store.
+`sync` compares the project with the store and the document folder. First it takes
+the PDF files of the inbox `_inbox`: it imports each one, and links it to the project
+parts that it agrees with (their MPN is an ordering code of the document, or their
+MPN or base part is the part of the PDF; the same manufacturer; a part with no
+datasheet). Then it makes the copies, moves them to the subfolders of the layout,
+and imports the new files. The central store is the source of the copies. The
+project file is the source of the base parts: on a new machine, sync writes them
+into the store.
+
+A part of the project file can have purchase sources (`[[part.source]]`): the source
+(`digikey`, `jlcpcb`, `mouser`), its part number and for JLCPCB the library class.
+The store keeps them too (table `part_sources`, shared through the team server).
+`adopt.py` takes a found part in one step: the datasheet, the part and its purchase
+source.
 
 `project_check` compares the project with the CAD parts. A CAD MPN and a project part
 are "different" (probably one part) when one MPN is the base part or a variant of
 the other, or one MPN starts with the other. Placeholders at the end of a CAD MPN
-(`nRF9151-LAXX`, `STM32F103C8Tx`) match any characters.
+(`nRF9151-LAXX`, `STM32F103C8Tx`) match any characters. In a project that uses
+JLCPCB, `project_check` also compares the JLCPCB (LCSC) number of each symbol with
+the purchase source and with the JLCPCB parts library.
 
 ## Identification of the part
 
@@ -248,13 +265,15 @@ or the database.
 | Module | Function |
 |---|---|
 | `__init__.py` | The version and the project URL. |
+| `adopt.py` | Take a found part: the datasheet, the part and the purchase source. |
+| `bundles.py` | The bundles of derived data (index and element map) on the team server. |
 | `version_check.py` | The update check: a newer release on PyPI, and a server that runs an older version than the installed one. |
 | `agents.py` | The datasheet-lens block in `AGENTS.md` and `CLAUDE.md`. |
 | `cli.py` | The command line interface. |
 | `config.py` | The location of the central store (`DATASHEET_LENS_HOME`), `config.json`, and the data folder (key `data`). |
 | `distributors.py` | The part data from the distributor APIs: search, availability, distributor list, services. |
 | `digikey.py` | The DigiKey API: parametric search, offers, direct links. |
-| `jlcpcb.py` | The JLCPCB parts library: download of the split zip, parametric search, offers. |
+| `jlcpcb.py` | The JLCPCB parts library: download of the split zip, parametric search, offers, replacements. |
 | `elements.py` | The element map: docling and text backends, page map, caption search. |
 | `errors.py` | `LensError`: a wrong input or a state that the user can repair. `Unavailable`: a distributor API that cannot answer now. |
 | `fetch.py` | The download of a PDF from a URL. |
@@ -264,6 +283,7 @@ or the database.
 | `keys.py` | The API keys: environment, key store, key file. |
 | `knowledge.py` | The facts: save, find, state. |
 | `links.py` | The search links for a part. |
+| `makers.py` | The manufacturer registry: the names of each manufacturer, the built-in names. |
 | `pages.py` | Page images, region images and PDF extracts. |
 | `parametric.py` | The filter model of the parametric search, for each source. |
 | `pdflock.py` | One lock for pdfium in a process. |
@@ -271,4 +291,6 @@ or the database.
 | `project.py` | The project file, sync, removal, CAD check. |
 | `server.py` | The MCP server and its tools. |
 | `setup.py` | The command `init`, the configuration and the docling installation. |
-| `store.py` | The central store: database, files, parts, documents. |
+| `store.py` | The central store: database, files, parts, documents, purchase sources. |
+| `teamsync.py` | The client of the team server: push of the outbox, pull of the changes. |
+| `team/` | The team server: API (`app.py`), synchronization (`sync.py`), database, object store, accounts, setup wizard. |

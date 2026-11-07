@@ -24,11 +24,12 @@ concrete orderable MPN:
   Mouser gives the text of a price in the format of the account (`0,223 Kč`), and
   the number: the tool uses the number. When Mouser gives no number, the price is
   its text with its source (`Mouser: 0,223 Kč (CZK)`).
-- The package, from DigiKey only. Mouser gives no package.
+- The package, from DigiKey and the JLCPCB parts library. Mouser gives no package.
 - The URL of the datasheet and of the product page.
 
 A part that is obsolete, discontinued or at its end of life gets the mark
-`NOT ORDERABLE`.
+`NOT ORDERABLE`. An offer with no part number to order (Mouser gives `N/A` for some
+manufacturers of an MPN) gets it too.
 
 ## Personal API keys
 
@@ -137,6 +138,7 @@ Thus you can select the distributors that datasheet-lens asks:
 | `datasheet-lens dist --local mouser digikey` | Set the list in the project file (key `distributors`). |
 | `datasheet-lens dist --local` | Remove the list from the project file. The project then uses the global list. |
 | `datasheet-lens dist --site CZ --currency CZK` | Set the country and the currency of the prices and the stock. These settings are global: the command does not accept them with `--local`. |
+| `datasheet-lens dist --site US --currency USD` | Set the default country and currency again (the United States, US dollars). |
 
 The tool uses the first list that it finds:
 
@@ -150,8 +152,9 @@ A name that the tool does not support gives an error. A name in a list that a ne
 version wrote is ignored, with a note.
 
 DigiKey gives the prices and the stock for the country and in the currency of the
-settings. The default is `US` and `USD`. The MCP tool `set_price_locale(site,
-currency)` sets them too, when the user asks the agent. Mouser gives them for the
+settings. The default is `US` and `USD`: `datasheet-lens dist --site US --currency USD`
+sets it again. The MCP tool `set_price_locale(site, currency)` sets them too, when the
+user asks the agent. Mouser gives them for the
 country of the Mouser account, and ignores these settings.
 
 ## Find a part
@@ -214,7 +217,8 @@ A numeric filter compares the first number of a value. For example, the drive
 voltage `2.5V, 8V` gives 2.5 V, the lowest gate voltage that the datasheet specifies.
 `4.5mOhm @ 20A, 8V` gives 4.5 mOhm. The text after `@` holds the conditions.
 
-A filter with no value that agrees gives 0 parts and examples of the values.
+At DigiKey, a filter with no value that agrees gives 0 parts and examples of the
+values. The JLCPCB library gives the number of parts that agree after each filter.
 
 DigiKey keeps one value of a parameter, at its own conditions. For example, it keeps
 RDS(on) at the highest drive voltage only. Thus the tool does not apply a filter
@@ -366,8 +370,8 @@ inputs:
 The tool does not guess if a text is a number of the source or an MPN. The command
 does these steps:
 
-1. It gets the part from the source: the MPN, the manufacturer, the package and the
-   product page.
+1. It gets the part from the source: the MPN, the manufacturer, the package (not
+   from Mouser) and the product page.
 2. It gets the datasheet. A datasheet of the part, or of its base part, in the store
    comes first: the tool does not download a second copy. Else it downloads one: a
    URL on the site of the manufacturer comes first, a copy at a distributor next. The
@@ -387,9 +391,12 @@ does these steps:
    the MCP tool, run `project_sync` after it.
 4. It saves the purchase source: in the store (the team server shares it) and in the
    project file (`[[part.source]]`, see [projects.md](projects.md)). The purchase
-   source has the source, the part number, the product page, the date, and for
-   JLCPCB the library class. It has no stock and no price: these change, and the
-   terms of DigiKey do not permit an own database of DigiKey data.
+   source has the source, the part number, and for JLCPCB the library class. The
+   store also keeps the product page and the date. It has no stock and no price:
+   these change, and the terms of DigiKey do not permit an own database of DigiKey
+   data. A second `adopt` of the same part with a different number adds a second
+   purchase source (for example cut tape and reel), and does not replace the first:
+   `datasheet-lens rm MPN -s NUMBER` (`project_remove_source`) removes one.
 
 Then read the values that the design needs in the datasheet, and save them with
 `save_fact`.
@@ -401,7 +408,9 @@ datasheet-lens stock
 ```
 
 The MCP tool is `project_availability`. The result has one section for each enabled
-distributor with a key (`Source: Mouser`, `Source: DigiKey`). Each section gives one
+distributor with a key (`Source: Mouser`, `Source: DigiKey`), and a section of the
+JLCPCB parts library when it is on the machine (see
+[Purchase sources and replacements](#purchase-sources-and-replacements)). Each section gives one
 line for each project part with its lifecycle state and its stock. It gives a
 `WARNING` for a part that:
 
@@ -463,7 +472,7 @@ note. The note tells the user these steps:
 
 The MCP server cannot ask for a key. The agent gives the note to the user. With no
 key for any distributor, `find` and `search_distributors` give the search links of
-`part_links` in place of the data.
+`part_links`, and the data of the JLCPCB parts library when it is on the machine.
 
 When Mouser does not accept the key (`Invalid unique identifier`), the error tells
 the user to examine the key at the API Hub and save it again. There are three

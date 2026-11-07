@@ -149,7 +149,9 @@ def format_fact(r) -> str:
     if r["bbox"]:
         where += " [" + ", ".join(f"{v:.0f}" for v in json.loads(r["bbox"])) + "]"
     value = r["value"] + (f" {r['unit']}" if r["unit"] else "")
-    extra = "; ".join(x for x in (f"column {r['column_name']}" if r["column_name"] else "",
+    part = r["mpn"] if "mpn" in r.keys() else ""
+    extra = "; ".join(x for x in (f"part {part}" if part else "",
+                                  f"column {r['column_name']}" if r["column_name"] else "",
                                   f"conditions: {r['conditions']}" if r["conditions"] else "") if x)
     who = r["model"] or r["author"] or r["source_kind"]
     return (f"#{r['id']} {r['subject']} = {value}" + (f" ({extra})" if extra else "")

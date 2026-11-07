@@ -88,39 +88,39 @@ signs, units, subscripts and the structure of tables. When a tool tells about a
 newer release or a restart of the client, tell the user one time.
 
 User project: the project file datasheet-lens.toml must hold the same parts as
-the CAD project (schematic, BOM). This is critical: the team uses the file as
-the list of the datasheets of the design. At the start of the work, and after
-each change of the CAD project, do these steps:
+the CAD project (schematic, BOM): the team uses it as the list of the
+datasheets. At the start of the work, and after each change of the CAD project,
+do these steps:
 1. Get the parts of the CAD project (MPN, Value, Value_Confirmed, Datasheet,
-   the field names) from the CAD tool: a BOM file (CSV, one line for each
-   symbol, for example export_bom of the MCP server kicad-workbench) or a list
-   from its MCP server. A general value with no MPN (10k) has no selected
+   the field names) from the CAD tool: a BOM file (CSV, for example
+   export_bom of kicad-workbench) or a list from its MCP server. A general value with no MPN (10k) has no selected
    part. MPN = '-' tells that the symbol needs no part (a test point).
 2. project_check(bom=<CSV file>) or project_check(parts) with all parts: it
    gives the parts that are missing, extra or different, with the next call.
    Give path when the working folder of the server is not in the project.
 3. For each missing part: find its datasheet (list_documents), or add it with
-   add_document (the URL of the Datasheet field or of a distributor, or a local
-   PDF). Then project_add_part(mpn, base, document). mpn is the concrete
+   add_document (a URL or a local PDF). Then project_add_part(mpn, base, document). mpn is the concrete
    orderable MPN of the BOM (TLV75533PDBVR, get_ordering_codes gives them), base
    is the part of the datasheet (TLV755P). If you cannot get the datasheet, tell
    the user the MPN, the reason and the search links of part_links(mpn).
 4. Tell the user about each change, different or extra part, and when a CAD MPN
    and its datasheet do not agree (value, package, variant). A change is valid
-   only when the user confirms it. The convention: Value holds the MPNs in
-   parentheses, "2N7002 (2N7002LT1G, BSS138LT1G)". Change a part with
-   project_update_part, and remove one only when the user agrees.
+   only when the user confirms it. The CAD BOM is the master: write each new or
+   changed part that the user confirms into the CAD project too (Value with the
+   MPNs in parentheses, "2N7002 (2N7002LT1G, BSS138LT1G)", MPN, Value_Confirmed,
+   LCSC; kicad-workbench: set_symbol_fields), and into the project file
+   (project_update_part, adopt_part). Remove a part only when the user agrees.
 5. project_sync: it copies the documents into the project folder. Then
    project_check again: it must give no missing, extra or different part.
 6. project_availability: tell the user about each part that is not orderable
    or has no stock, and give the user each note about a missing API key.
    search_distributors gives the concrete MPNs of a part. find_parts finds new
-   parts and replacements.
+   parts and replacements; adopt_part takes one.
 
 The store identifies a document by its SHA-256: add_document of a file that it
 has copies nothing and gives the reference. Do not match a file to a document
-by its name only. add_document puts each new file into the central store: use
-it only for the documents of the parts. project_sync imports only the PDF files
+by its name only. Use add_document only for the documents of the parts.
+project_sync imports only the PDF files
 of the folder that the project file names. If the repository keeps its
 datasheets in a different folder, tell the user.
 
@@ -135,8 +135,7 @@ Find the content step by step:
 4. search_text: a word, a register name or a value, with page and line.
 5. get_page_map: the elements of one page, with IDs and regions.
 6. get_page_image with an element ID, a caption (all pages of a table) or a
-   region (300 to 600 dpi): read the values here. A table that fills the page:
-   a full page at max_px 1600.
+   region (300 to 600 dpi): read the values here.
 7. save_fact: save each value that the work uses, with its page and element.
 """
 
@@ -244,7 +243,8 @@ def _state(job: dict | None) -> tuple[str, str]:
         return "running", (f"a background thread builds the element map ({job['backend']}, "
                            f"{time.monotonic() - job['started']:.0f} s)")
     if job["error"]:
-        return "failed", f"the element map build failed: {job['error']} (add_document starts it again)"
+        return "failed", (f"the element map build failed: {job['error']} (add_document with the file starts it "
+                          "again, for example the copy in the project folder: the same file is the same document)")
     return "done", f"{job['result']['elements']} elements ({job['result']['backend']})"
 
 
@@ -315,8 +315,10 @@ def add_document(
     are available at once. Gives the document reference, the pages, the size of
     the index and the state of the element map. Without part, it also gives a
     rough proposal of the MPN from the text of the PDF; it can be wrong. Read the
-    MPN on page 1 of the original, then call add_document again with part. To put
-    the part into the user project: project_add_part."""
+    MPN on page 1 of the original, then call add_document again with part. No
+    tool removes a link of a document to a part in the store: give part only
+    when the MPN is sure. To put the part into the user project:
+    project_add_part."""
     from pathlib import Path
 
     from .config import data_home
@@ -386,7 +388,9 @@ def get_index(document: DocRef) -> str:
 @tool
 def get_outline(
         document: DocRef,
-        section: Annotated[str, Field(description="A section number, for example \"8.27\".")]) -> str:
+        section: Annotated[str, Field(description=(
+            "A section number, for example \"8.27\", or the title of an outline entry as get_index gives it "
+            "(a document with no section numbers)."))]) -> str:
     """The outline entries under one section of a document, with pages. Use it
     for a large document, when get_index gives only the top levels."""
     from .indexer import outline_under
@@ -428,6 +432,9 @@ def search_text(
             shas = {doc.id: doc.sha256}
         elif part:
             shas = {r["id"]: r["sha256"] for r in store.part_documents(part)}
+            if not shas:
+                return (f"The store has no document of the part {part}: nothing to search. Add its datasheet "
+                        "(add_document), or check the MPN (list_parts).")
         else:
             raise LensError("give a document or a part")
         hidden: list = []
@@ -525,17 +532,20 @@ def get_page_image(
             "Or a region [x0, y0, x1, y1] in pt, origin at the top left of the page (the units of "
             "get_page_map). Needs page."))] = None,
         max_px: Annotated[int, Field(description=(
-            "The maximum long edge of a full-page image in pixels (256 to 8000). 1600 is enough for a "
-            "table that fills the page. Use more for small print or a fine drawing."))] = 2576,
+            "The maximum long edge of the image in pixels (256 to 8000), for a full page and also for an "
+            "element, a caption or a region: a large element gets less than 300 dpi when it does not fit (the "
+            "result gives the dpi). 1600 is enough for a table that fills the page. Use more for small print, "
+            "a fine drawing, or a large table at 300 dpi."))] = 2576,
         caption: Annotated[str, Field(description=(
             "Or a caption label, for example \"Table 57\" or \"Figure 3-1\": the image shows this table or "
             "figure. A table that continues on the next pages gives one image for each page."))] = "") -> list:
     """The original as a PNG image: an element, a caption, a region or a full
     page. Read the values from this image. An element, a caption or a region is
-    rendered at 300 to 600 dpi: prefer them, because a full page costs more
-    input. A full page is correct for a table that fills the page. It is rendered
-    at the resolution that fits max_px. Gives a line with the page, the region,
-    the dpi and the size, and the image."""
+    rendered at 300 to 600 dpi when it fits max_px: prefer them, because a full
+    page costs more input. A full page is correct for a table that fills the
+    page. It is rendered at the resolution that fits max_px. A caption with no
+    table or figure in the element map gives its full page. Gives a line with the
+    page, the region, the dpi and the size, and the image."""
     from .elements import element as get_element
     from .elements import find_caption
     from .knowledge import facts_line
@@ -619,7 +629,8 @@ def save_fact(
         note: Annotated[str, Field(description="A note, for example a footnote of the table.")] = "",
         model: Annotated[str, Field(description="Your model ID, for example claude-opus-5-5.")] = "",
         part: Annotated[str, Field(description=(
-            "The part that the value is for, when the document covers more parts."))] = "") -> str:
+            "The part that the value is for, when the document covers more parts: a part that the store "
+            "has (list_parts), else an error."))] = "") -> str:
     """Save a value that you read from the original, with its source and your
     model ID, so that a later session finds it with find_facts. Before you read a
     value, look for it with find_facts: do not save a value two times. A new fact
@@ -653,7 +664,8 @@ def find_facts(
     """Find values that were read before (save_fact). With part, it searches the
     documents of the part and of its base part: a concrete MPN also finds the
     facts of its datasheet. Gives one line for each
-    fact: number, subject, value, column, conditions, source (document, page,
+    fact: number, subject, value, the part (when the fact is for one part of a
+    document of more parts), column, conditions, source (document, page,
     element or region), state and author. A fact is not the source of truth:
     check an important value against the original, then set its state with
     set_fact_status."""
@@ -665,6 +677,9 @@ def find_facts(
             ids = [_doc(store, document).id]
         elif part:
             ids = [r["id"] for r in store.part_documents(part)]
+            if not ids:
+                return (f"The store has no document of the part {part}: no facts. Add its datasheet "
+                        "(add_document), or check the MPN (list_parts).")
         else:
             ids = None
         rows = find(store, query, ids, max(1, min(limit, 500)))
@@ -725,7 +740,7 @@ def project_sync(
     assigns it. The inbox (the folder _inbox in the folder of the copies) is for
     the PDF files that the user downloads: sync gives each one to the project
     parts that it agrees with (the MPN, the base part and the manufacturer of
-    the datasheet), and takes it from the inbox. For a file with no part, ask the
+    the datasheet) and that have no datasheet, and takes it from the inbox. For a file with no part, ask the
     user for the part, then assign it with project_add_part. Gives the changes
     and the problems."""
     from .project import format_report, load, sync
@@ -777,8 +792,13 @@ def project_add_part(
             "of the base part."))] = "",
         path: ProjectPath = "") -> str:
     """Add a part to the user project, with the documents that the store links to
-    it. Then project_sync copies the documents into the project folder. Gives the
-    part and its documents."""
+    it. Then project_sync copies the documents into the project folder. A link
+    of a document to the store part stays in the store (no tool removes it):
+    check the MPN and the base part before you give document. A new part of
+    the design: The CAD BOM is the master: write the change that the user confirmed
+    into the CAD project too (Value with the MPNs in parentheses, MPN,
+    Value_Confirmed, LCSC; kicad-workbench: set_symbol_fields), then
+    project_check. Gives the part and its documents."""
     from .project import add_part, load
 
     with _add_lock, Store() as store:
@@ -846,7 +866,8 @@ def search_distributors(
             "up to 50)."))] = False,
         path: ProjectPath = "") -> str:
     """The orderable parts at the enabled distributors, from their official
-    APIs: the part number of the distributor (adopt_part takes it), lifecycle
+    APIs, and in the JLCPCB parts library when it is on the machine (with the
+    C number and the library class): the part number of the source (adopt_part takes it), lifecycle
     state, stock, prices and datasheet URL (Mouser gives no package: read it in
     the datasheet). An MPN of more manufacturers gives one line for each
     manufacturer. A part that
@@ -884,13 +905,14 @@ def find_parts(
             "The filters, each \"NAME OP VALUE\". OP: = < <= > >= has. NAME: a parameter of part_parameters "
             "(full name, short name or a unique part of the name). = and has accept more values with | "
             "(one of them). Examples: \"vdss >= 20 V\", \"channel = N-Channel\", \"package has 3x3|3.3x3.3\", "
-            "\"drive <= 2.5V\". A condition after \"at\" (\"rds_on <= 10 mOhm at Vgs<=2.5V\"): DigiKey "
+            "\"drive <= 2.5V\" (the short names differ for each source: part_parameters gives them; drive is "
+            "a name of DigiKey only). A condition after \"at\" (\"rds_on <= 10 mOhm at Vgs<=2.5V\"): DigiKey "
             "does not apply it; jlcpcb applies it to the points that the data lists. Read that value in the "
             "datasheet."))] = [],
         keywords: Annotated[str, Field(description="Words that the parts must have. Usually empty.")] = "",
         in_stock: Annotated[bool, Field(description=(
             "True: only parts with stock (jlcpcb: with JLCPCB stock for the assembly). False: also the parts "
-            "with no stock, marked NOT IN STOCK."))] = True,
+            "with no stock (jlcpcb: marked NOT IN STOCK; digikey: stock 0)."))] = True,
         sort: Annotated[str, Field(description="stock (most first) or price (lowest first).")] = "stock",
         limit: Annotated[int, Field(description="The number of parts, 1 to 50 (jlcpcb: 1 to 100).")] = 20,
         offset: Annotated[int, Field(description="Skip this number of parts (the next page).")] = 0,
@@ -904,9 +926,11 @@ def find_parts(
     A numeric filter compares the first number of a value ("2.5V, 8V" gives
     2.5 V). A distributor keeps one or few values of a parameter at its own
     conditions: read each value that the design needs in the datasheet
-    (add_document, get_page_image) and save it with save_fact. When the source
-    is not available, the result has the steps for the user: give them to the
-    user."""
+    (get_page_image) and save it with save_fact. When the user selects a
+    candidate: adopt_part(source, number) adds its datasheet, the part and its
+    purchase source (not add_document and project_add_part: they save no
+    purchase source). When the source is not available, the error gives the
+    steps for the user: give them to the user."""
     from .distributors import pick_lines
     from .project import load_optional
 
@@ -919,7 +943,7 @@ def part_parameters(source: Source, category: Category, path: ProjectPath = "") 
     """The parameters of a part category at a source of the parametric search
     (DigiKey, or the JLCPCB parts library), for the filters of find_parts:
     the full name, the short name, the number of values and examples of the
-    values. Use it before find_parts."""
+    values (jlcpcb: of the parts with JLCPCB stock). Use it before find_parts."""
     from .distributors import parameter_lines
     from .project import load_optional
 
@@ -936,7 +960,9 @@ def project_availability(path: ProjectPath = "") -> str:
     a part with no JLCPCB stock or with a loading fee (Extended), the JLCPCB
     section gives replacements (the same MPN; resistors, capacitors, inductors
     with the same parameters), Basic and Preferred first: read the datasheet of
-    a replacement before you propose it. Tell the user about each warning, and
+    a replacement before you propose it. To use a replacement: the user agrees,
+    the CAD project changes, then project_update_part(mpn, new_mpn) and
+    adopt_part. Tell the user about each warning, and
     give the user each note about a missing API key (see
     search_distributors)."""
     from .distributors import availability
@@ -984,13 +1010,20 @@ def adopt_part(
     The element map builds in the background. Read the values that the design
     needs in the datasheet and save them with save_fact. When no URL gives the
     datasheet (a login, a captcha), the result gives the URLs and the inbox
-    folder of the project: give them to the user."""
+    folder of the project: give them to the user. A part with a new MPN becomes
+    a new project part: to replace a project part (a replacement of
+    project_availability), first the user agrees and the CAD project changes,
+    then project_update_part(mpn, new_mpn), then adopt_part. A purchase source
+    is added, not replaced: project_remove_source removes a wrong one. The CAD BOM is the master: write the change that the user confirmed
+    into the CAD project too (Value with the MPNs in parentheses, MPN,
+    Value_Confirmed, LCSC; kicad-workbench: set_symbol_fields), then
+    project_check."""
     from .adopt import adopt
     from .project import load_optional
 
     project = load_optional(path or None)
     result = adopt(source, number, mpn, base, category, project, lock=_add_lock)
-    if project is not None:
+    if project is not None and not any(line.startswith("datasheet: NOT ADDED") for line in result["lines"]):
         result["lines"].append("Run project_sync: it copies the datasheet into the project folder.")
     with _add_lock:
         job = _build_elements(result["document"]) if result["document"] is not None else None
@@ -1013,7 +1046,8 @@ def set_price_locale(
     """Set the country and the currency of the prices and the stock of DigiKey
     in the global configuration of the user, as the CLI command "datasheet-lens
     dist --site CZ --currency CZK". Mouser uses the country of the Mouser
-    account, and JLCPCB gives USD. Change it only when the user asks."""
+    account, and JLCPCB gives USD. Give one of the two or the two. Change it
+    only when the user asks."""
     from .distributors import set_locale
 
     return "\n".join(set_locale(site, currency))
@@ -1209,7 +1243,10 @@ def project_update_part(
     or manufacturer. The part keeps its place in datasheet-lens.toml and its
     copies (project_remove_part and project_add_part would delete and copy them
     again). Then project_sync moves a copy when the layout gives it a different
-    subfolder. Gives the part and its documents."""
+    subfolder. The CAD BOM is the master: write the change that the user confirmed
+    into the CAD project too (Value with the MPNs in parentheses, MPN,
+    Value_Confirmed, LCSC; kicad-workbench: set_symbol_fields), then
+    project_check. Gives the part and its documents."""
     from .project import load, update_part
 
     with _add_lock, Store() as store:
@@ -1250,6 +1287,42 @@ def project_remove_part(
         project = load(path or None)
         result = remove_part(project, mpn, manufacturer, delete_pinned, not dry_run, store)
     return _removal(result, project.folder, dry_run, f"part {result['part']}")
+
+
+@tool
+def project_remove_source(
+        mpn: Annotated[str, Field(description="The MPN of the project part.")],
+        number: Annotated[str, Field(description=(
+            "The part number of the purchase source to remove: a DigiKey number, a JLCPCB C number or a Mouser "
+            "number, as project_status and project_availability give it."))],
+        source: Annotated[str, Field(description=(
+            "digikey, jlcpcb or mouser: only when more sources of the part have the number. Empty: the source "
+            "that has it."))] = "",
+        store: Annotated[bool, Field(description=(
+            "True: also remove it from the central store and the team server, for a number that is wrong for the "
+            "part (for example a C number of a different MPN). False: only from the project file; the store keeps "
+            "where the part is available."))] = False,
+        manufacturer: Manufacturer = "",
+        dry_run: DryRun = False,
+        path: ProjectPath = "") -> str:
+    """Remove a purchase source ([[part.source]]) from a part of the user
+    project: a number that the project does not order (a different packaging)
+    or a wrong number (project_check gives "one of them is wrong",
+    project_availability gives "is X, not Y"). A part can have more numbers of
+    one source; adopt_part adds one and does not replace the others. Do it
+    only when the user agrees. The CAD BOM is the master: the LCSC field of the
+    symbol must give a number that the part keeps (write it with
+    kicad-workbench set_symbol_fields), then project_check."""
+    from .project import load, remove_source
+
+    with _add_lock, Store() as db:
+        project = load(path or None)
+        result = remove_source(project, db, mpn, number, source, manufacturer, store, not dry_run)
+    removed = ", ".join(f"{s['source']} {s['number']}" for s in result["removed"])
+    verb = "would remove" if dry_run else "removed"
+    return (f"{verb} the purchase source {removed} from {result['part']} in the project file"
+            + (f"; {verb} it from the store too" if result["store"] else
+               "; the store keeps it" if not store else "; the store does not have it"))
 
 
 @tool

@@ -500,8 +500,9 @@ def search_lines(result: SearchResult) -> list[str]:
                 marks.append(f"[NOT AGREE: filter \"{r.filter.text}\": {value or 'no value'}]")
         lines.append(product_line(p, names, currency) + "".join(f" {m}" for m in marks))
     if result.products:
-        lines.append("The values come from DigiKey. Read each value that the design needs in the datasheet of the "
-                     "part (add_document, then get_page_image), and save it with save_fact.")
+        lines.append("The values come from DigiKey. When the user selects a part: adopt_part(source='digikey', "
+                     "number=<its DigiKey number>) adds its datasheet, the part and its purchase source. Read each "
+                     "value that the design needs in the datasheet (get_page_image), and save it with save_fact.")
     return lines
 
 

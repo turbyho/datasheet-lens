@@ -400,4 +400,4 @@ def test_replacements_that_fail_are_told(jlc, tmp_path, monkeypatch):
     with Store() as store:
         prj.add_part(project, store, "FET-C")  # no JLCPCB stock
     lines = distributors.availability(prj.load(project.root))
-    assert "  replacements: not checked: database is locked" in lines
+    assert "  replacements of C1003: not checked: database is locked" in lines

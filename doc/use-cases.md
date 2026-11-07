@@ -113,10 +113,13 @@ be bought.
    `project_update_part`.
 
 **Result.** One section for each enabled distributor, with one line for each part:
-its lifecycle state and its stock. A `WARNING` shows a part that is obsolete or
-discontinued, a part that the distributor does not have (often a base part or a
-wrong MPN), or a part with no stock. Mouser also gives the suggested replacement and
-the lead time. See [distributors.md](distributors.md).
+its lifecycle state and its stock. A part with a purchase source (`[[part.source]]`,
+see use 15) gets the offer of its number: the packaging that the project orders. A
+`WARNING` shows a part that is obsolete or discontinued, a part that the distributor
+does not have (often a base part or a wrong MPN), or a part with no stock. Mouser
+also gives the suggested replacement, the quantities on order and the lead time.
+With the JLCPCB parts library, a JLCPCB section gives the JLCPCB stock and the
+library class, and replacements (see use 16). See [distributors.md](distributors.md).
 
 ## 5. Review the design against the datasheets
 
@@ -206,8 +209,11 @@ user on that machine see them. The repository does not share them with other per
 2. When a distributor has a datasheet URL, `search_distributors` gives it.
 3. Else get search links: `part_links(mpn)` (CLI: `datasheet-lens links MPN`). Open
    one with a web tool, or give the links to the user.
-4. When a server blocks the download, download the file in a browser, put it into the
-   document folder, and run `datasheet-lens sync`. Then assign it to the part with
+4. When a server blocks the download, download the file in a browser and put it into
+   the inbox of the project (`datasheets/_inbox/`), then run `project_sync` (CLI:
+   `datasheet-lens sync`). Sync gives the file to the project parts that it agrees
+   with (see [projects.md](projects.md#the-inbox)). A file with no part stays in the
+   inbox: the report gives the part of the PDF, and you assign it with
    `project_add_part`.
 
 **Result.** The part gets its datasheet, or the user gets the MPN, the reason and the
@@ -254,8 +260,9 @@ document with no new download.
 
 **Result.** Each person has a local store, and the team shares one project file and
 one document folder through git. Sync imports the copies of the repository into the
-local store, with their parts and base parts. Each person keeps the API keys and the
-facts in the local store.
+local store, with their parts and base parts. Each person keeps the facts in the
+local store, and the API keys in the key store of the system (see
+[distributors.md](distributors.md)).
 
 With a team server, each person also connects the local store to the server
 (`datasheet-lens key team`, then `datasheet-lens server connect URL`). The team then
@@ -335,7 +342,40 @@ For a board that JLCPCB assembles, search in the JLCPCB parts library: give the 
 of each part. The user downloads the library one time with `datasheet-lens jlc update`.
 
 **Result.** A short list of candidates with stock, price and lifecycle state, and
-the values that the design needs, from the datasheets. The result marks a filter
-that the distributor data cannot decide `NOT APPLIED`: read that value in the
-datasheet. See
+the values that the design needs, from the datasheets. At DigiKey, the result marks
+a filter that the DigiKey data cannot decide `NOT APPLIED` (a condition such as
+`at Vgs<=2.5V`, or a filter that the DigiKey API does not apply), and a part that
+does not agree with such a filter `NOT AGREE`: read that value in the datasheet. The
+JLCPCB library applies a condition to the points that its data lists. See
 [distributors.md](distributors.md#find-parts-by-their-parameters).
+
+## 16. Prepare the BOM for the JLCPCB assembly
+
+**Situation.** JLCPCB assembles the board. Each part needs a JLCPCB (LCSC) number,
+JLCPCB must have the part in stock, and the team wants few parts with a loading fee
+(Extended).
+
+**Steps.**
+
+1. Download the JLCPCB parts library one time: `datasheet-lens jlc update` (MCP:
+   `jlcpcb_library(action="update")`, only when the user asks).
+2. Save the JLCPCB number of each part as its purchase source:
+   `adopt_part(source="jlcpcb", number="C47616")` (CLI:
+   `datasheet-lens adopt jlcpcb C47616`).
+3. Check the availability: `project_availability` (CLI: `datasheet-lens stock`). The
+   JLCPCB section gives the stock and the library class of each part, and up to 3
+   replacements for a part with no stock or with a loading fee: the same MPN, and
+   resistors, capacitors and inductors with the same parameters. Read the datasheet
+   of a replacement before you propose it.
+4. Check the CAD project: `project_check` with the BOM. The lines `LCSC:` compare the
+   JLCPCB number of each symbol (the LCSC column of the BOM) with the purchase source
+   and with the library: the number to write into a symbol, a number with no
+   purchase source, a different number, and a number of a different MPN.
+5. Write the numbers into the symbols (KiCad: `set_symbol_fields` of the MCP server
+   kicad-workbench), and check again.
+
+**Result.** Each symbol has the JLCPCB number of its part, the number agrees with
+the purchase source and with the library, and the parts with no stock or with a
+loading fee have replacements to select from. See
+[distributors.md](distributors.md#purchase-sources-and-replacements) and
+[projects.md](projects.md#the-jlcpcb-number-of-a-symbol).

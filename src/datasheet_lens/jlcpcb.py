@@ -45,7 +45,9 @@ CHUNK = 1 << 20
 MAX_AGE_DAYS = 1.0  # an older database gives a note in each result
 LIMITS = ("The JLCPCB database comes from the jlcparts project. Its data has no license statement. "
           "The values come from the LCSC listings: some are typical values, not maximum values, and some "
-          "parts copy the values of other parts. Read each value that the design needs in the datasheet.")
+          "parts copy the values of other parts. Read each value that the design needs in the datasheet. "
+          "When the user selects a part: adopt_part(source='jlcpcb', number=<its C number>) adds its datasheet, "
+          "the part and its purchase source.")
 
 
 def folder() -> Path:

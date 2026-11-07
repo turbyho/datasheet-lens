@@ -30,7 +30,7 @@ datasheet-lens builds an index to find the content, and gives the original pages
 and regions to the model on demand. The model reads only the parts that the work
 needs, and reads each value from the original.
 
-Status: in development (version 0.3). The tools work and have tests. The
+Status: in development (version 0.4). The tools work and have tests. The
 interfaces can change.
 
 ## Features
@@ -56,13 +56,21 @@ interfaces can change.
   distributor, for example which one has a parametric search.
 - **JLCPCB assembly.** An optional local copy of the JLCPCB parts library: the
   JLCPCB stock for the assembly and the library class (Basic, Preferred, Extended) of
-  each part. The tool marks a part with no stock `NOT IN STOCK`.
+  each part. The tool marks a part with no stock `NOT IN STOCK`, and gives
+  replacements with stock and no loading fee (the same MPN; resistors, capacitors
+  and inductors with the same parameters). `project_check` compares the JLCPCB (LCSC)
+  number of each symbol with the purchase source and with the library.
 - **Parametric search.** Find new parts and replacement parts by their parameters
   at DigiKey or in the JLCPCB parts library, for example "N-channel MOSFET, Vdss 20 V to 40 V, gate drive 2.5 V,
-  package 3x3". A distributor keeps one value of a parameter at its own conditions.
-  Thus the result marks a filter that the distributor data cannot decide (RDS(on) at
-  a gate voltage of 2.5 V) `NOT APPLIED`. The agent then reads that value in the
-  datasheet.
+  package 3x3". DigiKey keeps one value of a parameter at its own conditions: the
+  result marks a filter that its data cannot decide (RDS(on) at a gate voltage of
+  2.5 V) `NOT APPLIED`, and the agent reads that value in the datasheet. The JLCPCB
+  library lists more points of a value, and the tool applies such a condition to them.
+- **Take a found part.** `adopt` takes a part of a search in one step: its datasheet
+  (from the site of the manufacturer first), the part, and its purchase source (the
+  source and its part number). The availability check then asks for that number.
+- **Inbox.** A PDF file that a person downloads goes into the folder `_inbox` of the
+  project. `sync` gives it to the project parts that it agrees with.
 - **Links to datasheets and CAD files.** For each MPN, the links to the datasheet,
   the symbol, the footprint and the 3D model (Component Search Engine, SnapMagic,
   Ultra Librarian). With DigiKey, also the direct links to the models of the part.
@@ -146,7 +154,7 @@ only the files that exist: make one of them first if you want the block.
 |---|---|
 | `add PATH\|URL` | Add a document to the store and to the project |
 | `ls`, `sync` | Show the project, or synchronize its copies |
-| `check BOM.csv` | Compare the project with a BOM (CSV) of the CAD project, and find the changes and conflicts of the fields MPN, Value and Value_Confirmed (tested only with BOM exports of KiCad and Eagle) |
+| `check BOM.csv` | Compare the project with a BOM (CSV) of the CAD project, and find the changes and conflicts of the fields MPN, Value and Value_Confirmed (tested only with BOM exports of KiCad and Eagle), and the JLCPCB (LCSC) numbers |
 | `set MPN -m NEW` | Change the MPN, base part, category or manufacturer of a project part |
 | `rm MPN` | Remove a part (or `-d DOC`, a document) from the project |
 | `search TEXT --part MPN` | Find a text in the documents of a part |
@@ -155,10 +163,10 @@ only the files that exist: make one of them first if you want the block.
 | `find MPN` | Find a part at the distributors (lifecycle, stock, prices) |
 | `pick SOURCE CATEGORY FILTER ...` | Find parts by their parameters at `digikey` or in the `jlcpcb` library, for example `pick digikey "Single FETs, MOSFETs" "vdss >= 20 V"` |
 | `adopt SOURCE NUMBER` | Take a found part: its datasheet, the part and its purchase source, for example `adopt jlcpcb C47616` or `adopt digikey --mpn CSD16340Q3` |
-| `jlc update` | Download or update the JLCPCB parts library (276 MB) |
-| `stock` | Show the lifecycle state and the stock of each project part |
+| `jlc update` | Download or update the JLCPCB parts library (276 MB); `jlc status`, `jlc remove` |
+| `stock` | Show the lifecycle state and the stock of each project part (by its purchase source), and the JLCPCB replacements |
 | `key NAME` | Save the API key of a distributor (`key mouser`, `key digikey`), or the token of the team server (`key team`) |
-| `server connect URL` | Connect the store to a team server; `server sync`, `server` (state) |
+| `server connect URL` | Connect the store to a team server; `server sync`, `server` (state), `server disconnect` |
 | `dist NAME ...` | Select the distributors (globally, or `--local` for the project) |
 
 All commands and options are in [doc/cli.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/cli.md).
@@ -180,9 +188,9 @@ See [doc/distributors.md](https://github.com/turbyho/datasheet-lens/blob/main/do
 | [doc/use-cases.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/use-cases.md) | Typical uses, step by step |
 | [doc/mcp-server.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/mcp-server.md) | MCP server: registration, instructions, all tools |
 | [doc/agent-workflow.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/agent-workflow.md) | How an agent reads a datasheet, with an example |
-| [doc/projects.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/projects.md) | Project file, layout, sync, team workflow, consistency with the CAD project |
+| [doc/projects.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/projects.md) | Project file, layout, sync, the inbox, purchase sources, team workflow, consistency with the CAD project (also the JLCPCB numbers) |
 | [doc/cli.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/cli.md) | Reference of all CLI commands and options |
-| [doc/distributors.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/distributors.md) | Distributor data, API keys, distributor selection, parametric search, search links |
+| [doc/distributors.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/distributors.md) | Distributor data, API keys, distributor selection, parametric search, the JLCPCB parts library, take a found part (adopt), availability and replacements, search links |
 | [doc/team-server.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/team-server.md) | Team server: installation, accounts and tokens, connection of a store, synchronization, API |
 | [doc/architecture.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/architecture.md) | For developers: design decisions and module map |
 | [doc/development.md](https://github.com/turbyho/datasheet-lens/blob/main/doc/development.md) | Development setup, tests, code and text style |
