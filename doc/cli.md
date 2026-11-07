@@ -455,6 +455,7 @@ the next command for each one:
 | `--delimiter D` | The delimiter of the values: a text (a preset of KiCad can have more characters) or `tab`. Default: the one of `,` `;` tab `\|` that splits the header line. When more of them split it, or none (and the header is not one known column name), the command asks for this option. |
 | `--quote Q` | The quote: `"` (default: CSV, Excel, kicad-cli), `'` (the Semicolons preset of KiCad), `none` (the TSV preset of KiCad), or an other text of a preset. |
 | `--confirmed-column NAME` | The column of the field `Value_Confirmed`, for example an unused custom column of the BOM of an other CAD tool (default: `Value_Confirmed`). |
+| `--mpn-confirmed-column NAME` | The column of the field `MPN_Confirmed`, for example an unused custom column of the BOM of an other CAD tool (default: `MPN_Confirmed`). |
 
 The command reads a CSV file (RFC 4180) with the delimiter and the quote of the
 options (see [projects.md](projects.md#a-bom-file) for the rules). It reads UTF-8,
@@ -463,9 +464,10 @@ read XLSX files. It
 compares the column names with no regard to case, spaces, `_`, `.` and `-`. It finds
 the reference, Datasheet and DNP columns by their names. The parts of a line that is
 not fitted (DNP) stay parts of the project, and the line `not fitted (DNP)` names
-their symbols. The Value column holds a general value and the MPNs in parentheses,
-the fitted part first and then the alternatives, with the separators `,` and `;`
-(see [projects.md](projects.md#mpn-and-value-fields)). **It is tested only with BOM exports of
+their symbols. The Value column holds the general value, the MPN column the MPNs,
+the fitted part first and then the alternatives, with the separators `,` and `;`,
+and the columns `Value_Confirmed` and `MPN_Confirmed` the copies of the last
+confirmation (see [projects.md](projects.md#mpn-and-value-fields)). **It is tested only with BOM exports of
 KiCad and Eagle.** A BOM of a different CAD tool (for example Altium) can work when
 its column names are in the lists, but nobody has tested it. See [projects.md](projects.md#a-bom-file) for the full
 rules.

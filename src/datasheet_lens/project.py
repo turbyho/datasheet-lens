@@ -1448,21 +1448,18 @@ def field_items(text: str) -> list[str]:
     return field_list(text)[0]
 
 
-def format_mpns(items: list[str], value: bool = False) -> str:
-    """The text of a list of MPNs, with quotes only where they are necessary (see
-    _list_items). value: for the parentheses of Value, where a parenthesis in an
-    MPN needs quotes too. The text must give the items again: else the tool writes
-    quotes around each item (also "~", which is an empty field with no quotes)."""
+def format_mpns(items: list[str]) -> str:
+    """The text of a list of MPNs for the field MPN, with quotes only where they are
+    necessary (see _list_items). The text must give the items again: else the tool
+    writes quotes around each item (also "~", which is an empty field with no
+    quotes)."""
     def reads_as(text: str) -> bool:
-        if value:
-            parts = split_value(f"({text})")
-            return parts.mpns == items and not parts.error
         return field_list(text) == (items, "")
 
     def quoted(item: str) -> str:
         return '"' + item.replace('"', '""') + '"'
 
-    special = MPN_SEPARATORS + ("()" if value else "")
+    special = MPN_SEPARATORS
     for text in (", ".join(items),
                  ", ".join(quoted(i) if any(c in i for c in special) or i.startswith('"') else i for i in items)):
         if reads_as(text):
@@ -1485,8 +1482,9 @@ def mpn_items(text: str) -> list[str]:
 
 @dataclass
 class ValueParts:
-    """A Value by the convention of the parentheses (plans/confirmed-mpns.md,
-    decision 13)."""
+    """A Value by the old convention of the parentheses (plans/confirmed-mpns.md,
+    decision 13): the tool reads it only for the move into the four fields (decision
+    30)."""
     general: str  # the text out of the parentheses, with one space between words
     mpns: list[str] | None  # the items in the parentheses (no TBD); None: no parentheses
     error: str = ""  # the text does not follow the convention: a conflict
@@ -1524,16 +1522,6 @@ def split_value(text: str) -> ValueParts:
     return ValueParts(" ".join((text[:start] + " " + text[end:]).split()), items, message)
 
 
-def _value_key(text: str) -> tuple[str, tuple[str, ...] | None]:
-    """A Value for a comparison (two Value columns, Value and Value_Confirmed): the
-    words of the general value and the list of the MPNs (decision 15). The spaces
-    between words, the separators of the list and the quotes that are not necessary
-    do not count. The words and the case count: 10 k is not 10k, and 4m7 (milliohm)
-    is not 4M7 (megaohm)."""
-    parts = split_value(text)
-    return parts.general, None if parts.mpns is None else tuple(parts.mpns)
-
-
 def _mpns(items: list[str]) -> list[str]:
     """The MPNs of the items of a list: no "no part", "not selected" and KiCad texts."""
     return [i for i in items if i.lower() not in NO_PART + NOT_SELECTED and _is_field_mpn(i)]
@@ -1550,11 +1538,14 @@ class CadSymbol:
     """The fields of one CAD symbol (or one line of a BOM file) for check_parts.
     See plans/confirmed-mpns.md for the model."""
     reference: str = ""
-    value: str = ""  # a general value, and the MPNs in parentheses: 2N7002 (2N7002LT1G, BSS138LT1G)
-    mpn: str = ""  # the field MPN: the confirmed copy of the MPNs in the parentheses of Value
+    value: str = ""  # the general value: 2N7002, 100nF 10V (decision 26)
+    mpn: str = ""  # the field MPN: the MPNs of the designer, the fitted part first
     # The hidden field Value_Confirmed: the Value of the last confirmation. None: the
     # CAD data has no such field (a BOM with no column Value_Confirmed).
     value_confirmed: str | None = None
+    # The hidden field MPN_Confirmed: the field MPN of the last confirmation. None: the
+    # CAD data has no such field (a BOM with no column MPN_Confirmed).
+    mpn_confirmed: str | None = None
     datasheet: str = ""
     other_mpns: list[tuple[str, str]] = field(default_factory=list)  # (name, text) of more MPN columns
     other_values: list[str] = field(default_factory=list)  # the texts of more Value columns
@@ -1572,6 +1563,8 @@ class CadSymbol:
     mpn_known: bool = True
     confirmed_fields: list[str] = field(default_factory=lambda: ["Value_Confirmed"])
     confirmed_known: bool = True
+    mpn_confirmed_fields: list[str] = field(default_factory=lambda: ["MPN_Confirmed"])
+    mpn_confirmed_known: bool = True
     # The JLCPCB (LCSC) part number of the symbol (C47616), as it is. None: the CAD
     # data has no such field (a BOM with no LCSC column). lcsc_fields: the names of
     # the field to write.
@@ -1587,65 +1580,113 @@ class CadSymbol:
 class SymbolState:
     """The parts of a CAD symbol and what the user must do with them."""
     parts: list[str]  # the MPNs that the project must hold, the fitted one first
-    value_mpns: list[str]  # the MPNs in the parentheses of Value
-    mpns: list[str]  # the confirmed MPNs (the field MPN)
+    mpns: list[str]  # the MPNs of the field MPN
+    confirmed: list[str]  # the confirmed MPNs (the field MPN_Confirmed)
     change: str = ""  # a difference to the confirmed fields: the user must confirm or correct it
-    new: list[str] = field(default_factory=list)  # the MPNs of Value that the field MPN does not have
-    removed: list[str] = field(default_factory=list)  # the confirmed MPNs that Value does not have
-    write_mpn: str = ""  # the field MPN that a confirmation or a completion writes
-    select: bool = False  # the user selects a new part first, and writes it into Value
-    unconfirmed: bool = False  # the field MPN or Value_Confirmed is not written yet
-    # The Value that completes the fields by the convention (decision 16): the MPNs of
-    # the field MPN in parentheses. Empty: no completion.
-    complete: str = ""
+    new: list[str] = field(default_factory=list)  # the MPNs of MPN that MPN_Confirmed does not have
+    removed: list[str] = field(default_factory=list)  # the confirmed MPNs that MPN does not have
+    write_mpn: str = ""  # the field MPN_Confirmed that a confirmation writes (the text of MPN)
+    # A new general value with the confirmed MPN (decision 29): the user selects a new
+    # part, or confirms that the part stays.
+    select: bool = False
+    unconfirmed: bool = False  # MPN_Confirmed or Value_Confirmed is not written yet
+    # The old convention (decision 30): the fields of the move into the four fields,
+    # {"value", "mpn", "mpn_confirmed", "value_confirmed"}; empty: no move.
+    move: dict = field(default_factory=dict)
     no_part: bool = False  # the symbol needs no part (a NO_PART text)
     extra: list[str] = field(default_factory=list)  # the parts of a conflict of more columns (not alternatives)
     no_mpn: bool = False  # a general value with no selected part (and no NO_PART text)
     conflicts: list[str] = field(default_factory=list)
 
 
+def _words(text: str) -> str:
+    """A general value for a comparison: its words, with one space between them. The
+    case counts: 4m7 (milliohm) is not 4M7 (megaohm), and 10 k is not 10k."""
+    return " ".join(_filled(text).split())
+
+
+def _list_conflicts(name: str, text: str, items: list[str], error: str) -> list[str]:
+    """The conflicts of a list of MPNs: an error of the list, a text that is not an MPN,
+    and a no-part text with an MPN."""
+    conflicts = [f"{name} {_filled(text)!r}: {error}"] if error else []
+    words = [i for i in items if not _is_field_mpn(i)]
+    if words:
+        conflicts.append(f"{name} {', '.join(words)}: not an MPN")
+    marks = [i for i in items if i.lower() in NO_PART]
+    if marks and _mpns(items):  # "needs no part" and an MPN in one list
+        conflicts.append(f"{name} {', '.join(items)}: {', '.join(marks)} tells that the symbol needs no part")
+    return conflicts
+
+
+def _old_list(text: str, symbol: CadSymbol, m_items: list[str], confirmed_items: list[str]) -> ValueParts | None:
+    """A Value text of the old convention (see _old_convention), or None."""
+    if confirmed_items:
+        return None  # the new convention: the parentheses are text of the general value
+    split = split_value(text)
+    if split.error or split.mpns is None or _list_conflicts("Value", text, split.mpns, ""):
+        return None
+    old = split_value(symbol.value_confirmed or "")
+    if m_items and m_items != split.mpns and (old.error or old.mpns != m_items):
+        return None
+    return split
+
+
+def _old_convention(symbol: CadSymbol, m_items: list[str], confirmed_items: list[str]) -> tuple[dict, list[str]]:
+    """The fields of the move of a symbol of the old convention into the four fields
+    (decision 30), and the MPNs of its parentheses; or ({}, []).
+
+    The old convention: a list of MPNs in the parentheses of Value (also "(TBD)", an
+    empty list), no MPN_Confirmed, and a field MPN that is empty, holds the same list,
+    or holds the list of the parentheses of Value_Confirmed (the old field MPN was the
+    confirmed copy of the parentheses: a change that is not confirmed yet). The tool
+    does not guess: a field MPN with other MPNs tells the new convention ("10k (1%)"
+    and MPN RC0603FR-0710KL), and its parentheses are text of the general value. The move
+    keeps the confirmed copies: MPN_Confirmed is the old field MPN, Value_Confirmed the
+    general value of the old Value_Confirmed. A confirmed symbol stays confirmed."""
+    split = _old_list(symbol.value, symbol, m_items, confirmed_items)
+    if split is None:
+        return {}, []
+    old_confirmed = None if symbol.value_confirmed is None else split_value(symbol.value_confirmed).general
+    move = {"value": split.general, "mpn": format_mpns(split.mpns) if split.mpns else "",
+            "mpn_confirmed": _filled(symbol.mpn), "value_confirmed": old_confirmed}
+    return move, _unique(_mpns(split.mpns))
+
+
 def symbol_state(symbol: CadSymbol) -> SymbolState:
     """The parts of one CAD symbol by the model of plans/confirmed-mpns.md
-    (decisions 13 to 16). The model needs no data of datasheet-lens: the check is
+    (decisions 26 to 30). The model needs no data of datasheet-lens: the check is
     the same with and without it.
 
-    Value holds a general value, and the MPNs in one text in parentheses (the
-    fitted part first). The field MPN is the confirmed copy of these MPNs, and
-    Value_Confirmed the Value of the last confirmation:
+    Value is the general value, the field MPN holds the MPNs of the designer (the
+    fitted part first), Value_Confirmed and MPN_Confirmed are the Value and the MPN
+    of the last confirmation:
 
-    - Value is not equal to Value_Confirmed (_value_key): a change. The confirmed
-      MPNs stay the parts until the user confirms the change.
-    - Value with parentheses: the same items as the field MPN are confirmed (with
-      an empty Value_Confirmed: not confirmed). An empty field MPN: not confirmed,
-      the MPNs of Value are the parts. An other list: a change.
-    - A Value with no parentheses and a field MPN with MPNs: the tool completes the
-      fields by the convention (the parts do not change). Not an empty Value.
+    - Value is not Value_Confirmed, or MPN is not MPN_Confirmed: a change. The
+      confirmed MPNs stay the parts until the user confirms the change. A new
+      general value with the confirmed MPN: the user selects a new part, or confirms
+      that the part stays (select).
+    - An empty Value_Confirmed or MPN_Confirmed (and no change): not confirmed, the
+      MPNs of the field MPN are the parts.
+    - The old convention (MPNs in the parentheses of Value, no MPN_Confirmed): the
+      tool proposes the move into the four fields (move).
     - A NO_PART text (-) tells that the symbol needs no part. A general value with
       no part: no part is selected.
-    - More MPN columns or Value columns with other texts, a Value that does not
-      follow the convention, a NO_PART text and an MPN in one list, or the text
-      MIXED_VALUES of KiCad: a conflict, which the user corrects. The MPNs of more
-      MPN columns and of more Value columns are parts too. A symbol with a
-      conflict gets no proposal: a write can hide the conflict.
-    - TBD is an empty field, also in the parentheses.
+    - More MPN columns with other texts, a list error, a NO_PART text and an MPN in
+      one list, or the text MIXED_VALUES of KiCad: a conflict, which the user
+      corrects. The MPNs of more MPN columns are parts too. A symbol with a conflict
+      gets no proposal: a write can hide the conflict.
+    - TBD is an empty field.
     """
     value = _filled(symbol.value)
-    split = split_value(value)
-    f_items, f_error = field_list(symbol.mpn)
-    f_items = [i for i in f_items if i.lower() not in NOT_SELECTED]  # TBD: an empty field
-    mpns = _unique(_mpns(f_items))
-    v_items = split.mpns
-    v_mpns = _unique(_mpns(v_items or []))
-    conflicts = [split.error] if split.error else []
-    if f_error:
-        conflicts.append(f"MPN {_filled(symbol.mpn)!r}: {f_error}")
-    for name, items in (("MPN", f_items), ("Value", v_items or [])):
-        words = [i for i in items if not _is_field_mpn(i)]
-        if words:
-            conflicts.append(f"{name} {', '.join(words)}: not an MPN")
-        marks = [i for i in items if i.lower() in NO_PART]
-        if marks and _mpns(items):  # "needs no part" and an MPN in one list
-            conflicts.append(f"{name} {', '.join(items)}: {', '.join(marks)} tells that the symbol needs no part")
+    m_items, m_error = field_list(symbol.mpn)
+    m_items = [i for i in m_items if i.lower() not in NOT_SELECTED]  # TBD: an empty field
+    mpns = _unique(_mpns(m_items))
+    c_text = symbol.mpn_confirmed or ""
+    c_items, c_error = field_list(c_text)
+    c_items = [i for i in c_items if i.lower() not in NOT_SELECTED]
+    confirmed_mpns = _unique(_mpns(c_items))
+    conflicts = (_list_conflicts("MPN", symbol.mpn, m_items, m_error)
+                 + _list_conflicts("MPN_Confirmed", c_text, c_items, c_error))
     # More MPN columns must hold the same MPNs (no regard to signs): an other MPN,
     # also a longer code of one part, is a conflict and a part too (no MPN of an
     # other column is lost or replaces a confirmed MPN).
@@ -1658,53 +1699,59 @@ def symbol_state(symbol: CadSymbol) -> SymbolState:
         if [_norm(i) for i in other] != [_norm(i) for i in mpn_items(symbol.mpn)]:
             conflicts.append(f"MPN {_filled(symbol.mpn) or '(empty)'}, {name} {_filled(text)}")
         other_mpns += [i for i in other if _is_field_mpn(i)]
-    # More Value columns: bom_parts gives the conflict of different values. The MPNs of
-    # a different one are parts too; none replaces a confirmed MPN.
-    other_values = [m for text in symbol.other_values if _value_key(text) != _value_key(value)
-                    for m in _mpns(split_value(text).mpns or [])]
-    state = SymbolState(parts=list(mpns), value_mpns=v_mpns, mpns=mpns,
+    # A symbol of the old convention (decision 30): the MPNs in the parentheses of Value,
+    # also of more Value columns, are parts until the move (no MPN is lost).
+    move, old_mpns = _old_convention(symbol, m_items, c_items)
+    # A symbol of the old convention has it in each Value column; else the column itself
+    # must show it.
+    for text in symbol.other_values:
+        if _words(text) == _words(value):
+            continue
+        split = split_value(text) if move else _old_list(text, symbol, m_items, c_items)
+        if split is not None and not split.error:
+            other_mpns += _mpns(split.mpns or [])
+    state = SymbolState(parts=list(mpns), mpns=mpns, confirmed=confirmed_mpns,
                         conflicts=conflicts + ([symbol.conflict] if symbol.conflict else []))
-    state.no_part = _no_part(f_items) if f_items else _no_part(v_items or [])
-    has_field = symbol.value_confirmed is not None
-    confirmed = _filled(symbol.value_confirmed or "")
+    state.no_part = _no_part(m_items)
+    has_vc = symbol.value_confirmed is not None
+    has_mc = symbol.mpn_confirmed is not None
+    vc = _filled(symbol.value_confirmed or "")
     if state.conflicts:
         # The user corrects the fields first: a write of a proposal can hide the
-        # conflict. The parts: the confirmed MPNs, else the MPNs of Value (none is lost).
-        state.parts = list(mpns) or list(v_mpns)
-    elif has_field and confirmed and _value_key(value) != _value_key(confirmed):
-        if v_items is not None:
-            state.write_mpn = format_mpns(v_items)
-            state.new = [m for m in v_mpns if m not in mpns]
-            state.removed = [m for m in mpns if m not in v_mpns]
-        elif state.no_part:
-            state.write_mpn = _filled(symbol.mpn)  # the user keeps the NO_PART text
-        else:  # a new general value, or no MPN in Value now: the user selects the part
-            state.select = True
-            state.removed = list(mpns)  # the new part replaces the confirmed MPN
-        now = (f"the confirmed MPN {_filled(symbol.mpn)!r} can be wrong now" if mpns else
-               "the symbol needs no part (MPN " + repr(_filled(symbol.mpn)) + "): this can be wrong now"
-               if state.no_part else "no MPN is confirmed")
-        state.change = f"Value {value!r}, Value_Confirmed {confirmed!r}: {now}"
-    elif v_items is not None:
-        state.write_mpn = format_mpns(v_items)
-        state.new = [m for m in v_mpns if m not in mpns]
-        state.removed = [m for m in mpns if m not in v_mpns]
-        if v_items == f_items:
-            state.unconfirmed = has_field and not confirmed and bool(v_items)  # (TBD): nothing to confirm
-        elif not f_items and not (has_field and confirmed):  # the first confirmation
-            state.parts, state.unconfirmed = list(v_mpns), True
-        else:  # also a field MPN that is empty now
-            state.change = (f"Value {value!r}, confirmed MPN {_filled(symbol.mpn) or '(empty)'!r}: the MPNs in the "
-                            "parentheses are not the confirmed MPNs")
-    elif value and mpns and _mpns(f_items) == f_items:
-        # Only MPNs in the field: no conflict to copy into Value. An empty Value can be
-        # a BOM with no Value column (Altium: Comment): the tool does not know it.
-        state.write_mpn = format_mpns(mpns)  # each MPN one time
-        state.complete = f"{value} ({format_mpns(mpns, value=True)})"
-    state.extra = [m for m in _unique(other_mpns + other_values) if not any(_norm(m) == _norm(p) for p in state.parts)]
+        # conflict. The parts: the confirmed MPNs, else the MPNs of MPN, else the MPNs of
+        # the old convention (none is lost).
+        state.parts = list(confirmed_mpns) or list(mpns) or old_mpns
+    elif move:
+        state.move = move
+        state.parts = list(mpns) or old_mpns  # the old field MPN was the confirmed copy
+    else:
+        value_changed = has_vc and bool(vc) and _words(value) != _words(vc)
+        mpn_changed = has_mc and bool(c_items) and m_items != c_items
+        state.write_mpn = format_mpns(m_items) if m_items else _filled(symbol.mpn)
+        if value_changed or mpn_changed:
+            state.new = [m for m in mpns if m not in confirmed_mpns]
+            state.removed = [m for m in confirmed_mpns if m not in mpns]
+            if c_items:
+                state.parts = list(confirmed_mpns)  # the confirmed MPNs until the confirmation
+            shown = _filled(symbol.mpn) or "(empty)"
+            if mpn_changed and value_changed:
+                state.change = (f"Value {value!r}, Value_Confirmed {vc!r}; MPN {shown!r}, MPN_Confirmed "
+                                f"{_filled(c_text)!r}: the value and the part are not the confirmed ones")
+            elif mpn_changed:
+                state.change = f"MPN {shown!r}, MPN_Confirmed {_filled(c_text)!r}: the MPN is not the confirmed MPN"
+            else:
+                state.select = bool(mpns)  # not for a no-part text: it keeps the text
+                now = (f"the MPN {_filled(symbol.mpn)!r} can be wrong now" if mpns else
+                       "the symbol needs no part (MPN " + repr(_filled(symbol.mpn)) + "): this can be wrong now"
+                       if state.no_part else "no MPN is confirmed")
+                state.change = f"Value {value!r}, Value_Confirmed {vc!r}: {now}"
+        elif m_items and ((has_vc and not vc) or (has_mc and not c_items)):
+            state.unconfirmed = True
+            state.new = [m for m in mpns if m not in confirmed_mpns]
+    state.extra = [m for m in _unique(other_mpns) if not any(_norm(m) == _norm(p) for p in state.parts)]
     state.parts = _unique(state.parts + state.extra)
     state.no_mpn = (not state.parts and not state.no_part and bool(value) and not state.change
-                    and not state.conflicts)
+                    and not state.conflicts and not state.move)
     return state
 
 
@@ -1722,27 +1769,31 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
     - extra: the project parts that the CAD project does not have.
     - conflicts: the symbols whose fields disagree (more MPN columns, columns of
       one role, a field MPN with a text that is not an MPN).
-    - changes: {"reference", "variant", "change", "new", "removed", "mpn",
-      "value_confirmed", "select", "mpn_fields", "mpn_known", "confirmed_fields",
-      "confirmed_known"} for each symbol whose Value is not equal to its
-      confirmed fields; mpn and value_confirmed are the texts that a confirmation
-      writes (into the fields of the variant, when variant is not empty), into the
-      fields of mpn_fields and confirmed_fields (see CadSymbol). select: the user
-      selects a new part first, and writes it into Value.
-    - unconfirmed: {"reference", "variant", "new", "removed", "mpn",
-      "value_confirmed", "mpn_fields", "mpn_known", "confirmed_fields",
-      "confirmed_known"} for each symbol with no field MPN or Value_Confirmed.
-    - complete: {"reference", "variant", "value", "mpn", "value_confirmed",
-      "mpn_fields", "mpn_known", "confirmed_fields", "confirmed_known"} for
-      each symbol with an MPN that is not in Value (plans/confirmed-mpns.md,
-      decision 16): the fields that complete it by the convention. value_confirmed
-      is None when the CAD data has no field Value_Confirmed.
+    - changes: {"reference", "variant", "change", "new", "removed", "select",
+      "mpn_confirmed", "value_confirmed", and the field names (see below)} for each
+      symbol whose Value or MPN is not equal to its confirmed field;
+      mpn_confirmed and value_confirmed are the texts that a confirmation writes
+      (into the fields of the variant, when variant is not empty). select: a new
+      general value with the confirmed MPN: the user selects a new part (and writes
+      it into MPN), or confirms that the part stays (plans/confirmed-mpns.md,
+      decision 29).
+    - unconfirmed: {"reference", "variant", "new", "removed", "mpn_confirmed",
+      "value_confirmed", and the field names} for each symbol with an empty
+      MPN_Confirmed or Value_Confirmed.
+    - move: {"reference", "variant", "value", "mpn", "mpn_confirmed",
+      "value_confirmed", and the field names} for each symbol of the old convention
+      (MPNs in the parentheses of Value, decision 30): the fields of the move into
+      the four fields.
+    The field names: "mpn_fields", "mpn_known", "mpn_confirmed_fields",
+    "mpn_confirmed_known", "confirmed_fields", "confirmed_known" (see CadSymbol).
+    mpn_confirmed and value_confirmed are None when the CAD data has no such field
+    (also for a move: then the move writes the new field).
     - lines: the number of CAD symbols with a part (a reference of more BOM files
       of variants counts one time).
     - no_mpn: the references of the symbols with a general value and no part.
-    - no_value_confirmed: the number of symbols with no field Value_Confirmed in a
-      BOM file of one or more variants (a change of a general value is not found
-      for them).
+    - no_value_confirmed, no_mpn_confirmed: the number of symbols with no field
+      Value_Confirmed (MPN_Confirmed) in a BOM file of one or more variants (a
+      change of a general value, of a part, is not found for them).
     - not_fitted_parts: the CAD parts that no symbol fits (each symbol with the
       part is DNP): their availability is information only (project_availability
       not_fitted).
@@ -1759,7 +1810,7 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
     # first: the line of a variant gives only the messages that the line of the
     # default variant of its reference does not give.
     default: dict[str, set[tuple[str, str]]] = {"conflicts": set(), "changes": set(), "unconfirmed": set(),
-                                                "complete": set(), "no_mpn": set()}
+                                                "move": set(), "no_mpn": set()}
     out_lists: dict[str, list] = {kind: [] for kind in default}
 
     def add(kind: str, symbol: CadSymbol, text: object, item) -> None:
@@ -1773,17 +1824,20 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
         out_lists[kind].append(item)
 
     merged: dict[str, dict] = {}
-    no_confirmed = lines = 0
+    no_confirmed = no_mpn_confirmed = lines = 0
     # The references of the lines with a part, and of the lines with no field
-    # Value_Confirmed: one time for all BOM files of the variants.
+    # Value_Confirmed (MPN_Confirmed): one time for all BOM files of the variants.
     counted: set[str] = set()
     unconfirmed_refs: set[str] = set()
+    no_mpn_confirmed_refs: set[str] = set()
     default_datasheets: dict[str, str] = {}  # reference -> the Datasheet field of the default variant
     symbols = [item if isinstance(item, CadSymbol) else CadSymbol(
         **{k: str(item.get(k) or "") for k in ("reference", "value", "mpn", "datasheet", "variant")},
         value_confirmed=None if item.get("value_confirmed") is None else str(item["value_confirmed"]),
+        mpn_confirmed=None if item.get("mpn_confirmed") is None else str(item["mpn_confirmed"]),
         mpn_fields=_field_names(item.get("mpn_fields"), "MPN"),
         confirmed_fields=_field_names([item.get("confirmed_field")], "Value_Confirmed"),
+        mpn_confirmed_fields=_field_names([item.get("mpn_confirmed_field")], "MPN_Confirmed"),
         lcsc=None if item.get("lcsc") is None else str(item["lcsc"]),
         lcsc_fields=_field_names([item.get("lcsc_field")], LCSC_FIELD),
         fitted=not item.get("dnp"))
@@ -1815,6 +1869,10 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
                 and (not refs or not refs <= unconfirmed_refs)):
             unconfirmed_refs |= refs
             no_confirmed += 1
+        if (symbol.mpn_confirmed is None and not power and _filled(symbol.mpn)
+                and (not refs or not refs <= no_mpn_confirmed_refs)):
+            no_mpn_confirmed_refs |= refs
+            no_mpn_confirmed += 1
         label = (reference or "a symbol") + (f" (variant {symbol.variant})" if symbol.variant else "")
         state = symbol_state(symbol)
         if state.parts and (not refs or not refs <= counted):
@@ -1831,30 +1889,36 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
             dnp_symbols.append((refs, label, state.parts, symbol))
         for c in state.conflicts:
             add("conflicts", symbol, c, f"{label}: {c}")
-        # The fields that a confirmation writes: the MPNs of the parentheses of Value.
-        write_mpn = "<the MPN of the new part>" if state.select else state.write_mpn
+        # The fields that a confirmation writes: the field MPN into MPN_Confirmed, and
+        # Value into Value_Confirmed (only the fields that the CAD data has).
         value = _filled(symbol.value)
         has_field = symbol.value_confirmed is not None
-        write = {"reference": label, "variant": symbol.variant, "mpn": write_mpn,
-                 "value_confirmed": ("<the new Value>" if state.select else value) if has_field else None,
-                 "mpn_fields": symbol.mpn_fields, "mpn_known": symbol.mpn_known,
+        has_mc = symbol.mpn_confirmed is not None
+        names = {"mpn_fields": symbol.mpn_fields, "mpn_known": symbol.mpn_known,
+                 "mpn_confirmed_fields": symbol.mpn_confirmed_fields,
+                 "mpn_confirmed_known": symbol.mpn_confirmed_known,
                  "confirmed_fields": symbol.confirmed_fields, "confirmed_known": symbol.confirmed_known}
+        write = {"reference": label, "variant": symbol.variant,
+                 "mpn_confirmed": state.write_mpn if has_mc else None,
+                 "value_confirmed": value if has_field else None, **names}
         # A variant line that writes into other fields than the default line is no
         # duplicate.
         target = (tuple(symbol.mpn_fields), symbol.mpn_known, has_field, tuple(symbol.confirmed_fields),
-                  symbol.confirmed_known)
+                  symbol.confirmed_known, has_mc, tuple(symbol.mpn_confirmed_fields), symbol.mpn_confirmed_known)
         if power:
             pass  # no part to confirm
         elif state.change:
             add("changes", symbol, (state.change, target), {**write, "change": state.change, "new": state.new,
                                                             "removed": state.removed, "select": state.select})
         elif state.unconfirmed:
-            add("unconfirmed", symbol, (write_mpn, value, target),
-                {**write, "new": state.new if state.mpns else [], "removed": state.removed})
-        elif state.complete:
-            add("complete", symbol, (state.complete, target),
-                {**write, "value": state.complete,
-                 "value_confirmed": state.complete if has_field else None})
+            add("unconfirmed", symbol, (state.write_mpn, value, target),
+                {**write, "new": state.new, "removed": state.removed})
+        elif state.move:
+            move = state.move
+            add("move", symbol, (move["value"], move["mpn"], target),
+                {"reference": label, "variant": symbol.variant, "value": move["value"], "mpn": move["mpn"],
+                 "mpn_confirmed": move["mpn_confirmed"],
+                 "value_confirmed": move["value_confirmed"], **names})
         if state.no_mpn and not power:
             add("no_mpn", symbol, "", label)
         # The JLCPCB number of the fitted part (a variant line with the same number
@@ -1880,12 +1944,11 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
                 entry["alternative_of"] = ""  # a main part of a different symbol
             if reference and reference not in entry["references"]:
                 entry["references"].append(reference)
-            # In a change, the Datasheet field can be of the new part of Value already.
-            # Not with a confirmed MPN that Value does not have: the field can be of Value.
-            if i == 0 and not state.change and not state.removed and not entry["datasheet"] and datasheet:
+            # In a change, the Datasheet field can be of the new part of MPN already.
+            if i == 0 and not state.change and not entry["datasheet"] and datasheet:
                 entry["datasheet"] = datasheet
     out = {"ok": [], "different": [], "missing": [], "extra": [], **out_lists, "no_value_confirmed": no_confirmed,
-           "lines": lines, "not_fitted": [],
+           "no_mpn_confirmed": no_mpn_confirmed, "lines": lines, "not_fitted": [],
            "not_fitted_parts": [e["mpn"] for key, e in merged.items() if key in part_mpns - fitted_mpns]}
     # The symbols whose fitted part (the first part) no variant fits: id(CadSymbol).
     # Their JLCPCB findings are information only (see below).
@@ -2137,11 +2200,11 @@ def _natural(reference: str) -> list:
 
 
 def _option_names(options: dict[str, str] | None) -> dict[str, str]:
-    """The names of the options column, delimiter, quote and confirmed in the
-    interface of the caller, with a general name for a name that the caller does
-    not give."""
+    """The names of the options column, delimiter, quote, confirmed and mpn_confirmed
+    in the interface of the caller, with a general name for a name that the caller
+    does not give."""
     return {key: (options or {}).get(key, f"the {key} option")
-            for key in ("column", "delimiter", "quote", "confirmed")}
+            for key in ("column", "delimiter", "quote", "confirmed", "mpn_confirmed")}
 
 
 def bom_format(delimiter: str, quote: str, options: dict[str, str]) -> tuple[str, str]:
@@ -2390,12 +2453,14 @@ class BomParts:
 
 
 def bom_files(files: list[str], column: str = "", delimiter: str = "", quote: str = "",
-              options: dict[str, str] | None = None, confirmed_column: str = "", base: str = "") -> list[BomParts]:
+              options: dict[str, str] | None = None, confirmed_column: str = "", base: str = "",
+              mpn_confirmed_column: str = "") -> list[BomParts]:
     """The CAD parts of the BOM files of the variants of a product (see bom_parts):
     the first file is the default variant, and the path of each other file, as the
     caller gives it, names its variant. base: the folder of a relative path."""
     return [bom_parts(str(Path(base or ".").expanduser() / Path(f).expanduser()), column, delimiter, quote, options,
-                      variant=f if i else "", confirmed_column=confirmed_column)
+                      variant=f if i else "", confirmed_column=confirmed_column,
+                      mpn_confirmed_column=mpn_confirmed_column)
             for i, f in enumerate(files)]
 
 
@@ -2426,7 +2491,8 @@ def _field_names(names: list | None, default: str) -> list[str]:
 
 
 def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
-              options: dict[str, str] | None = None, variant: str = "", confirmed_column: str = "") -> BomParts:
+              options: dict[str, str] | None = None, variant: str = "", confirmed_column: str = "",
+              mpn_confirmed_column: str = "") -> BomParts:
     """Read the CAD parts of a BOM file (CSV), for example from "kicad-cli sch
     export bom". column: the column of the MPN; empty: each column of
     MPN_COLUMNS that the BOM has: the first filled one is the field MPN of the
@@ -2447,9 +2513,9 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
     bom_format). variant: the name of an other variant of the product, when the
     file is its BOM (see CadSymbol.variant). confirmed_column: the column of the
     field Value_Confirmed, for example an unused custom column of the BOM of an
-    other CAD tool; empty: Value_Confirmed. options: the names of the options
-    column, delimiter, quote and confirmed in the interface of the caller, for the
-    errors."""
+    other CAD tool; empty: Value_Confirmed. mpn_confirmed_column: the same for the
+    field MPN_Confirmed. options: the names of the options column, delimiter, quote,
+    confirmed and mpn_confirmed in the interface of the caller, for the errors."""
     options = _option_names(options)
     quote_given = bool(quote)
     delimiter, quote = bom_format(delimiter, quote, options)
@@ -2460,7 +2526,9 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
     labels = [f"{n} (column {i + 1})" if n and names.count(n) > 1 else n for i, n in enumerate(names)]
     shown = [label for label in labels if label]
     roles = {"Value": ["Value"], "DNP": DNP_COLUMNS, "Reference": REFERENCE_COLUMNS, "Datasheet": DATASHEET_COLUMNS,
-             "Value_Confirmed": [confirmed_column or "Value_Confirmed"], "LCSC": LCSC_COLUMNS}
+             "Value_Confirmed": [confirmed_column or "Value_Confirmed"],
+             "MPN_Confirmed": [mpn_confirmed_column or "MPN_Confirmed"],
+             "LCSC": LCSC_COLUMNS}
     # Each column of each name of a role, for example DNP and "Do not populate".
     keys = [_column_key(n) for n in names]
     found = {role: list(dict.fromkeys(i for w in wanted for i in _bom_columns(keys, w)))
@@ -2468,6 +2536,9 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
     value_columns = found["Value"]
     if confirmed_column and not found["Value_Confirmed"]:
         raise LensError(f"{path}: no column {confirmed_column!r} for {options['confirmed']} ({', '.join(shown)})")
+    if mpn_confirmed_column and not found["MPN_Confirmed"]:
+        raise LensError(f"{path}: no column {mpn_confirmed_column!r} for {options['mpn_confirmed']} "
+                        f"({', '.join(shown)})")
     if column:
         matched = _bom_columns(keys, column)
         if not matched:
@@ -2479,6 +2550,18 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
     else:
         field_columns = [i for w in MPN_COLUMNS if _column_key(w) != "value"
                          for i in _bom_columns(keys, w) if i not in value_columns]
+    # The column of MPN_Confirmed is not a column of an other role: the field MPN would
+    # be equal to it in each line, and each part would be confirmed.
+    mpn_clash = next((role for role, indexes in (
+        ("Value", value_columns), ("MPN", field_columns), ("Reference", found["Reference"]),
+        ("Datasheet", found["Datasheet"]), ("DNP", found["DNP"]), ("Value_Confirmed", found["Value_Confirmed"]))
+        if set(found["MPN_Confirmed"]) & set(indexes)), "")
+    if mpn_clash and mpn_confirmed_column:
+        raise LensError(f"{path}: the column {mpn_confirmed_column!r} of {options['mpn_confirmed']} is the column "
+                        f"of {mpn_clash}: give the column of the field MPN_Confirmed")
+    if mpn_clash:  # only the column option can name the column MPN_Confirmed
+        raise LensError(f"{path}: the column {column!r} of {options['column']} is the column of the field "
+                        "MPN_Confirmed: give the column of the MPN")
     # The column of Value_Confirmed is not a column of an other role: Value would be
     # equal to it in each line, and each symbol would be confirmed.
     clash = next((role for role, indexes in (
@@ -2498,12 +2581,13 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
                         f"({', '.join(shown)}){hint}")
 
     # How the values of more columns of one role compare: a value by its words
-    # (_value_key: 100nF and 100 nF are different; case counts: 4m7, 4M7), the references as a set (R1 R2, "R1, R2"),
-    # a datasheet as text.
-    compare = {"Value": _value_key,
+    # (_words: 100nF and 100 nF are different; case counts: 4m7, 4M7), the references as a set (R1 R2, "R1, R2"),
+    # a datasheet as text, a list of MPNs by its items.
+    compare = {"Value": _words,
                "Reference": _references,
                "Datasheet": lambda v: v,
-               "Value_Confirmed": _value_key,
+               "Value_Confirmed": _words,
+               "MPN_Confirmed": lambda v: tuple(field_items(v)),
                "LCSC": lambda v: v.strip().upper()}
 
     def role(row: list[str], name: str) -> tuple[str, str]:
@@ -2528,6 +2612,8 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
         datasheet, datasheet_conflict = role(row, "Datasheet")
         confirmed, confirmed_conflict = role(row, "Value_Confirmed")
         confirmed = confirmed if found["Value_Confirmed"] else None
+        mpn_confirmed, mpn_confirmed_conflict = role(row, "MPN_Confirmed")
+        mpn_confirmed = mpn_confirmed if found["MPN_Confirmed"] else None
         lcsc, lcsc_conflict = role(row, "LCSC")
         # An empty DNP value is a state too (fitted).
         dnp_conflict = (", ".join(f"{labels[i]} {_filled(row[i]) or '(empty)'}" for i in found["DNP"])
@@ -2546,28 +2632,36 @@ def bom_parts(path: str, column: str = "", delimiter: str = "", quote: str = "",
             filled_mpns and marks) else ""
         symbol = CadSymbol(
             reference=reference, value=values[0][1] if values else "", mpn=field_mpn,
-            value_confirmed=confirmed, datasheet=datasheet, other_mpns=filled_mpns[1:],
+            value_confirmed=confirmed, mpn_confirmed=mpn_confirmed, datasheet=datasheet,
+            other_mpns=filled_mpns[1:],
             other_values=[text for _, text in values[1:]], variant=variant,
             lcsc=lcsc if found["LCSC"] else None,
             lcsc_fields=list(dict.fromkeys(names[i] for i in found["LCSC"])) or [LCSC_FIELD],
             fitted=not states or any(states),
             conflict="; ".join(c for c in (value_conflict, mark_conflict, dnp_conflict, reference_conflict,
-                                           datasheet_conflict, confirmed_conflict, lcsc_conflict) if c))
+                                           datasheet_conflict, confirmed_conflict, mpn_confirmed_conflict,
+                                           lcsc_conflict) if c))
         group = len(_references(reference)) > 1
         symbol.mpn_fields, symbol.mpn_known = _write_fields(names, filled or marked, field_columns, "MPN", group)
         symbol.confirmed_fields, symbol.confirmed_known = _write_fields(
             names, [i for i in found["Value_Confirmed"] if _filled(row[i])], found["Value_Confirmed"],
             "Value_Confirmed", group)
+        symbol.mpn_confirmed_fields, symbol.mpn_confirmed_known = _write_fields(
+            names, [i for i in found["MPN_Confirmed"] if _filled(row[i])], found["MPN_Confirmed"],
+            "MPN_Confirmed", group)
         if symbol.value or symbol.mpn or symbol.conflict:
             cad.append(symbol)
     references = ", ".join(labels[i] for i in found["Reference"])
     confirmed_columns = ", ".join(labels[i] for i in found["Value_Confirmed"])
+    mpn_confirmed_columns = ", ".join(labels[i] for i in found["MPN_Confirmed"])
     lcsc_columns = ", ".join(labels[i] for i in found["LCSC"])
     mpn_columns = ", ".join(dict.fromkeys(labels[i] for i in field_columns)) or "(no column)"
     values = ", ".join(dict.fromkeys(labels[i] for i in value_columns))
     summary = (f"{path}: MPN from {mpn_columns}" + (f"; Value from {values}" if values else "")
                + (f"; references from {references}" if references else "")
                + (f"; Value_Confirmed from {confirmed_columns}" if confirmed_columns else "; no column Value_Confirmed")
+               + (f"; MPN_Confirmed from {mpn_confirmed_columns}" if mpn_confirmed_columns
+                  else "; no column MPN_Confirmed")
                + (f"; LCSC from {lcsc_columns}" if lcsc_columns else "")
                + ("; read as cp1252" if encoding == "cp1252" else ""))
     return BomParts(cad, summary)
@@ -2604,45 +2698,64 @@ def format_check(result: dict, cli: bool = False) -> list[str]:
         return [f"{what} = '{text}' (the BOM has the columns {', '.join(names)}: ask the user which one the "
                 "symbol uses)"]
 
-    def fields(item: dict, value: bool = False) -> str:
-        """The fields to write; Value_Confirmed only when the CAD data has the field."""
-        texts = (([f"Value = '{item['value']}'"] if value else [])
-                 + assign(item["mpn_fields"], item["mpn_known"], item["mpn"], "the MPN field")
-                 + (assign(item["confirmed_fields"], item["confirmed_known"], item["value_confirmed"],
-                           "the field Value_Confirmed") if item["value_confirmed"] is not None else []))
+    def fields(item: dict, move: bool = False) -> str:
+        """The fields to write; MPN_Confirmed and Value_Confirmed only when the CAD data
+        has the field (a move writes the new fields too)."""
+        texts = (([f"Value = '{item['value']}'"]
+                  + assign(item["mpn_fields"], item["mpn_known"], item["mpn"], "the MPN field")) if move else [])
+        if item["mpn_confirmed"] is not None:
+            texts += assign(item["mpn_confirmed_fields"], item["mpn_confirmed_known"], item["mpn_confirmed"],
+                            "the field MPN_Confirmed")
+        if item["value_confirmed"] is not None:
+            texts += assign(item["confirmed_fields"], item["confirmed_known"], item["value_confirmed"],
+                            "the field Value_Confirmed")
         return (", ".join(texts[:-1]) + " and " + texts[-1]) if len(texts) > 1 else texts[0]
 
+    # The datasheet of a new MPN: the agent finds it at once (it changes no project and
+    # no schematic), before it asks the user (plans/confirmed-mpns.md, decision 28).
+    find_doc = ("datasheet-lens docs, datasheet-lens links, datasheet-lens add" if cli
+                else "list_documents, search_distributors, part_links, then add_document")
     for c in result.get("changes", []):
-        new = f" New: {', '.join(c['new'])}." if c["new"] else ""
-        removed = f" Not in Value now: {', '.join(c['removed'])}." if c["removed"] else ""
-        first = (f" First select the new part with the user ({codes}), and write its MPN into Value in "
-                 "parentheses ('100nF 10V (GRM155R71A104KA01D)')." if c.get("select") else "")
+        new = (f" New: {', '.join(c['new'])}. Find and add the datasheet of each new MPN now ({find_doc}): "
+               "this changes no project." if c["new"] else "")
+        removed = f" Not in MPN now: {', '.join(c['removed'])}." if c["removed"] else ""
+        if c.get("select"):
+            lines.append(
+                f"change in the CAD project: {c['reference']}: {c['change']}.{removed} Ask the user: a new part "
+                f"for the new value, or the same part. A new part: select it with the user ({codes}), write its "
+                f"MPN {target(c)} (the field MPN), then run {again} again. The same part: Write {fields(c)} "
+                f"{target(c)}. Else the Value must change back.")
+            continue
         lines.append(f"change in the CAD project: {c['reference']}: {c['change']}.{new}{removed} Tell the user. "
-                     f"When the user confirms the change:{first} Write {fields(c)} {target(c)}, then run {again} "
+                     f"When the user confirms the change: Write {fields(c)} {target(c)}, then run {again} "
                      "again: it gives the next steps for the new parts, and the parts that no symbol uses are extra. "
-                     "Else the Value must change back.")
+                     "Else the Value and the MPN must change back.")
     for u in result.get("unconfirmed", []):
-        new = f" Not in MPN: {', '.join(u['new'])}." if u.get("new") else ""
-        removed = f" Not in Value: {', '.join(u['removed'])}." if u.get("removed") else ""
-        lines.append(f"not confirmed: {u['reference']}:{new}{removed} When the user agrees: Write {fields(u)} "
-                     f"{target(u)}.")
-    for c in result.get("complete", []):
-        lines.append(f"complete the fields: {c['reference']}: the MPN is not in Value (the convention: the MPNs in "
-                     f"parentheses in Value). The parts do not change. Write {fields(c, value=True)} {target(c)}.")
-    if result.get("no_value_confirmed"):
-        option = "--confirmed-column" if cli else "bom_confirmed_column"
-        lines.append(f"no field Value_Confirmed: {result['no_value_confirmed']} CAD parts. A change of a general "
-                     "value (100nF to 220nF) is not found. Tell the user: add the hidden field Value_Confirmed to the "
-                     f"symbols and to the BOM, or use an unused custom column of the BOM and give its name with "
-                     f"{option}." + ("" if cli else " With parts: give value_confirmed of each part."))
+        new = f" Not confirmed: {', '.join(u['new'])}." if u.get("new") else ""
+        lines.append(f"not confirmed: {u['reference']}:{new} When the user agrees: Write {fields(u)} {target(u)}.")
+    for m in result.get("move", []):
+        lines.append(f"the old convention: {m['reference']}: the MPNs are in the parentheses of Value. Move them into "
+                     "the field MPN (Value holds the general value, MPN the MPNs, the hidden fields Value_Confirmed "
+                     "and MPN_Confirmed the confirmed copies). A confirmed symbol stays confirmed, and the parts do not "
+                     f"change. Tell the user (a text in parentheses that is a part of the general value stays), and "
+                     f"when the user agrees: Write {fields(m, move=True)} {target(m)}.")
+    for count, name, what in (("no_value_confirmed", "Value_Confirmed", "of a general value (100nF to 220nF)"),
+                              ("no_mpn_confirmed", "MPN_Confirmed", "of a part (an other MPN)")):
+        if not result.get(count):
+            continue
+        flag = {"Value_Confirmed": ("--confirmed-column", "bom_confirmed_column"),
+                "MPN_Confirmed": ("--mpn-confirmed-column", "bom_mpn_confirmed_column")}[name]
+        option = f" or use an unused custom column of the BOM and give its name with {flag[0] if cli else flag[1]},"
+        lines.append(f"no field {name}: {result[count]} CAD parts. A change {what} is not found. Tell the user: add "
+                     f"the hidden field {name} to the symbols and to the BOM,{option} then run {again} again."
+                     + ("" if cli else f" With parts: give {name.lower()} of each part."))
     if result.get("no_mpn"):
         find = ("datasheet-lens pick, datasheet-lens find" if cli
                 else "find_parts by its parameters, search_distributors by its MPN")
         lines.append(f"no part selected (a general value and no MPN): {', '.join(result['no_mpn'])}. A part that "
-                     f"needs a datasheet: select it with the user ({find}), then write its MPN into Value in "
-                     "parentheses ('10k (RC0603FR-0710KL)'), into the MPN field of the symbol, and the new Value into "
-                     "its field Value_Confirmed. A "
-                     "symbol that needs no part (a test point, a generic resistor): MPN = '-'.")
+                     f"needs a datasheet: select it with the user ({find}), then write its MPN into the field MPN "
+                     f"of the symbol, and run {again} again. A symbol that needs no part (a test point, a generic "
+                     "resistor): MPN = '-'.")
     if "lines" in result:
         lines.append(f"CAD lines with a part: {result['lines']}")
     if result.get("not_fitted"):
@@ -2693,7 +2806,7 @@ def format_check(result: dict, cli: bool = False) -> list[str]:
     # A JLCPCB finding of a symbol that is not fitted is information only.
     blocking = [f for f in result.get("lcsc", []) if not f.get("dnp")]
     if result["ok"] and not blocking and not any(result.get(kind) for kind in (
-            "conflicts", "changes", "unconfirmed", "complete", "no_mpn", "different", "missing", "extra")):
+            "conflicts", "changes", "unconfirmed", "move", "no_mpn", "different", "missing", "extra")):
         dnp = result.get("not_fitted_parts", [])
         if dnp:  # the parts that the assembly does not place: their availability is information only
             stock = ("datasheet-lens stock --dnp " + " ".join(f'"{m}"' for m in dnp) if cli

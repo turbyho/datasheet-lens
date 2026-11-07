@@ -665,7 +665,8 @@ def test_check_dnp_and_next_steps(store_home, tmp_path):
                  {"mpn": "ZQ3003", "reference": "R11", "variant": "b"}]
         assert prj.check_parts(project, store, lines)["not_fitted"] == ["R2, R10 (ZQ3003)"]
         # A symbol that is not fitted gets the check of its fields: the user can fit it.
-        lines = [{"value": "op amp (YQ2002)", "mpn": "", "value_confirmed": "", "reference": "U2", "dnp": True}]
+        lines = [{"value": "op amp", "mpn": "YQ2002", "value_confirmed": "", "mpn_confirmed": "", "reference": "U2",
+                  "dnp": True}]
         assert "not confirmed: U2:" in "\n".join(prj.format_check(prj.check_parts(project, store, lines)))
         # A JLCPCB number of a symbol that no variant fits: information, no step (the
         # assembly does not place it). A fitted symbol with no number: a step.
@@ -712,10 +713,10 @@ def test_check_reads_bom_files_of_other_cad_tools(store_home, text_pdf, tmp_path
                     .encode("cp1252"))
     assert main(["check", str(bom), "-p", str(project.root)]) == 0
     out = capsys.readouterr().out
-    assert ("MPN from Manufacturer Part Number 1; references from Designator; no column Value_Confirmed; read as "
-            "cp1252") in out
-    # No Value column: the tool does not know the Value, thus it does not complete it.
-    assert "not confirmed" not in out and "complete the fields" not in out
+    assert ("MPN from Manufacturer Part Number 1; references from Designator; no column Value_Confirmed; no column "
+            "MPN_Confirmed; read as cp1252") in out
+    # No confirmed columns: nothing to confirm.
+    assert "not confirmed" not in out and "the old convention" not in out
     assert "the same in the CAD project and in the project file: 1" in out
     bom = tmp_path / "eagle.csv"
     # Each library puts the MPN into a different attribute: the first filled one of the row.
@@ -724,13 +725,11 @@ def test_check_reads_bom_files_of_other_cad_tools(store_home, text_pdf, tmp_path
     assert main(["check", str(bom), "-p", str(project.root)]) == 0
     out = capsys.readouterr().out
     assert ("MPN from MANUFACTURER_PART_NUMBER, MP; Value from Value; references from Parts; no column "
-            "Value_Confirmed") in out
+            "Value_Confirmed; no column MPN_Confirmed") in out
     assert "CAD lines with a part: 2" in out and "missing: LM358DR/NOPB (U2)" in out
-    # The MPN is only in the field MPN: the tool completes Value by the convention. The write
-    # goes into the attribute of the MPN of the line (MP).
-    assert ("complete the fields: U1: the MPN is not in Value (the convention: the MPNs in parentheses in Value). "
-            "The parts do not change. Write Value = 'OPA2134 (OPA2134PA)' and MP = 'OPA2134PA' into the "
-            "symbol.") in out
+    # The MPN is in the field MPN (the convention of the four fields): no completion. With
+    # no confirmed columns, a change is not found: the tool tells it.
+    assert "no field MPN_Confirmed: 2 CAD parts. A change of a part (an other MPN) is not found" in out
     assert "no part selected (a general value and no MPN): R1 R2, D3." in out
 
 
@@ -764,18 +763,19 @@ def test_review_cases_of_2026_11_05(store_home, tmp_path):
     """TBD is "not selected"; a comma between digits in a list of MPNs; an MPN with no
     digit; two equal MPNs; a change that removes the MPNs; the inherited Datasheet
     field of a variant; two spellings of one part; a variant line with no
-    reference."""
+    reference. (The cases of the review, in the model of the four fields.)"""
     from datasheet_lens.project import CadSymbol, symbol_state
 
-    def state(value, mpn="", confirmed=None):
-        return symbol_state(CadSymbol(reference="Q1", value=value, mpn=mpn, value_confirmed=confirmed))
+    def state(value, mpn="", confirmed=None, mpn_confirmed=None):
+        return symbol_state(CadSymbol(reference="Q1", value=value, mpn=mpn, value_confirmed=confirmed,
+                                      mpn_confirmed=mpn_confirmed))
 
     # TBD: an empty field MPN (no part selected yet); N/A: the symbol needs no part.
-    s = state("100nF", "TBD", "100nF")
+    s = state("100nF", "TBD", "100nF", "TBD")
     assert (s.no_part, s.no_mpn, s.parts, s.conflicts) == (False, True, [], [])
-    s = state("100nF", "N/A", "100nF")
+    s = state("100nF", "N/A", "100nF", "N/A")
     assert (s.no_part, s.no_mpn, s.conflicts) == (True, False, [])
-    s = state("2N7002 (TBD, 2N7002LT1G)", "TBD, 2N7002LT1G", "2N7002 (TBD, 2N7002LT1G)")
+    s = state("2N7002", "TBD, 2N7002LT1G", "2N7002", "TBD, 2N7002LT1G")
     assert (s.parts, s.conflicts) == (["2N7002LT1G"], [])  # TBD does not tell "no part"
     bom = tmp_path / "tbd.csv"
     bom.write_text("Reference,Value,MPN,MP\nC1,100nF,TBD,\nTP1,TestPoint,N/A,\nQ1,2N7002,TBD,2N7002LT1G\n",
@@ -784,48 +784,41 @@ def test_review_cases_of_2026_11_05(store_home, tmp_path):
         ("", ""), ("N/A", ""), ("2N7002LT1G", "")]
     # A list of MPNs has no decimal comma; an MPN can have no digit; the text of KiCad
     # for different values is not an MPN.
-    assert state("Q (2N7002,2N7000)", "2N7002,2N7000").parts == ["2N7002", "2N7000"]
-    assert state("J (PJ-SMD)", "PJ-SMD").parts == ["PJ-SMD"]
+    assert state("Q", "2N7002,2N7000").parts == ["2N7002", "2N7000"]
+    assert state("J", "PJ-SMD").parts == ["PJ-SMD"]
     assert state("10k", "-- mixed values --").conflicts == ["MPN -- mixed values --: not an MPN"]
-    # TBD is an empty field, also in the parentheses: (TBD) has nothing to confirm.
-    s = state("10k (A)", "TBD", "")
-    assert (s.parts, s.unconfirmed, s.change, s.write_mpn) == (["A"], True, "", "A")
-    s = state("10k (TBD)", "", "")
-    assert (s.unconfirmed, s.no_mpn, s.write_mpn) == (False, True, "")
+    # TBD is an empty field: it has nothing to confirm.
+    s = state("10k", "TBD", "", "")
+    assert (s.unconfirmed, s.no_mpn) == (False, True)
     # A field MPN that is empty now, after a confirmation: a change, not a first one.
-    s = state("10k (A)", "", "10k (A)")
-    assert (s.parts, s.new, s.unconfirmed) == ([], ["A"], False)
-    assert s.change == "Value '10k (A)', confirmed MPN '(empty)': the MPNs in the parentheses are not the confirmed MPNs"
+    s = state("10k", "", "10k", "A")
+    assert (s.parts, s.removed, s.unconfirmed) == (["A"], ["A"], False)
+    assert s.change == "MPN '(empty)', MPN_Confirmed 'A': the MPN is not the confirmed MPN"
     # A symbol with a conflict gets no proposal, and no "no part selected".
-    s = state("10k", "-- mixed values --")
-    assert (s.no_mpn, s.complete) == (False, "")
-    s = state("10k (A)", "-- mixed values --", "")
-    assert (s.parts, s.change, s.unconfirmed, s.write_mpn) == (["A"], "", False, "")
+    s = state("10k", "-- mixed values --", "", "")
+    assert (s.no_mpn, s.unconfirmed, s.change) == (False, False, "")
     s = symbol_state(CadSymbol(value="10k", mpn="A", other_mpns=[("MP", "B")]))
-    assert (s.parts, s.complete) == (["A", "B"], "")
-    # A new general value: the confirmed MPN goes, also when the old Value had no MPN.
-    assert state("220nF", "GRM1", "100nF").removed == ["GRM1"]
-    # The completion writes each MPN one time.
-    s = state("10k", "A, A")
-    assert (s.complete, s.write_mpn) == ("10k (A)", "A")
+    assert (s.parts, s.unconfirmed) == (["A", "B"], False)
+    # A new general value with the confirmed MPN: a new part, or the same part.
+    s = state("220nF", "GRM1", "100nF", "GRM1")
+    assert (s.select, s.removed, s.parts) == (True, [], ["GRM1"])
+    # The confirmation writes the text of MPN: MPN_Confirmed is a copy.
+    assert state("10k", "A, A", "", "").write_mpn == "A, A"
     # Two equal MPNs are one part, and no change.
-    s = state("2N7002 (2N7002LT1G, 2N7002LT1G)", "2N7002LT1G, 2N7002LT1G", "2N7002 (2N7002LT1G, 2N7002LT1G)")
+    s = state("2N7002", "2N7002LT1G, 2N7002LT1G", "2N7002", "2N7002LT1G, 2N7002LT1G")
     assert (s.parts, s.change, s.conflicts) == (["2N7002LT1G"], "", [])
-    # A change that removes the MPNs from Value names them.
-    s = state("100nF", "2N7002LT1G", "2N7002 (2N7002LT1G)")
-    assert (s.select, s.removed) == (True, ["2N7002LT1G"])
+    # A change that removes the MPNs names them.
     with Store() as store:
         project = prj.init_project(tmp_path / "board")
         result = prj.check_parts(project, store, [
-            CadSymbol(reference="Q1", value="100nF", mpn="2N7002LT1G", value_confirmed="2N7002 (2N7002LT1G)")])
-    assert "Not in Value now: 2N7002LT1G." in "\n".join(prj.format_check(result))
+            CadSymbol(reference="Q1", value="100nF", mpn="", value_confirmed="100nF", mpn_confirmed="2N7002LT1G")])
+    assert "Not in MPN now: 2N7002LT1G." in "\n".join(prj.format_check(result))
     # A variant line with the Datasheet field of the default variant inherits it
     # (KiCad 10): it is not the datasheet of the other part of the variant.
     url = "https://ti.com/tps62130.pdf"
 
     def fitted(ref, mpn, **kw):
-        value = f"{mpn[:8]} ({mpn})"
-        return CadSymbol(reference=ref, value=value, mpn=mpn, value_confirmed=value, **kw)
+        return CadSymbol(reference=ref, value=mpn[:8], mpn=mpn, value_confirmed=mpn[:8], mpn_confirmed=mpn, **kw)
 
     with Store() as store:
         result = prj.check_parts(project, store, [
@@ -846,7 +839,7 @@ def test_review_cases_of_2026_11_05(store_home, tmp_path):
 def test_split_value():
     """The convention of the parentheses: the MPNs are the text in parentheses, the
     other text is the general value."""
-    from datasheet_lens.project import ValueParts, _value_key, field_items, field_list, format_mpns, split_value
+    from datasheet_lens.project import ValueParts, _words, field_items, field_list, format_mpns, split_value
 
     assert split_value("2N7002 (2N7002LT1G, BSS138LT1G)") == ValueParts("2N7002", ["2N7002LT1G", "BSS138LT1G"])
     assert split_value("100nF  10V (GRM155R71A104KA01D) X7R") == ValueParts("100nF 10V X7R", ["GRM155R71A104KA01D"])
@@ -873,9 +866,11 @@ def test_split_value():
     assert split_value('Q (" A ", " ", B)').mpns == ["A", "B"]
     assert field_list("A,100), B") == (["A", "100)", "B"], "")  # in the field MPN, ")" is text
     # The comparison: the words of the general value and the list of the MPNs.
-    assert _value_key("2N7002 (A; B)") == _value_key('2N7002  ("A",B)')  # the quotes that are not necessary
-    assert _value_key("10 k") != _value_key("10k") and _value_key("4m7") != _value_key("4M7")
-    assert _value_key("10k") != _value_key("10k (A)") != _value_key("10k (B)")
+    # A general value compares by its words (decision 26): the spaces between words do
+    # not count, the words and their case count.
+    assert _words(" 100nF   10V ") == _words("100nF 10V") == "100nF 10V"
+    assert _words("10 k") != _words("10k") and _words("4m7") != _words("4M7")
+    assert _words("10k (1%)") != _words("10k(1%)")
     assert field_items('2N7002,2N7000; "BC847B,215"') == ["2N7002", "2N7000", "BC847B,215"]
     assert field_items("A|B or C") == ["A|B or C"]  # the separators are , and ;
     assert field_items("ABC(1)") == ["ABC(1)"]  # a parenthesis needs no quotes in the field MPN
@@ -885,95 +880,105 @@ def test_split_value():
     # Quotes only where they are necessary.
     assert format_mpns(["BC847B,215"]) == "BC847B,215" and format_mpns(["A", "B"]) == "A, B"
     assert format_mpns(["BC847B,215", "BSS138"]) == '"BC847B,215", BSS138'
-    assert format_mpns(["A(1)", 'B"C']) == 'A(1), B"C' and format_mpns(["A(1)"], value=True) == '"A(1)"'
+    assert format_mpns(["A(1)", 'B"C']) == 'A(1), B"C'
     assert format_mpns(['"A', "B;C"]) == '"""A", "B;C"'
     assert format_mpns(["~"]) == '"~"' and field_list('"~"') == (["~"], "")  # the text gives the items again
 
 
 def test_symbol_state():
-    """The model of plans/confirmed-mpns.md (decisions 13 to 16). The confirmation of
-    the user is the truth: until the user confirms a change, the confirmed field MPN
-    gives the parts."""
+    """The model of plans/confirmed-mpns.md (decisions 26 to 30): Value is the general
+    value, MPN the MPNs of the designer, Value_Confirmed and MPN_Confirmed the copies of
+    the last confirmation. The confirmation of the user is the truth: until the user
+    confirms a change, the confirmed MPNs give the parts."""
     from datasheet_lens.project import CadSymbol, symbol_state
 
-    def state(value, mpn="", confirmed=None, **kw):
-        return symbol_state(CadSymbol(reference="Q1", value=value, mpn=mpn, value_confirmed=confirmed, **kw))
+    def state(value, mpn="", confirmed=None, mpn_confirmed=None, **kw):
+        return symbol_state(CadSymbol(reference="Q1", value=value, mpn=mpn, value_confirmed=confirmed,
+                                      mpn_confirmed=mpn_confirmed, **kw))
 
-    both = "2N7002 (2N7002LT1G, BSS138LT1G)"
-    # Confirmed: the same MPNs, and Value equal to Value_Confirmed (spaces and the
-    # separators of the list do not count).
-    s = state(both, "2N7002LT1G; BSS138LT1G", "2N7002  (2N7002LT1G; BSS138LT1G)")
-    assert (s.parts, s.change, s.unconfirmed, s.complete) == (["2N7002LT1G", "BSS138LT1G"], "", False, "")
-    # Not confirmed: an empty Value_Confirmed, or an empty field MPN.
-    assert state(both, "2N7002LT1G, BSS138LT1G", "").unconfirmed
-    s = state(both, "", None)
-    assert (s.parts, s.unconfirmed, s.write_mpn) == (["2N7002LT1G", "BSS138LT1G"], True, "2N7002LT1G, BSS138LT1G")
-    # An other list in the field MPN: a change; the confirmed MPN stays the part.
-    s = state(both, "2N7002LT1G")
-    assert (s.parts, s.new, s.removed, s.write_mpn) == (["2N7002LT1G"], ["BSS138LT1G"], [], "2N7002LT1G, BSS138LT1G")
-    assert s.change.endswith("the MPNs in the parentheses are not the confirmed MPNs")
-    assert state(both, "BSS138LT1G, 2N7002LT1G").change  # an other order
-    assert state("Q (bss138lt1g)", "BSS138LT1G").change  # the field is a copy: case counts
-    # Value is not equal to Value_Confirmed: a change.
-    s = state("220nF (GRM2)", "GRM1", "100nF (GRM1)")
-    assert (s.parts, s.new, s.removed, s.write_mpn, s.select) == (["GRM1"], ["GRM2"], ["GRM1"], "GRM2", False)
-    s = state("220nF", "GRM1", "100nF (GRM1)")  # a new general value: the user selects the part
-    assert (s.parts, s.select, s.removed) == (["GRM1"], True, ["GRM1"])
-    assert state("220nF", "GRM1", "100nF").select  # a confirmed Value with no MPN in it
-    assert state("10 k (A)", "A", "10k (A)").change  # the words count
-    assert state("220nF", "", "100nF").change.endswith(": no MPN is confirmed")
-    s = state("TestPoint2", "-", "TestPoint")
+    both = "2N7002LT1G, BSS138LT1G"
+    # Confirmed: the same general value (spaces do not count) and the same list (the
+    # separators and the quotes that are not necessary do not count).
+    s = state("2N7002", both, "2N7002 ", "2N7002LT1G; BSS138LT1G")
+    assert (s.parts, s.change, s.unconfirmed, s.move) == (["2N7002LT1G", "BSS138LT1G"], "", False, {})
+    assert not state("Q", '"A", B', "Q", "A, B").change
+    # Not confirmed: an empty MPN_Confirmed or Value_Confirmed.
+    s = state("2N7002", both, "", "")
+    assert (s.parts, s.unconfirmed, s.write_mpn, s.new) == (
+        ["2N7002LT1G", "BSS138LT1G"], True, both, ["2N7002LT1G", "BSS138LT1G"])
+    assert state("2N7002", both, "2N7002", "").unconfirmed
+    assert state("2N7002", both, "", both).unconfirmed
+    assert state("2N7002", both, None, "").unconfirmed  # no column Value_Confirmed
+    assert not state("2N7002", both).unconfirmed  # no confirmed columns: nothing to write
+    # A change of the part: the confirmed MPNs stay the parts until the confirmation.
+    s = state("2N7002", "2N7002LT1G", "2N7002", both)
+    assert (s.parts, s.new, s.removed, s.write_mpn) == (["2N7002LT1G", "BSS138LT1G"], [], ["BSS138LT1G"],
+                                                         "2N7002LT1G")
+    assert s.change == ("MPN '2N7002LT1G', MPN_Confirmed '2N7002LT1G, BSS138LT1G': the MPN is not the "
+                        "confirmed MPN")
+    assert state("2N7002", "BSS138LT1G, 2N7002LT1G", "2N7002", both).change  # an other order
+    assert state("Q", "bss138lt1g", "Q", "BSS138LT1G").change  # case counts
+    s = state("2N7002", "", "2N7002", both)  # the field MPN is empty after a confirmation
+    assert (s.parts, s.removed) == (["2N7002LT1G", "BSS138LT1G"], ["2N7002LT1G", "BSS138LT1G"]) and s.change
+    # A change of the value and of the part.
+    s = state("220nF", "GRM2", "100nF", "GRM1")
+    assert (s.parts, s.new, s.removed, s.select) == (["GRM1"], ["GRM2"], ["GRM1"], False)
+    assert "the value and the part are not the confirmed ones" in s.change
+    # A new general value with the confirmed MPN: a new part, or the same part.
+    s = state("220nF", "GRM1", "100nF", "GRM1")
+    assert (s.parts, s.select, s.write_mpn) == (["GRM1"], True, "GRM1")
+    assert s.change == "Value '220nF', Value_Confirmed '100nF': the MPN 'GRM1' can be wrong now"
+    assert state("10 k", "A", "10k", "A").change  # the words count
+    assert state("220nF", "", "100nF", "").change.endswith(": no MPN is confirmed")
+    s = state("TestPoint2", "-", "TestPoint", "-")
     assert "the symbol needs no part (MPN '-'): this can be wrong now" in s.change and s.write_mpn == "-"
-    # No parentheses and an MPN in the field: complete the fields by the convention.
-    s = state("10k", "RC0603FR-0710KL", "10k")
-    assert (s.parts, s.change, s.complete, s.write_mpn) == (["RC0603FR-0710KL"], "", "10k (RC0603FR-0710KL)",
-                                                            "RC0603FR-0710KL")
-    assert state("10k", "RC0603FR-0710KL").complete == "10k (RC0603FR-0710KL)"  # also with no Value_Confirmed
-    assert not state("", "RC0603FR-0710KL").complete  # no Value: a BOM with no Value column
-    assert not state("10k", "RC0603FR-0710KL, -").complete  # a conflict: not into Value
-    # Value_Confirmed with parentheses and a Value with none: the user removed the MPNs.
-    s = state("10k", "RC0603FR-0710KL", "10k (RC0603FR-0710KL)")
-    assert (s.select, s.removed, s.complete) == (True, ["RC0603FR-0710KL"], "")
+    assert not s.select  # no new part for a symbol that needs no part
+    # The old convention (decision 30): a list of MPNs in the parentheses of Value and no
+    # MPN_Confirmed. The move keeps the state: the old field MPN is the confirmed copy.
+    s = state("2N7002 (2N7002LT1G, BSS138LT1G)", "2N7002LT1G", "2N7002 (2N7002LT1G)")
+    assert s.move == {"value": "2N7002", "mpn": both, "mpn_confirmed": "2N7002LT1G",
+                      "value_confirmed": "2N7002"}
+    assert (s.parts, s.change, s.unconfirmed) == (["2N7002LT1G"], "", False)
+    assert state("LM358 (LM358DR)").move == {"value": "LM358", "mpn": "LM358DR", "mpn_confirmed": "",
+                                             "value_confirmed": None}
+    assert state("J (\"A(1)\")", "A(1)", "", "").move["mpn"] == "A(1)"
+    assert not state("10k (1%)", "", "10k (1%)", "-").move  # MPN_Confirmed: the new convention
+    # Other MPNs in the field MPN: the new convention (review of 2026-11-07), also with
+    # no MPN_Confirmed: no move, and "1%" is no part.
+    s = state("10k (1%)", "RC0603FR-0710KL", "", "")
+    assert (s.move, s.parts, s.unconfirmed) == ({}, ["RC0603FR-0710KL"], True)
+    assert state("10k (1%)", "RC0603FR-0710KL").parts == ["RC0603FR-0710KL"]
+    # "(TBD)": the old convention with an empty list.
+    assert state("10k (TBD)").move == {"value": "10k", "mpn": "", "mpn_confirmed": "", "value_confirmed": None}
+    assert not state("10k (A) (B)").move and not state("10k (GRM1, -)").move  # no valid list
+    # The move of a symbol with an MPN_Confirmed of the old fields: no move, the text.
+    assert state("10k (1%)", "RC1", "10k (1%)", "RC1").parts == ["RC1"]
     # No part selected; no part needed.
-    assert state("100nF", confirmed="").no_mpn and state("100nF (TBD)", "TBD", "100nF (TBD)").no_mpn
-    s = state("TestPoint", "-", "TestPoint")
+    assert state("100nF", confirmed="", mpn_confirmed="").no_mpn
+    assert state("100nF", "TBD", "100nF", "TBD").no_mpn
+    s = state("TestPoint", "-", "TestPoint", "-")
     assert (s.parts, s.no_mpn, s.no_part, s.conflicts, s.change) == ([], False, True, [], "")
-    assert state("TestPoint (-)", "", "").no_part  # a no-part text in Value, not confirmed yet
-    # Conflicts: a Value that does not follow the convention, a no-part text and an
-    # MPN in one list.
-    s = state("10k (A) (B)", "A", "10k (A)")
-    assert s.conflicts[0].startswith("Value '10k (A) (B)': more than one text in parentheses") and not s.change
-    assert s.parts == ["A"]
-    assert "a comma before three digits" in state("Q (X)", "BC847B,215, BSS138").conflicts[0]
-    s = state("Q (BC847B,215, BSS138)", "", "")
-    assert (s.parts, s.unconfirmed) == (["BC847B,215, BSS138"], False) and "a comma before" in s.conflicts[0]
-    s = state('Q ("BC847B,215", BSS138)', '"BC847B,215", BSS138', other_mpns=[("MP", "BC847B,215, BSS138")])
+    assert state("TestPoint", "-", "", "").unconfirmed  # a no-part text, not confirmed yet
+    # Conflicts: a list error, a no-part text and an MPN in one list, more MPN columns.
+    assert "a comma before three digits" in state("Q", "BC847B,215, BSS138").conflicts[0]
+    s = state("Q", "X", "Q", "BC847B,215, BSS138")
+    assert "MPN_Confirmed 'BC847B,215, BSS138': a comma before three digits" in s.conflicts[0]
+    assert s.parts == ["BC847B,215, BSS138"]  # the confirmed MPNs (one item: no MPN is lost)
+    s = state("Q", '"BC847B,215", BSS138', other_mpns=[("MP", "BC847B,215, BSS138")])
     assert "MP 'BC847B,215, BSS138': a comma before three digits" in s.conflicts[0]
-    s = state("Q (X)", "X", other_values=["Q (BC847B,215, BSS138)"])
-    assert s.extra == ["BC847B,215, BSS138"]  # the MPNs of an other Value column are not lost
-    # Quotes: the fields are equal also with quotes that are not necessary; a
-    # completion writes quotes only where they are necessary.
-    assert not state('Q ("A", B)', "A, B", "Q (A, B)").change
-    s = state("Q", '"BC847B,215", BSS138')
-    assert (s.complete, s.write_mpn) == ('Q ("BC847B,215", BSS138)', '"BC847B,215", BSS138')
-    assert state("Q", "BC847B,215").complete == "Q (BC847B,215)"
-    s = state("J", "A(1)")
-    assert (s.complete, s.write_mpn) == ('J ("A(1)")', "A(1)")
-    assert not state('J ("A(1)")', "A(1)", 'J ("A(1)")').change
-    assert state("Q (GRM1, -)", "GRM1, -").conflicts == [
-        "MPN GRM1, -: - tells that the symbol needs no part", "Value GRM1, -: - tells that the symbol needs no part"]
-    # More columns: a conflict, and the MPNs of the other column are parts too.
-    s = state("2N7002 (2N7002LT1G)", "2N7002LT1G", "2N7002 (2N7002LT1G)", other_mpns=[("MP", "BSS138LT1G")])
+    assert state("Q", "GRM1, -").conflicts == ["MPN GRM1, -: - tells that the symbol needs no part"]
+    s = state("2N7002", "2N7002LT1G", "2N7002", "2N7002LT1G", other_mpns=[("MP", "BSS138LT1G")])
     assert (s.parts, s.extra, s.conflicts) == (["2N7002LT1G", "BSS138LT1G"], ["BSS138LT1G"],
                                                ["MPN 2N7002LT1G, MP BSS138LT1G"])
-    s = state("2N7002 (2N7002LT1G)", "2N7002LT1G", "2N7002 (2N7002LT1G)", other_values=["BSS138 (BSS138LT1G)"])
-    assert s.parts == ["2N7002LT1G", "BSS138LT1G"]
-    assert state("2N7002 (2N7002LT1G)", "2N7002LT1G", other_values=["2N7002 (2N7002LT1G)"]).extra == []
+    assert not state("Q", "X", "Q", "X", other_values=["Q (BC847B,215)"]).extra  # Value holds no MPN
+    # No MPN_Confirmed: the MPNs of the old convention (also of an other Value column) are
+    # parts (no MPN is lost).
+    assert state("Q (X)", "X", other_values=["Q (Y)"]).parts == ["X", "Y"]
 
 
 def test_check_tells_about_changes(store_home, tmp_path, capsys):
     """The messages of project_check and of the CLI check: a change, a symbol that
-    is not confirmed, the completion of the fields, a symbol with no part, the
+    is not confirmed, the move of the old convention, a symbol with no part, the
     variants, the power symbols, and the column of Value_Confirmed."""
     from datasheet_lens.project import CadSymbol
 
@@ -982,61 +987,69 @@ def test_check_tells_about_changes(store_home, tmp_path, capsys):
         for mpn in ("2N7002LT1G", "BSS138LT1G"):
             prj.add_part(project, store, mpn)
         result = prj.check_parts(project, store, [
-            CadSymbol(reference="Q1", value="2N7002 (2N7002LT1G, BSS138LT1G)", mpn="2N7002LT1G",
-                      value_confirmed="2N7002 (2N7002LT1G)"),
-            CadSymbol(reference="U1", value="ESP32-S3 (ESP32-S3-WROOM-1-N16R8)", value_confirmed=""),
-            CadSymbol(reference="TP1", value="TestPoint_Small", mpn="-", value_confirmed="TestPoint"),
-            CadSymbol(reference="#PWR01", value="+3V3", value_confirmed=""),
-            CadSymbol(reference="R1", value="10k", value_confirmed=""),
-            CadSymbol(reference="R5", value="10k", mpn="RC0603FR-0710KL", value_confirmed="10k"),
-            CadSymbol(reference="C5", value="220nF", mpn="GRM1", value_confirmed="100nF (GRM1)"),
-            CadSymbol(reference="Q2", value="BSS138 (BSS138LT1G)", mpn="BSS138LT1G",
-                      value_confirmed="BSS138 (BSS138LT1G)", variant="b"),
-            CadSymbol(reference="Q2", value="BSS138 (BSS138LT1G)", mpn="BSS138LT1G",
-                      value_confirmed="BSS138 (BSS138LT1G)"),
-            CadSymbol(reference="Q3", value="BSS138 (BSS138LT1G)", mpn="BSS138LT1G",
-                      value_confirmed="BSS138 (BSS138LT1G)"),
-            CadSymbol(reference="Q3", value="2N7002 (2N7002LT1G)", mpn="BSS138LT1G",
-                      value_confirmed="BSS138 (BSS138LT1G)", variant="b")])
+            CadSymbol(reference="Q1", value="2N7002", mpn="2N7002LT1G, BSS138LT1G", value_confirmed="2N7002",
+                      mpn_confirmed="2N7002LT1G"),
+            CadSymbol(reference="U1", value="ESP32-S3", mpn="ESP32-S3-WROOM-1-N16R8", value_confirmed="",
+                      mpn_confirmed=""),
+            CadSymbol(reference="TP1", value="TestPoint_Small", mpn="-", value_confirmed="TestPoint",
+                      mpn_confirmed="-"),
+            CadSymbol(reference="#PWR01", value="+3V3", value_confirmed="", mpn_confirmed=""),
+            CadSymbol(reference="R1", value="10k", value_confirmed="", mpn_confirmed=""),
+            CadSymbol(reference="R5", value="10k (RC0603FR-0710KL)", mpn="RC0603FR-0710KL",
+                      value_confirmed="10k (RC0603FR-0710KL)"),
+            CadSymbol(reference="C5", value="220nF", mpn="GRM1", value_confirmed="100nF", mpn_confirmed="GRM1"),
+            CadSymbol(reference="Q2", value="BSS138", mpn="BSS138LT1G", value_confirmed="BSS138",
+                      mpn_confirmed="BSS138LT1G", variant="b"),
+            CadSymbol(reference="Q2", value="BSS138", mpn="BSS138LT1G", value_confirmed="BSS138",
+                      mpn_confirmed="BSS138LT1G"),
+            CadSymbol(reference="Q3", value="BSS138", mpn="BSS138LT1G", value_confirmed="BSS138",
+                      mpn_confirmed="BSS138LT1G"),
+            CadSymbol(reference="Q3", value="2N7002", mpn="2N7002LT1G", value_confirmed="BSS138",
+                      mpn_confirmed="BSS138LT1G", variant="b")])
     out = "\n".join(prj.format_check(result))
-    assert ("change in the CAD project: Q1: Value '2N7002 (2N7002LT1G, BSS138LT1G)', Value_Confirmed '2N7002 "
-            "(2N7002LT1G)': the confirmed MPN '2N7002LT1G' can be wrong now. New: BSS138LT1G. Tell the user.") in out
-    assert ("Write MPN = '2N7002LT1G, BSS138LT1G' and Value_Confirmed = '2N7002 (2N7002LT1G, BSS138LT1G)' into the "
-            "symbol") in out
-    assert ("not confirmed: U1: When the user agrees: Write MPN = 'ESP32-S3-WROOM-1-N16R8' and Value_Confirmed = "
-            "'ESP32-S3 (ESP32-S3-WROOM-1-N16R8)' into the symbol.") in out
-    assert "TP1" in out and "Write MPN = '-'" in out
+    assert ("change in the CAD project: Q1: MPN '2N7002LT1G, BSS138LT1G', MPN_Confirmed '2N7002LT1G': the MPN is "
+            "not the confirmed MPN. New: BSS138LT1G. Find and add the datasheet of each new MPN now (list_documents, "
+            "search_distributors, part_links, then add_document): this changes no project. Tell the user.") in out
+    assert ("Write MPN_Confirmed = '2N7002LT1G, BSS138LT1G' and Value_Confirmed = '2N7002' into the symbol") in out
+    assert ("not confirmed: U1: Not confirmed: ESP32-S3-WROOM-1-N16R8. When the user agrees: Write MPN_Confirmed = "
+            "'ESP32-S3-WROOM-1-N16R8' and Value_Confirmed = 'ESP32-S3' into the symbol.") in out
+    assert "TP1" in out and "Write MPN_Confirmed = '-'" in out
     assert "#PWR01" not in out and "no part selected (a general value and no MPN): R1." in out
-    assert ("complete the fields: R5: the MPN is not in Value (the convention: the MPNs in parentheses in Value). "
-            "The parts do not change. Write Value = '10k (RC0603FR-0710KL)', MPN = 'RC0603FR-0710KL' and "
-            "Value_Confirmed = '10k (RC0603FR-0710KL)' into the symbol.") in out
-    assert ("C5: Value '220nF', Value_Confirmed '100nF (GRM1)': the confirmed MPN 'GRM1' can be wrong now. Not in "
-            "Value now: GRM1. Tell the user. When the user confirms the change: First select the new part with the "
-            "user (find_parts by its parameters, search_distributors and get_ordering_codes by its MPN), and write "
-            "its MPN into Value in parentheses") in out
-    assert "Write MPN = '<the MPN of the new part>' and Value_Confirmed = '<the new Value>'" in out
+    assert ("the old convention: R5: the MPNs are in the parentheses of Value. Move them into the field MPN") in out
+    assert ("Write Value = '10k', MPN = 'RC0603FR-0710KL', MPN_Confirmed = 'RC0603FR-0710KL' and Value_Confirmed = "
+            "'10k' into the symbol.") in out
+    assert ("C5: Value '220nF', Value_Confirmed '100nF': the MPN 'GRM1' can be wrong now. Ask the user: a new part "
+            "for the new value, or the same part. A new part: select it with the user (find_parts by its "
+            "parameters, search_distributors and get_ordering_codes by its MPN), write its MPN into the symbol (the "
+            "field MPN), then run project_check again. The same part: Write MPN_Confirmed = 'GRM1' and "
+            "Value_Confirmed = '220nF' into the symbol.") in out
     assert "Q2" not in out  # the variant gives the same fields as the default variant
     assert "Q3 (variant b)" in out and "into the fields of the symbol in the variant of the BOM file b" in out
     assert result["lines"] == 6  # Q1, U1, R5, C5, Q2, Q3
     # A line of a group (Q5,Q6) and a line of one of its symbols in a variant file.
     with Store() as store:
         result = prj.check_parts(project, store, [
-            CadSymbol(reference="Q5,Q6", value="2N7002 (2N7002LT1G)", value_confirmed=""),
-            CadSymbol(reference="Q5", value="2N7002 (2N7002LT1G)", value_confirmed="", variant="b.csv")])
+            CadSymbol(reference="Q5,Q6", value="2N7002", mpn="2N7002LT1G", value_confirmed="", mpn_confirmed=""),
+            CadSymbol(reference="Q5", value="2N7002", mpn="2N7002LT1G", value_confirmed="", mpn_confirmed="",
+                      variant="b.csv")])
     assert (len(result["unconfirmed"]), result["lines"]) == (1, 1)
     with Store() as store:
         result = prj.check_parts(project, store, [
-            CadSymbol(reference="U6", value="TPS62130 (TPS62130RGTR)", mpn="TPS62130RGTR",
+            CadSymbol(reference="U6", value="TPS62130", mpn="TPS62130RGTR",
                       datasheet="https://ti.com/tps62130.pdf")])
     (missing,) = result["missing"]
     assert missing["datasheet"] == "https://ti.com/tps62130.pdf"
+    assert result["no_mpn_confirmed"] == 1  # no column MPN_Confirmed: a change of a part is not found
+    assert "no field MPN_Confirmed: 1 CAD parts. A change of a part (an other MPN) is not found" in "\n".join(
+        prj.format_check(result))
 
     bom = tmp_path / "altium.csv"
-    bom.write_text("Designator,Value,MPN,Custom 3\nQ1,2N7002 (2N7002LT1G),2N7002LT1G,2N7002 (2N7002LT1G)\n",
+    bom.write_text("Designator,Value,MPN,Custom 3,MPN_Confirmed\nQ1,2N7002,2N7002LT1G,2N7002,2N7002LT1G\n",
                    encoding="utf-8")
     assert main(["check", str(bom), "-p", str(project.root), "--confirmed-column", "Custom 3"]) == 0
     out = capsys.readouterr().out
     assert "Value_Confirmed from Custom 3" in out and "not confirmed" not in out and "change in the" not in out
+    assert "MPN_Confirmed from MPN_Confirmed" in out
     assert main(["check", str(bom), "-p", str(project.root), "--confirmed-column", "Custom 9"]) == 2
     assert "no column 'Custom 9' for --confirmed-column" in capsys.readouterr().err
     for column in ("Value", "MPN", "Designator"):
@@ -1052,49 +1065,62 @@ def test_check_tells_about_changes(store_home, tmp_path, capsys):
     kicad.write_text("Reference,Value,MPN,Value_Confirmed\nQ1,2N7002,2N7002LT1G,2N7002\n", encoding="utf-8")
     with pytest.raises(LensError, match="is the column of the field Value_Confirmed: give the column of the MPN"):
         prj.bom_parts(str(kicad), column="Value_Confirmed")
+    # The column of MPN_Confirmed: its own option, and no other role.
+    kicad.write_text("Reference,Value,MPN,Value_Confirmed,MC,MPN_Confirmed\nQ1,2N7002,2N7002LT1G,2N7002,2N7002LT1G,\n",
+                     encoding="utf-8")
+    with pytest.raises(LensError, match="is the column of the field MPN_Confirmed: give the column of the MPN"):
+        prj.bom_parts(str(kicad), column="MPN_Confirmed")
+    (q1,) = prj.bom_parts(str(kicad), mpn_confirmed_column="MC").cad
+    assert q1.mpn_confirmed == "2N7002LT1G" and q1.mpn_confirmed_fields == ["MC"]
+    with pytest.raises(LensError, match="no column 'MX' for the mpn_confirmed option"):
+        prj.bom_parts(str(kicad), mpn_confirmed_column="MX")
+    with pytest.raises(LensError, match="of the mpn_confirmed option is the column of MPN"):
+        prj.bom_parts(str(kicad), mpn_confirmed_column="MPN")
     assert main(["check", str(bom), "-p", str(project.root)]) == 0
     assert "or use an unused custom column of the BOM and give its name with --confirmed-column" in \
         capsys.readouterr().out
 
 
 def test_write_field_names(store_home, tmp_path):
-    """A confirmation writes into each column of the MPN of the line and into the column of
-    Value_Confirmed, also a column of an other name. With no MPN in the line and more names
-    of MPN columns, the field is not known: the message names the choices (the same rules
-    as check_symbol_fields of kicad-workbench)."""
+    """A confirmation writes into the columns of MPN_Confirmed and Value_Confirmed, also
+    a column of an other name. A move writes the MPN into each column of the MPN of the
+    line; with no MPN in the line and more names of MPN columns, the field is not known:
+    the message names the choices (the same rules as check_symbol_fields of
+    kicad-workbench)."""
     bom = tmp_path / "altium.csv"
-    bom.write_text("Designator,Value,Manufacturer Part Number,Custom 3\n"
-                   "U1,LM358,LM358DR,\nU2,LM358 (LM358DT),,\n", encoding="utf-8")
+    bom.write_text("Designator,Value,Manufacturer Part Number,Custom 3,MPN_Confirmed\n"
+                   "U1,LM358,LM358DR,,\nU2,LM358 (LM358DT),,,\n", encoding="utf-8")
     symbols = prj.bom_parts(str(bom), confirmed_column="Custom 3").cad
     with Store() as store:
         project = prj.init_project(tmp_path / "board")
         result = prj.check_parts(project, store, symbols)
     out = "\n".join(prj.format_check(result))
-    assert ("Write Value = 'LM358 (LM358DR)', Manufacturer Part Number = 'LM358DR' and Custom 3 = "
-            "'LM358 (LM358DR)' into the symbol.") in out
-    assert "Write Manufacturer Part Number = 'LM358DT' and Custom 3 = 'LM358 (LM358DT)'" in out
-    # Eagle: each library has its own attribute. Two filled columns: the write goes into the
-    # two. No MPN in the line: the user selects the attribute of the symbol.
+    assert "Write MPN_Confirmed = 'LM358DR' and Custom 3 = 'LM358' into the symbol." in out
+    assert ("Write Value = 'LM358', Manufacturer Part Number = 'LM358DT', MPN_Confirmed = '' and Custom 3 = "
+            "'' into the symbol.") in out
+    # Eagle: each library has its own attribute. No MPN in the line: the user selects
+    # the attribute of the symbol for the move.
     bom.write_text("Parts,Value,MP,MANUFACTURER_PART_NUMBER\nU1,X,A,A\nU2,X (B),,\nR1,10k,,\n",
                    encoding="utf-8")
     u1, u2, r1 = prj.bom_parts(str(bom)).cad
     assert (u1.mpn_fields, u1.mpn_known) == (["MANUFACTURER_PART_NUMBER", "MP"], True)
     assert (u2.mpn_fields, u2.mpn_known) == (["MANUFACTURER_PART_NUMBER", "MP"], False)
     assert (u1.confirmed_fields, u1.confirmed_known) == (["Value_Confirmed"], True)
+    assert (u1.mpn_confirmed_fields, u1.mpn_confirmed_known) == (["MPN_Confirmed"], True)
     with Store() as store:
         out = "\n".join(prj.format_check(prj.check_parts(project, store, [u1, u2, r1])))
-    assert "Write Value = 'X (A)', MANUFACTURER_PART_NUMBER = 'A' and MP = 'A' into the symbol." in out
-    assert ("Write the MPN field = 'B' (the BOM has the columns MANUFACTURER_PART_NUMBER, MP: ask the user "
-            "which one the symbol uses) into the symbol.") in out
-    assert "into the MPN field of the symbol, and the new Value into its field Value_Confirmed" in out
+    assert ("Write Value = 'X', the MPN field = 'B' (the BOM has the columns MANUFACTURER_PART_NUMBER, MP: ask the "
+            "user which one the symbol uses) and MPN_Confirmed = '' into the symbol.") in out
+    assert "write its MPN into the field MPN of the symbol" in out
     # The parts of the parameter parts: the names of the CAD tool, else the default names.
     with Store() as store:
         out = "\n".join(prj.format_check(prj.check_parts(project, store, [
-            {"reference": "U1", "value": "LM358", "mpn": "LM358DR", "value_confirmed": "",
-             "mpn_fields": [" Manufacturer Part Number ", " "], "confirmed_field": "VC"},
-            {"reference": "U2", "value": "LM358 (LM358DT)", "value_confirmed": ""}])))
-    assert "Manufacturer Part Number = 'LM358DR' and VC = 'LM358 (LM358DR)'" in out
-    assert "Write MPN = 'LM358DT' and Value_Confirmed = 'LM358 (LM358DT)'" in out
+            {"reference": "U1", "value": "LM358", "mpn": "LM358DR", "value_confirmed": "", "mpn_confirmed": "",
+             "mpn_fields": [" Manufacturer Part Number ", " "], "confirmed_field": "VC",
+             "mpn_confirmed_field": "MC"},
+            {"reference": "U2", "value": "LM358", "mpn": "LM358DT", "value_confirmed": "", "mpn_confirmed": ""}])))
+    assert "MC = 'LM358DR' and VC = 'LM358'" in out
+    assert "Write MPN_Confirmed = 'LM358DT' and Value_Confirmed = 'LM358'" in out
 
 
 def test_write_fields_of_the_roles(tmp_path):
@@ -1125,10 +1151,10 @@ def test_write_targets_of_a_variant(store_home, tmp_path):
     message."""
     with Store() as store:
         result = prj.check_parts(prj.init_project(tmp_path / "board"), store, [
-            prj.CadSymbol(reference="U1", value="LM358", mpn="LM358DR", value_confirmed=""),
-            prj.CadSymbol(reference="U1", value="LM358", mpn="LM358DR", value_confirmed="", variant="b",
-                          mpn_fields=["Manufacturer Part Number"])])
-    assert [c["mpn_fields"] for c in result["complete"]] == [["MPN"], ["Manufacturer Part Number"]]
+            prj.CadSymbol(reference="U1", value="LM358", mpn="LM358DR", value_confirmed="", mpn_confirmed=""),
+            prj.CadSymbol(reference="U1", value="LM358", mpn="LM358DR", value_confirmed="", mpn_confirmed="",
+                          variant="b", mpn_confirmed_fields=["MC"])])
+    assert [c["mpn_confirmed_fields"] for c in result["unconfirmed"]] == [["MPN_Confirmed"], ["MC"]]
 
 
 def test_bom_formats(tmp_path):
@@ -1284,9 +1310,10 @@ def test_bom_formats(tmp_path):
     assert mpns("sepd.csv", ",,,\nsep=;\nRef;MPN\nU1;XQ1001\n") == [["XQ1001"]]
     assert "can start at more than one place" in error("ovq.csv", 'Ref||MPN\n"a"|||b\n', delimiter="||")
     # The same references in two columns are no conflict; two Value columns with
-    # different texts are one; MPN and Value are a change, not a conflict.
+    # different texts are one. MPN XQ1001 with other MPNs in the parentheses: the new
+    # convention, the parentheses are text (no parts).
     assert parts_of("same.csv", "Reference,Designator,MPN,Value,value\nR1 R2,\"R1, R2\",XQ1001,(TLV75533PDBVR),"
-                    "(tlv75533)\n") == [(["XQ1001", "tlv75533"], "Value (TLV75533PDBVR), value (tlv75533)")]
+                    "(tlv75533)\n") == [(["XQ1001"], "Value (TLV75533PDBVR), value (tlv75533)")]
     assert mpns("pipeq.csv", "|Ref|,|MPN|\n|U1|,|XQ1001|\n", quote="|") == [["XQ1001"]]
     assert mpns("sep11.csv", "  sep=;\nRef;MPN\nU1;XQ1001\n") == [["XQ1001"]]
     assert "the line 'sep=' of the file does not give one delimiter" in error("sep12.csv", "sep=a\nRefaMPN\n")

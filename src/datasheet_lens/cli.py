@@ -785,7 +785,8 @@ def cmd_check(args: argparse.Namespace) -> int:
 
     reads = bom_files(args.bom, args.column or "", args.delimiter, args.quote,
                       {"column": "--column", "delimiter": "--delimiter", "quote": "--quote",
-                       "confirmed": "--confirmed-column"}, args.confirmed_column or "")
+                       "confirmed": "--confirmed-column", "mpn_confirmed": "--mpn-confirmed-column"},
+                      args.confirmed_column or "", mpn_confirmed_column=args.mpn_confirmed_column or "")
     with open_project(args.path) as project, Store() as store:
         result = check_parts(project, store, [s for r in reads for s in r.cad])
         result["sync"] = sync_steps(dry_run(project, store, details=False)[0])
@@ -885,6 +886,9 @@ def build_parser() -> argparse.ArgumentParser:
     ck.add_argument("--confirmed-column", metavar="NAME",
                     help="the column of the field Value_Confirmed, for example an unused custom column of the BOM "
                          "of an other CAD tool (default: Value_Confirmed)")
+    ck.add_argument("--mpn-confirmed-column", metavar="NAME",
+                    help="the column of the field MPN_Confirmed, for example an unused custom column of the BOM "
+                         "of an other CAD tool (default: MPN_Confirmed)")
     ck.set_defaults(func=cmd_check)
     cd = sub.add_parser("codes", help="show the orderable codes of a datasheet")
     cd.add_argument("document", metavar="DOC", help="document ID or SHA-256 prefix")

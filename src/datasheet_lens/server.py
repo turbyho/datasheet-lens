@@ -98,8 +98,8 @@ newer release or a restart of the client, tell the user one time.
 User project: the project file datasheet-lens.toml must hold the same parts as
 the CAD project (schematic, BOM). At the start of the work, and after each
 change of the CAD project, do these steps:
-1. Get the parts of the CAD project (MPN, Value, Value_Confirmed, Datasheet,
-   DNP, the field names) from the CAD tool: a BOM file (CSV, for example
+1. Get the parts of the CAD project (Value, MPN, Value_Confirmed,
+   MPN_Confirmed, Datasheet, DNP, the field names) from the CAD tool: a BOM file (CSV, for example
    export_bom of kicad-workbench) or a list from its MCP server. A general
    value with no MPN (10k) has no selected part. MPN = '-' tells that the
    symbol needs no part (a test point).
@@ -113,11 +113,11 @@ change of the CAD project, do these steps:
    If you cannot get the datasheet, tell the user the MPN, the reason and the
    search links of part_links(mpn).
 4. Tell the user about each change, different or extra part, and when a CAD MPN
-   and its datasheet do not agree (value, package, variant). A change is valid
-   only when the user confirms it. The CAD BOM is the master: write each new or
-   changed part that the user confirms into the CAD project too (Value with the
-   MPNs in parentheses, "2N7002 (2N7002LT1G, BSS138LT1G)", MPN, Value_Confirmed,
-   LCSC; kicad-workbench: set_symbol_fields), and into the project file
+   and its datasheet do not agree (value, package, variant). For a new MPN, add
+   its datasheet at once; a change is valid only when the user confirms it. The
+   CAD BOM is the master: write each part that the user confirms into the CAD
+   project too (MPN, the hidden copies MPN_Confirmed and Value_Confirmed, LCSC;
+   kicad-workbench: set_symbol_fields), and into the project file
    (project_update_part, adopt_part). Remove a part only when the user agrees.
 5. project_sync: it copies the documents into the project folder. Then
    project_check again: it must give no missing, extra or different part.
@@ -849,8 +849,8 @@ def project_add_part(
     of a document to the store part stays in the store (no tool removes it):
     check the MPN and the base part before you give document. A new part of
     the design: The CAD BOM is the master: write the change that the user confirmed
-    into the CAD project too (Value with the MPNs in parentheses, MPN,
-    Value_Confirmed, LCSC; kicad-workbench: set_symbol_fields), then
+    into the CAD project too (MPN, MPN_Confirmed, Value_Confirmed, LCSC;
+    kicad-workbench: set_symbol_fields), then
     project_check. Gives the part and its documents."""
     from .project import add_part, open_project
 
@@ -1090,8 +1090,8 @@ def adopt_part(
     project_availability), first the user agrees and the CAD project changes,
     then project_update_part(mpn, new_mpn), then adopt_part. A purchase source
     is added, not replaced: project_remove_source removes a wrong one. The CAD BOM is the master: write the change that the user confirmed
-    into the CAD project too (Value with the MPNs in parentheses, MPN,
-    Value_Confirmed, LCSC; kicad-workbench: set_symbol_fields), then
+    into the CAD project too (MPN, MPN_Confirmed, Value_Confirmed, LCSC;
+    kicad-workbench: set_symbol_fields), then
     project_check."""
     from .adopt import adopt
     from .project import load_optional
@@ -1179,16 +1179,18 @@ def get_ordering_codes(document: DocRef) -> str:
 class CadPart(BaseModel):
     """One part of the CAD project (a symbol or a BOM line)."""
     mpn: str = Field("", description=(
-        "The field MPN of the symbol, as it is: the confirmed copy of the MPNs in the parentheses of Value "
-        "(\"2N7002LT1G, BSS138LT1G\"). Empty if there is none; '-' or N/A when the symbol needs no part "
+        "The field MPN of the symbol, as it is: the MPNs of the part, the fitted part first and then the "
+        "alternatives (\"2N7002LT1G, BSS138LT1G\"; separators , and ;; an MPN with , or ; is in quotes, as in "
+        "CSV: '\"BC847B,215\", BSS138LT1G'). Empty if there is none; '-' or N/A when the symbol needs no part "
         "(a test point)."))
     value: str = Field("", description=(
-        "The Value field of the symbol, as it is: a general value, and the MPNs in parentheses, the fitted "
-        "part first and then the alternatives (\"2N7002 (2N7002LT1G, BSS138LT1G)\", \"100nF 10V "
-        "(GRM155R71A104KA01D)\"; separators , and ;). Only the text in parentheses gives MPNs. An MPN with "
-        ", ; or a parenthesis is in quotes, as in CSV: '2N7002 (\"BC847B,215\", BSS138LT1G)'."))
+        "The Value field of the symbol, as it is: the general value (\"2N7002\", \"100nF 10V\"). Old projects "
+        "have the MPNs in parentheses in Value: the tool proposes to move them into MPN."))
     value_confirmed: str | None = Field(None, description=(
         "The hidden field Value_Confirmed of the symbol, as it is: a copy of the Value of the last "
+        "confirmation. Null when the symbol has no such field."))
+    mpn_confirmed: str | None = Field(None, description=(
+        "The hidden field MPN_Confirmed of the symbol, as it is: a copy of the field MPN of the last "
         "confirmation. Null when the symbol has no such field."))
     datasheet: str = Field("", description="The Datasheet field: a URL or a path. Empty if there is none.")
     dnp: bool = Field(False, description=(
@@ -1204,6 +1206,9 @@ class CadPart(BaseModel):
     confirmed_field: str = Field("", description=(
         "The name of the field Value_Confirmed in the CAD tool, when it has an other name. Empty: "
         "Value_Confirmed."))
+    mpn_confirmed_field: str = Field("", description=(
+        "The name of the field MPN_Confirmed in the CAD tool, when it has an other name. Empty: "
+        "MPN_Confirmed."))
     lcsc: str | None = Field(None, description=(
         "The JLCPCB (LCSC) part number field of the symbol (C47616), as it is. Null when the symbol has no such "
         "field. Give it for the JLCPCB assembly."))
@@ -1241,23 +1246,27 @@ def project_check(
         bom_confirmed_column: Annotated[str, Field(description=(
             "The column of the field Value_Confirmed in the BOM file, for example an unused custom column of "
             "the BOM of an other CAD tool. Empty: Value_Confirmed."))] = "",
+        bom_mpn_confirmed_column: Annotated[str, Field(description=(
+            "The column of the field MPN_Confirmed in the BOM file, for example an unused custom column of the "
+            "BOM of an other CAD tool. Empty: MPN_Confirmed."))] = "",
         path: ProjectPath = "") -> str:
     """Compare the project file with the parts of the CAD project, so that the
     two hold the same parts. Each part with an MPN needs its datasheet, also an
-    alternative in Value. The convention: Value holds a general value and the
-    MPNs in parentheses ("2N7002 (2N7002LT1G, BSS138LT1G)"), the field MPN the
-    confirmed copy of these MPNs, and the hidden field Value_Confirmed a copy of
-    the confirmed Value. The confirmation of the user is the truth. With bom, one
-    line for each BOM file gives the columns that the tool read. Then the result
-    gives these lines:
+    alternative in MPN. The convention: Value holds the general value
+    ("2N7002", "100nF 10V"), the field MPN the MPNs ("2N7002LT1G, BSS138LT1G"),
+    and the hidden fields Value_Confirmed and MPN_Confirmed the copies of the
+    last confirmation. The confirmation of the user is the truth: until it, the
+    confirmed MPNs are the parts. With bom, one line for each BOM file gives the
+    columns that the tool read. Then the result gives these lines:
     - conflict: the fields or the columns of one symbol do not agree.
-    - change in the CAD project: the MPNs of Value are not the field MPN, or
-      Value is not Value_Confirmed. Tell the user; write the given fields only
-      when the user confirms it.
+    - change in the CAD project: MPN is not MPN_Confirmed, or Value is not
+      Value_Confirmed. Add the datasheet of a new MPN at once; tell the user;
+      write the given fields only when the user confirms it.
     - not confirmed: the fields are not confirmed yet.
-    - complete the fields: the MPN is only in the field MPN. Write the given
-      Value (the MPN in parentheses) and fields; the parts do not change.
-    - no field Value_Confirmed, no part selected (a general value and no MPN).
+    - the old convention: the MPNs are in the parentheses of Value. Write the
+      given fields (the move); the confirmed state and the parts do not change.
+    - no field Value_Confirmed or MPN_Confirmed, no part selected (a general
+      value and no MPN).
     - CAD lines with a part, the symbols that are not fitted (DNP: their parts
       stay parts of the project), the number of the same parts, and one line
       for each part that is different (one part with two MPNs), missing (with
@@ -1292,18 +1301,19 @@ def project_check(
 
     if (parts is None) == (not bom):
         raise LensError("give the parts of the CAD project in parts or in a BOM file (bom), not the two")
-    if (bom_column or bom_delimiter or bom_quote or bom_confirmed_column) and not bom:
-        raise LensError("bom_column, bom_delimiter, bom_quote and bom_confirmed_column need a BOM file (bom)")
+    if (bom_column or bom_delimiter or bom_quote or bom_confirmed_column or bom_mpn_confirmed_column) and not bom:
+        raise LensError("bom_column, bom_delimiter, bom_quote, bom_confirmed_column and bom_mpn_confirmed_column "
+                        "need a BOM file (bom)")
     files = [bom] if isinstance(bom, str) else list(bom)
     if parts is None and not all(f.strip() for f in files):
         raise LensError("an item of bom is empty: give the path of each BOM file")
     root = find_project(path or None)
     options = {"column": "bom_column", "delimiter": "bom_delimiter", "quote": "bom_quote",
-               "confirmed": "bom_confirmed_column"}
+               "confirmed": "bom_confirmed_column", "mpn_confirmed": "bom_mpn_confirmed_column"}
     # A relative path is relative to the project folder (the folder of the project
     # file), as the other paths of a project: not to the working folder of the server.
     reads = bom_files(files, bom_column, bom_delimiter, bom_quote, options, bom_confirmed_column,
-                      base=str(root)) if parts is None else []
+                      base=str(root), mpn_confirmed_column=bom_mpn_confirmed_column) if parts is None else []
     cad = [s for r in reads for s in r.cad] if reads else [p.model_dump() for p in parts or []]
     from .teamsync import model_notes, sync_before_answer
 
@@ -1349,8 +1359,8 @@ def project_update_part(
     datasheet-lens.toml and its copies (project_remove_part and project_add_part
     would delete and copy them again). Then project_sync moves a copy when the
     layout gives it a different subfolder. The CAD BOM is the master: write the
-    change that the user confirmed into the CAD project too (Value with the MPNs
-    in parentheses, MPN, Value_Confirmed, LCSC; kicad-workbench:
+    change that the user confirmed into the CAD project too (MPN,
+    MPN_Confirmed, Value_Confirmed, LCSC; kicad-workbench:
     set_symbol_fields), then project_check. Gives each changed field with its
     old and new value, then the part and its documents."""
     from .project import document_ref, open_project, update_part

@@ -437,7 +437,7 @@ list of the datasheets of the design.
 The BOM of the CAD project is the master. A change of a part goes into the two
 places: after each change that the user confirms (a new part, a new MPN, a
 replacement, a JLCPCB number), the agent writes the new or changed part into the
-CAD project (`Value` with the MPNs in parentheses, `MPN`, `Value_Confirmed`, the
+CAD project (`MPN`, the hidden copies `MPN_Confirmed` and `Value_Confirmed`, the
 LCSC field; KiCad: `set_symbol_fields` of the MCP server kicad-workbench) and into
 the project file (`project_update_part`, `adopt_part`). When the tool cannot
 process a field of the BOM (a JLCPCB number of a different MPN, a text that is not
@@ -446,7 +446,8 @@ a number), the agent asks the user.
 ### With the MCP tools
 
 1. The agent gets the parts of the CAD project from the CAD tool: for each symbol, the
-   fields MPN, Value, Value_Confirmed and Datasheet and the reference, as they are.
+   fields Value, MPN, Value_Confirmed, MPN_Confirmed and Datasheet and the reference,
+   as they are.
    The best source is a BOM file (CSV) with one line for each symbol, for example
    from the tool `export_bom` of the MCP server kicad-workbench (with `output_path`).
    The agent then gives only the path, not the values. A list of parts from the MCP
@@ -455,10 +456,10 @@ a number), the agent asks the user.
    A relative path of a BOM file is relative to the project folder (the folder of
    `datasheet-lens.toml`), not to the working folder of the MCP server.
    The tool finds the parts of each symbol (see "MPN and Value fields" below). Each
-   part with an MPN needs its datasheet, also an alternative in its Value.
+   part with an MPN needs its datasheet, also an alternative in its MPN.
 3. The result gives one line for each conflict and each change in the CAD project
    (see "MPN and Value fields"), one line for each symbol that is not confirmed or
-   that needs the completion of its fields, one line with the symbols that have no
+   that has the old convention (the MPNs in Value), one line with the symbols that have no
    selected part, one line with the symbols that are not fitted (DNP: their parts
    stay parts of the project), the number of the same parts, and one line for each
    part that is:
@@ -491,41 +492,35 @@ a number), the agent asks the user.
 
 ### MPN and Value fields
 
-Each symbol has three fields for its parts (the model is agreed with the user,
-2026-11-05):
+Each symbol has four fields for its parts (the model is agreed with the user,
+2026-11-07):
 
 | Field | Content |
 |---|---|
-| `Value` | A general value, and the MPNs in one text in parentheses: the fitted part first, then the alternatives. `2N7002 (2N7002LT1G, BSS138LT1G)`, `100nF 10V (GRM155R71A104KA01D)`. The designer changes it in KiCad. |
-| `MPN` | The confirmed copy of the MPNs in the parentheses (`2N7002LT1G, BSS138LT1G`). The BOM, the distributors and the assembly services read it. |
+| `Value` | The general value: `2N7002`, `100nF 10V`, `LM358`. The designer changes it in KiCad. The tool reads no MPN from it. |
+| `MPN` | The MPNs of the part: the fitted part first, then the alternatives (`2N7002LT1G, BSS138LT1G`). The designer changes it in KiCad, and KiCad can show it in the schematic. The BOM, the distributors and the assembly services read it. |
 | `Value_Confirmed` | A hidden field: a copy of the `Value` of the last confirmation. |
+| `MPN_Confirmed` | A hidden field: a copy of the `MPN` of the last confirmation. |
 
-The convention of the parentheses:
+The list of MPNs in `MPN` and `MPN_Confirmed`:
 
-- Only the text in parentheses gives MPNs. All other text of `Value` is the general
-  value. The tool does not guess the kind of a word, and it does not use the data of
+- The tool does not guess the kind of a word, and it does not use the data of
   datasheet-lens for the check. Thus the check is the same with and without
   datasheet-lens.
-- The separators of the MPNs are `,` and `;`, in the parentheses and in `MPN`. A
-  slash is not a separator: it is part of many MPNs (`LM358DR/NOPB`). A space needs
-  no quotes (`(ABC 123)`). `~` is an empty field (KiCad).
-- An MPN with `,`, `;` or a parenthesis is in quotes, as in CSV (`""` is a quote):
-  `2N7002 ("BC847B,215", BSS138LT1G)`. A quote has this function only at the start
-  of an MPN: `ICL7660"CPA` is one MPN. In `MPN`, a parenthesis needs no quotes. The
-  tool writes quotes only where they are necessary, and the quotes that are not
-  necessary do not count in a comparison. The quotes do not change the meaning of a
-  word: `"-"` and `"TBD"` are the same as `-` and `TBD`. The spaces around an MPN do
-  not count, also in quotes.
+- The separators of the MPNs are `,` and `;`. A slash is not a separator: it is part
+  of many MPNs (`LM358DR/NOPB`). A space needs no quotes (`ABC 123`). `~` is an empty
+  field (KiCad).
+- An MPN with `,` or `;` is in quotes, as in CSV (`""` is a quote):
+  `"BC847B,215", BSS138LT1G`. A quote has this function only at the start of an MPN:
+  `ICL7660"CPA` is one MPN. The tool writes quotes only where they are necessary, and
+  the quotes that are not necessary do not count in a comparison. The quotes do not
+  change the meaning of a word: `"-"` and `"TBD"` are the same as `-` and `TBD`. The
+  spaces around an MPN do not count, also in quotes.
 - A comma with no space before three digits (`BC847B,215`, the packing code of NXP
   and Nexperia) in a list with no quotes: when each separator of the list is such a
   comma, the list is one MPN. Thus `MPN = BC847B,215` stays clean for the
   distributors. Else it is a conflict: write the MPN in quotes. The tool does not
   guess the items of such a list: the full text is one item.
-- One text in parentheses holds all MPNs. More texts in parentheses, a parenthesis
-  that is not closed, or a parenthesis in an MPN with no quotes, is a conflict: the
-  user corrects `Value`.
-- Each text in parentheses is a list of MPNs: `10k (1%)` gives the MPN `1%`. Write
-  such a text in an other form (`10k 1%`).
 - An alternative is an other orderable code of the part, a part of an other
   manufacturer, or the part of a variant of the product. Each one needs its own
   datasheet. The Datasheet field of the symbol belongs to the fitted part.
@@ -534,67 +529,71 @@ The convention of the parentheses:
   a conflict. A KiCad in an other language writes a translation of this text: the
   tool takes it as an MPN.
 - `N/A`, `NA`, `-`, `--` and `none` tell that the symbol needs no part (a test
-  point, a generic resistor): no datasheet, no message. `TBD` (to be determined)
-  tells that no part is selected yet, as with an empty `MPN`, also in the
-  parentheses (`10k (TBD)`).
+  point, a generic resistor): no datasheet. `TBD` (to be determined) tells that no
+  part is selected yet, as with an empty `MPN`.
 - One BOM holds the primary MPN and its alternatives together: the assembly selects
   the alternative, not the BOM. For the variants of a product in KiCad 10, see
   below.
 
 The check of each symbol. The confirmation of the user is the truth:
 
-- **Change**: `Value` is not equal to `Value_Confirmed`, or the MPNs in the
-  parentheses are not the items of `MPN` (an other MPN, an other order, an other
-  spelling). The comparison uses the words of the general value (the spaces between
-  words do not count, the words and their case count: `10 k` is not `10k`, `4m7` is
+- **Change**: `MPN` is not equal to `MPN_Confirmed` (an other MPN, an other order,
+  an other spelling, an empty `MPN`), or `Value` is not equal to `Value_Confirmed`.
+  The comparison uses the words of the general value (the spaces between words do
+  not count, the words and their case count: `10 k` is not `10k`, `4m7` is
   milliohm, `4M7` is megaohm) and the list of the MPNs. The tool tells the user,
-  gives the new MPNs and the confirmed MPNs that are not in `Value` now, and the
-  values of `MPN` and `Value_Confirmed` that a confirmation writes. Until the user
-  confirms the change, the check uses the confirmed `MPN`. When the user does not
-  confirm it, the `Value` must change back. For a new general value with no MPN in
-  `Value`, the user selects a new part and writes it into `Value` first.
-- **Confirmed**: the MPNs in the parentheses are the items of `MPN`, and `Value` is
-  equal to `Value_Confirmed`. The parts are the MPNs.
-- **Not confirmed**: `Value` has MPNs in the parentheses, and `Value_Confirmed` is
-  empty or the CAD data has no such field (the first confirmation). When `MPN` is
-  empty, the parts are the MPNs in the parentheses. The tool gives the values to
-  write when the user agrees. An `MPN` that is empty after a confirmation is a
-  change.
-- **Complete the fields**: `Value` has no parentheses, `MPN` has MPNs, and
-  `Value_Confirmed` has no parentheses. The tool gives the fields that complete the
-  symbol by the convention: `Value = 10k (RC0603FR-0710KL)` and the same
-  `Value_Confirmed`. The parts do not change. Not for an empty `Value` (a BOM with
-  no Value column). When `Value_Confirmed` has parentheses and `Value` has none, the
-  user removed the MPNs: a change.
+  gives the new MPNs and the confirmed MPNs that are not in `MPN` now, and the
+  values of `MPN_Confirmed` and `Value_Confirmed` that a confirmation writes. The
+  agent adds the datasheet of a new MPN at once (this changes no project), then asks
+  the user. Until the user confirms the change, the confirmed MPNs are the parts.
+  When the user does not confirm it, `Value` and `MPN` must change back.
+- **A new general value with the confirmed MPN**: the MPN can be wrong now. The user
+  selects a new part (and writes it into `MPN`), or confirms that the part stays.
+- **Confirmed**: `MPN` is equal to `MPN_Confirmed`, and `Value` is equal to
+  `Value_Confirmed`. The parts are the MPNs.
+- **Not confirmed**: `MPN` has MPNs, and `MPN_Confirmed` or `Value_Confirmed` is
+  empty (the first confirmation). The parts are the MPNs. The tool gives the values
+  to write when the user agrees.
+- **The old convention**: `Value` has a list of MPNs in parentheses
+  (`2N7002 (2N7002LT1G, BSS138LT1G)`), the symbol has no `MPN_Confirmed`, and `MPN`
+  is empty or holds the same MPNs (or the MPNs in the parentheses of
+  `Value_Confirmed`). The tool proposes the move into the four fields:
+  `Value = 2N7002`, `MPN` = the MPNs of the parentheses, `MPN_Confirmed` = the old
+  `MPN` (the confirmed copy of the old convention), `Value_Confirmed` = the general
+  value of the old `Value_Confirmed`. A confirmed symbol stays confirmed, and the
+  parts do not change. A symbol with an `MPN_Confirmed`, or with other MPNs in `MPN`,
+  has the new convention: its parentheses are text of the general value
+  (`10k (1%)`).
 - A general value with no MPN: no part is selected. The tool gives the references
   in one line (not the power symbols, `#PWR01`).
-- **No column `Value_Confirmed`** (a BOM of an other CAD tool): the tool compares
-  only the parentheses and `MPN`. The result gives one line: a change of a general
-  value is not found. Each CAD tool can add a column to its BOM: add the field
-  `Value_Confirmed` to the symbols and to the BOM, or use an unused custom column and
-  give its name with `--confirmed-column` (MCP: `bom_confirmed_column`).
+- **No column `Value_Confirmed` or `MPN_Confirmed`** (a BOM of an other CAD tool):
+  the tool does not find a change of a general value, or of a part. The result gives
+  one line for each missing field. Each CAD tool can add a column to its BOM: add the
+  hidden field to the symbols and to the BOM, or use an unused custom column and give
+  its name with `--confirmed-column` and `--mpn-confirmed-column` (MCP:
+  `bom_confirmed_column` and `bom_mpn_confirmed_column`).
 - More MPN columns (`MP` and `MANUFACTURER_PART_NUMBER` of Eagle, `MPN` and `mpn`):
   the first one with an MPN, in the order of the usual MPN names (`MPN` first), is
   the field `MPN` of the line. A column with a "no part"
   text (`-`) against a column with an MPN is a conflict. An other one with different
   MPNs is a conflict, and its MPNs are parts too: none is lost, and none replaces a
-  confirmed MPN. The MPNs of more `Value` columns are parts too. The user corrects
-  the columns: a confirmation does not.
+  confirmed MPN. The user corrects the columns: a confirmation does not.
 - The MPNs of a conflict of more columns are parts, but not alternatives.
-- A symbol with a conflict gets no change, completion or "not confirmed" line, and
-  no "no part selected": a write of a proposal can hide the conflict. The user
-  corrects the fields first. Its parts are the MPNs of `MPN`, else the MPNs of
-  `Value`.
+- A symbol with a conflict gets no change, move or "not confirmed" line, and no
+  "no part selected": a write of a proposal can hide the conflict. The user
+  corrects the fields first. Its parts are the confirmed MPNs, else the MPNs of
+  `MPN`.
 - Two spellings of one part in the CAD project (other signs or case:
   `LTC3588EMSE#PBF`, `LTC3588EMSEPBF`) are one part, with the first spelling. A
   spelling that is not the spelling of the project file gives a `different` line.
 
 The variants of a product (KiCad 10) are an other way to write alternatives: KiCad
 keeps the fields of each variant. A CAD tool with no variants uses the one BOM with
-the alternatives in `Value` and `MPN`. Give one BOM file for each
+the alternatives in `MPN`. Give one BOM file for each
 variant, the default variant first (`project_check(bom=[...])`, `datasheet-lens check
 a.csv b.csv`). The parts of all files count. Each file gets the check of the confirmed
-fields: a variant can set an other `Value`, `MPN` or `Value_Confirmed`. With more
+fields: a variant can set an other `Value`, `MPN`, `Value_Confirmed` or
+`MPN_Confirmed`. With more
 variants, each line needs its reference: the tool finds the line of the default
 variant by it. A message of an other variant names its file (`Q5 (variant b.csv)`),
 and the tool gives it only when the default variant does not give the same message. A
@@ -604,12 +603,12 @@ reference with an other MPN in an other variant is not a conflict. The Datasheet
 field of a variant line that is equal to the field of the default variant is
 inherited: it is not the datasheet of the other part of the variant.
 
-The result names the fields to write by the columns of the BOM, or by `mpn_fields`
-and `confirmed_field` of the parts:
+The result names the fields to write by the columns of the BOM, or by `mpn_fields`,
+`confirmed_field` and `mpn_confirmed_field` of the parts:
 
-- Each MPN column with the MPN of the line (Eagle: `MP` and
-  `MANUFACTURER_PART_NUMBER`), and the column of `Value_Confirmed` (also the column
-  of `--confirmed-column`).
+- The columns of `MPN_Confirmed` and `Value_Confirmed` (also the column of
+  `--confirmed-column`). A move also writes each MPN column with the MPN of the line
+  (Eagle: `MP` and `MANUFACTURER_PART_NUMBER`).
 - With no MPN in the line: the one MPN column of the BOM, else `MPN`. With more
   names, or more filled names in a line of more symbols, the result names the
   choices: the user selects the field of the symbol.
@@ -628,7 +627,7 @@ kicad-workbench does the same check of the fields (no datasheets).
 Export a BOM as CSV from the CAD tool, then compare it:
 
 ```sh
-kicad-cli sch export bom --fields 'Reference,Value,MPN,Value_Confirmed,Datasheet,${DNP}' \
+kicad-cli sch export bom --fields 'Reference,Value,MPN,Value_Confirmed,MPN_Confirmed,Datasheet,${DNP}' \
     --output bom.csv design.kicad_sch
 datasheet-lens check bom.csv
 ```
@@ -712,8 +711,9 @@ The reader uses these rules:
   attribute (`MP` or `MANUFACTURER_PART_NUMBER`). A column `Part Number` is not
   used: it often holds a part number of the company.
 - The reader always reads the `Value` column, also with `--column`: it gives the
-  general value and the MPNs in parentheses, and the check finds the changes and
-  the conflicts with it (see "MPN and Value fields").
+  general value, and the check finds the changes and the conflicts with it (see
+  "MPN and Value fields"). It also reads the columns `Value_Confirmed` and
+  `MPN_Confirmed`.
 - The reference column is the first of: `Reference`, `References`, `Refs`,
   `Designator`, `Designators`, `RefDes`, `Parts`.
 - The Datasheet column is the first of: `Datasheet`, `Datasheet URL`,

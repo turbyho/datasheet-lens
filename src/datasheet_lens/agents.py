@@ -40,15 +40,16 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
   file, CSV, or its MCP server) and compare them: project_check with bom or
   parts (CLI `datasheet-lens check BOM.csv`). It gives the missing, extra and
   different parts with the next step, and the changes in the CAD project. The
-  convention: Value holds a general value and the MPNs in parentheses, the
-  fitted part first (`2N7002 (2N7002LT1G, BSS138LT1G)`). The field MPN holds
-  the confirmed copy of these MPNs, and the hidden field Value_Confirmed a copy
-  of the confirmed Value. The confirmation of the user is the truth. A change is
-  valid only when the user confirms it. Then write the fields that project_check
-  gives (KiCad: set_symbol_fields of the MCP server kicad-workbench). The CAD
-  BOM is the master: after each change of a part that the user confirms
-  (project_update_part, adopt_part, a replacement), write the new or changed
-  part into the CAD project too (Value, MPN, Value_Confirmed, LCSC).
+  convention: Value holds the general value (`2N7002`, `100nF 10V`), the field
+  MPN the MPNs, the fitted part first (`2N7002LT1G, BSS138LT1G`), and the
+  hidden fields Value_Confirmed and MPN_Confirmed the copies of the last
+  confirmation. The confirmation of the user is the truth. For a new MPN, add
+  its datasheet at once; a change is valid only when the user confirms it. Then
+  write the fields that project_check gives (KiCad: set_symbol_fields of the MCP
+  server kicad-workbench). The CAD BOM is the master: after each change of a
+  part that the user confirms (project_update_part, adopt_part, a replacement),
+  write the new or changed part into the CAD project too (MPN, MPN_Confirmed,
+  Value_Confirmed, LCSC).
   project_status (CLI `datasheet-lens ls`) gives the parts and documents of the
   file. If you cannot get a datasheet, tell the user, with the search links of
   part_links (CLI `datasheet-lens links MPN`; also for symbols, footprints and

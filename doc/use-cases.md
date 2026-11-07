@@ -46,19 +46,20 @@ project file must hold the same parts as the CAD project.
 1. Get the parts of the CAD project: a BOM export as CSV with one line for each
    symbol (`kicad-cli sch export bom`, or `export_bom` of the MCP server
    kicad-workbench), or a list from the MCP server of the CAD tool. Give the fields
-   `MPN`, `Value` and `Value_Confirmed` as they are: each part with an MPN needs its
-   datasheet, also an alternative in `Value`.
+   `Value`, `MPN`, `Value_Confirmed` and `MPN_Confirmed` as they are: each part with
+   an MPN needs its datasheet, also an alternative in `MPN`.
 2. Compare them with the project file: `project_check(bom=<CSV file>)` or
    `project_check(parts)` (CLI: `datasheet-lens check bom.csv`). The CSV reader is
    tested only with BOM exports of KiCad and Eagle.
 3. For each `conflict`: tell the user. The fields or the columns of one symbol do
    not agree, for example two MPN columns with different MPNs. One of them is wrong.
-4. For each `change in the CAD project`: tell the user. The MPNs in the
-   parentheses of `Value` are not the field `MPN`, or `Value` is not equal to
-   `Value_Confirmed`, for example a new MPN or a new general value. Write the fields
-   of the line only when the user confirms the change. For each `complete the
-   fields` line, write the given fields: the MPN goes into `Value` in parentheses
-   (`10k (RC0603FR-0710KL)`), and the parts do not change.
+4. For each `change in the CAD project`: add the datasheet of each new MPN at once
+   (this changes no project), then tell the user. `MPN` is not equal to
+   `MPN_Confirmed`, or `Value` is not equal to `Value_Confirmed`, for example a new
+   MPN or a new general value. Write the fields of the line only when the user
+   confirms the change. For each `the old convention` line (the MPNs in the
+   parentheses of `Value`), write the given fields when the user agrees: the MPNs go
+   into `MPN`, and the parts do not change.
 5. For each `missing` part: add its datasheet and the part (`add_document`,
    `project_add_part`). The line of the result gives the next call. An alternative
    of a part (`[alternative of MPN]`) needs its datasheet too.
