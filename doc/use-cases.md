@@ -185,8 +185,8 @@ a value two times.
 1. Before you read a value, call `find_facts` with the part, the document or a text.
 2. When you compare a fact with the original, set its state with `set_fact_status`:
    `checked`, or `disputed` with the reason.
-3. When you save a new fact, read the note of `save_fact` about similar facts of the
-   same page.
+3. When you save a new fact, read the note of `save_fact` about the facts of the
+   document that it can be a copy of.
 
 **Result.** A session uses the values of earlier sessions, and knows how far to trust
 each one. A concrete MPN also finds the facts of the datasheet of its base part.

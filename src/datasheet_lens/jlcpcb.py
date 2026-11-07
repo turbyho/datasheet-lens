@@ -562,7 +562,7 @@ def parameter_lines(category: str) -> list[str]:
 def offers(mpn: str, exact: bool = True) -> list:
     """The parts of the JLCPCB library for an MPN: exact, or each MPN that
     starts with it (up to 50). As Offer objects of distributors.py."""
-    from .distributors import MIN_PREFIX, Offer
+    from .distributors import MIN_PREFIX, Offer, price_text
 
     mpn = mpn.strip()
     if not mpn:
@@ -585,9 +585,10 @@ def offers(mpn: str, exact: bool = True) -> list:
         out.append(Offer(
             source="JLCPCB", mpn=row["mfr"], manufacturer=row["manufacturer"] or "",
             description=row["description"] or "", stock=row["stock"] or 0,
-            prices=[(int(q.split("-")[0]), f"{p} USD") for q, _, p in
-                    (x.partition(":") for x in str(row["price"] or "").split(",") if ":" in x)
-                    if q.split("-")[0].isdigit()],
+            prices=[(int(q), price) for q, price in
+                    ((q.split("-")[0], price_text(p, "USD")) for q, _, p in
+                     (x.partition(":") for x in str(row["price"] or "").split(",") if ":" in x))
+                    if q.isdigit() and price],
             package=row["package"] or "", library=library(row), datasheet_url=row["datasheet"] or "",
             product_url=PART_URL.format(lcsc=row["lcsc"]), distributor_pn=f"C{row['lcsc']}"))
     return out

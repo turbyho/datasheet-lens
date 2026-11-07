@@ -631,13 +631,15 @@ def save_fact(
         doc = _doc(store, document)
         if element:
             _elements_ready(store, doc.id)
-        similar = similar_facts(store, doc.id, page, subject, element)
+        similar = similar_facts(store, doc.id, subject, value, unit, conditions, column, part, element)
         fact_id = save(store, doc.id, page, subject, value, unit=unit, conditions=conditions, column=column,
                        element_id=element, bbox=bbox, note=note, source_kind="model", model=model, part=part)
         out = f"fact #{fact_id} saved (unchecked)"
         if similar:
-            out += ("\nnote: the same page has facts with this element or subject: "
-                    + ", ".join(f"#{r['id']} {r['subject']}" for r in similar)
+            out += ("\nnote: the document has facts that this fact can be a copy of (the same subject and "
+                    "conditions, or the same cell of the table): "
+                    + ", ".join(f"#{r['id']} page {r['page']}: {r['value']}" + (f" {r['unit']}" if r["unit"] else "")
+                                for r in similar)
                     + ". If the new fact is a copy, set its state to disputed with set_fact_status.")
         return out
 

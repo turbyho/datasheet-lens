@@ -9,7 +9,7 @@ from datasheet_lens.store import Store
 PART = {"ManufacturerPartNumber": "TPS7A0233PYCHR", "Manufacturer": "Texas Instruments",
         "Description": "LDO Voltage Regulators", "LifecycleStatus": "New Product", "IsDiscontinued": "false",
         "AvailabilityInStock": "1234", "Availability": "1234 In Stock", "LeadTime": "6 Weeks", "Min": "1",
-        "Mult": "1", "PriceBreaks": [{"Quantity": 1, "Price": "0,52 €", "Currency": "EUR"}],
+        "Mult": "1", "PriceBreaks": [{"Quantity": 1, "Price": "0,52 €", "RawPrice": 0.52, "Currency": "EUR"}],
         # As the API gives them for a Czech account: the packaging options, no package.
         "ProductAttributes": [{"AttributeName": "Balení", "AttributeValue": "Reel"},
                               {"AttributeName": "Balení", "AttributeValue": "Cut Tape"},
@@ -129,7 +129,10 @@ def test_offers_of_one_mpn_and_failures(store_home, monkeypatch, tmp_path):
 
     reel = dict(PART, MouserPartNumber="595-A", AvailabilityInStock="100")
     tape = dict(OLD, ManufacturerPartNumber="TPS7A0233PYCHR", MouserPartNumber="595-B", AvailabilityInStock="5")
-    unknown = dict(PART, ManufacturerPartNumber="TMP112D0IDPWR", AvailabilityInStock=None, Availability="On Order")
+    # As Mouser gives it (a live call, 2026-11-07): the text Availability is in the
+    # language of the account; the data fields give the quantity on order.
+    unknown = dict(PART, ManufacturerPartNumber="TMP112D0IDPWR", AvailabilityInStock=None, Availability="Žádný",
+                   AvailabilityOnOrder=[{"Quantity": 2994, "Date": "2027-02-17T00:00:00"}], FactoryStock="0")
     fake_api(monkeypatch, [tape, reel, unknown])
     with Store() as store:
         project = prj.init_project(tmp_path / "board")
@@ -137,7 +140,16 @@ def test_offers_of_one_mpn_and_failures(store_home, monkeypatch, tmp_path):
             prj.add_part(project, store, mpn)
     lines = distributors.availability(prj.load(project.root))
     assert "TPS7A0233PYCHR: New Product, stock 100" in lines
-    assert "TMP112D0IDPWR: New Product, stock unknown. WARNING: no stock (On Order), lead time 6 weeks" in lines
+    assert ("TMP112D0IDPWR: New Product, stock unknown. WARNING: no stock (2994 on order for 2027-02-17), lead time "
+            "6 weeks") in lines
+    assert not any("Žádný" in line for line in lines)
+    offer = distributors._mouser_offer(dict(unknown, AvailabilityInStock="0", FactoryStock="40"))
+    assert "stock: 0 (2994 on order for 2027-02-17, 40 at the factory)" in distributors.format_offer(offer)
+    # No data field gives the state: the text of Mouser, with its source.
+    offer = distributors._mouser_offer(dict(unknown, AvailabilityOnOrder=[], Availability="Non-Stocked"))
+    assert "stock: unknown (Mouser: Non-Stocked)" in distributors.format_offer(offer)
+    # A stock number makes the text a summary: not shown.
+    assert distributors._mouser_offer(dict(unknown, AvailabilityInStock="0", AvailabilityOnOrder=[])).availability == ""
 
     calls = []
 
@@ -255,3 +267,44 @@ def test_mouser_gives_only_the_parts_of_the_text(monkeypatch, store_home, tmp_pa
         lines = distributors.availability(prj.load(project.root), store)
     assert "TPS7A0233PYCHR: New Product, stock 1234. WARNING: not orderable: Mouser gives no part number to order" \
         in lines
+
+
+def test_the_quantities_on_order_of_each_offer(monkeypatch, store_home, tmp_path):
+    """The availability line gives the quantities on order of each offer of the
+    part (cut tape and reel), not only of the first one."""
+    reel = dict(PART, MouserPartNumber="595-A", AvailabilityInStock="0", AvailabilityOnOrder=[])
+    tape = dict(PART, MouserPartNumber="595-B", AvailabilityInStock="0",
+                AvailabilityOnOrder=[{"Quantity": 5000, "Date": "2027-03-01T00:00:00"}])
+    fake_api(monkeypatch, [reel, tape])
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "TPS7A0233PYCHR")
+    lines = distributors.availability(prj.load(project.root))
+    assert ("TPS7A0233PYCHR: New Product, stock 0. WARNING: no stock (5000 on order for 2027-03-01), lead time "
+            "6 weeks") in lines
+
+
+def test_mouser_prices_in_the_format_of_the_account():
+    """Mouser gives the text Price in the format of the account, with its own
+    currency sign ("2 012,60 Kč"), and the number RawPrice (a live call,
+    2026-11-07). The price is the number with the currency code."""
+    breaks = [{"Quantity": 2500, "Price": "2\u00a0012,60 Kč", "RawPrice": 2012.6, "Currency": "CZK"},
+              {"Quantity": 10, "Price": "0,223 Kč", "RawPrice": 0.223, "Currency": "CZK"},
+              {"Quantity": 100, "Price": "1 000,00 Kč", "RawPrice": 1000.0, "Currency": "CZK"},
+              {"Quantity": 5, "Price": "1,50 €", "Currency": "EUR"},  # no RawPrice: the text, with its source
+              {"Quantity": 6, "Price": "0,52 €", "RawPrice": 0.52, "Currency": ""},  # no currency code: the text
+              {"Quantity": 7, "Price": "", "RawPrice": None, "Currency": "EUR"}]  # no price: left out
+    offer = distributors._mouser_offer(dict(PART, PriceBreaks=breaks))
+    assert offer.prices == [(2500, "2012.6 CZK"), (10, "0.223 CZK"), (100, "1000 CZK"), (5, "Mouser: 1,50 € (EUR)"),
+                            (6, "Mouser: 0,52 €")]
+    assert "price 2500: 2012.6 CZK, 10: 0.223 CZK, 100: 1000 CZK" in distributors.format_offer(offer)
+
+
+def test_price_text_of_each_source():
+    """One form of a price for each source: the number with the currency code.
+    No number or no currency: no price (DigiKey can leave out UnitPrice)."""
+    assert distributors.price_text(1000.0, "USD") == "1000 USD"
+    assert distributors.price_text("0.0435", "USD") == "0.0435 USD"
+    assert distributors.price_text(1e-05, "EUR") == "0.00001 EUR"
+    for number, currency in ((None, "USD"), (True, "USD"), ("n/a", "USD"), ("NaN", "USD"), (1.5, "")):
+        assert distributors.price_text(number, currency) == ""

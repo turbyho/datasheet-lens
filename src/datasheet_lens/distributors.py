@@ -32,6 +32,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from urllib.parse import quote
 
 from . import makers
@@ -104,6 +105,9 @@ class Offer:
     discontinued: bool = False
     replacement: str = ""
     stock: int | None = None
+    # More availability, in English: the quantities on order with their dates,
+    # the stock of the factory (Mouser). Not the text of the distributor: Mouser
+    # gives it in the language of the account ("11287 Na skladě", "Žádný").
     availability: str = ""
     lead_time: str = ""
     minimum: int | None = None
@@ -249,6 +253,59 @@ def restricted(offer: Offer) -> bool:
 MOUSER_NO_NUMBER = "N/A"
 
 
+def _mouser_availability(part: dict) -> str:
+    """The availability of a Mouser part from its data fields, in English: the
+    quantities on order (AvailabilityOnOrder, with the date) and the stock of
+    the factory (FactoryStock). The text Availability is in the language of
+    the account: usually a summary of the stock, which AvailabilityInStock
+    gives. Only when no data field gives the state (no stock number, nothing
+    on order), the text is the only data: then it comes as Mouser gives it,
+    with its source ("Mouser: Non-Stocked")."""
+    items = []
+    for entry in part.get("AvailabilityOnOrder") or []:
+        quantity = _int(entry.get("Quantity")) if isinstance(entry, dict) else None
+        if quantity:
+            date = str(entry.get("Date") or "")[:10]
+            items.append(f"{quantity} on order" + (f" for {date}" if date else ""))
+    factory = _int(part.get("FactoryStock"))
+    if factory:
+        items.append(f"{factory} at the factory")
+    text = str(part.get("Availability") or "").strip()
+    if not items and text and _int(part.get("AvailabilityInStock")) is None:
+        items.append(f"Mouser: {text}")
+    return ", ".join(items)
+
+
+def price_text(number, currency: str) -> str:
+    """A price as each source gives it in the results: the number with the
+    currency code ("2012.6 CZK", "0.223 CZK"), with no exponent and no zeros at
+    the end. "" when the number or the currency is missing or not valid: a
+    price with no number or no currency is not a price."""
+    currency = str(currency or "").strip()
+    if number is None or isinstance(number, bool) or not currency:
+        return ""
+    try:
+        value = Decimal(str(number).strip())
+    except InvalidOperation:
+        return ""
+    return f"{format(value.normalize(), 'f')} {currency}" if value.is_finite() else ""
+
+
+def _mouser_price(price_break: dict) -> str:
+    """The price of a Mouser price break: the number RawPrice with the currency
+    code (price_text). The text Price is in the format of the account ("2 012,60
+    Kč", with its own currency sign). With no RawPrice or no currency code, the
+    text comes as Mouser gives it, with its source and the currency code."""
+    currency = str(price_break.get("Currency") or "").strip()
+    text = price_text(price_break.get("RawPrice"), currency)
+    if text:
+        return text
+    shown = str(price_break.get("Price") or "").strip()
+    if not shown:
+        return ""
+    return f"Mouser: {shown}" + (f" ({currency})" if currency and currency not in shown else "")
+
+
 def _mouser_offer(part: dict) -> Offer:
     number = str(part.get("MouserPartNumber", "")).strip()
     return Offer(
@@ -258,11 +315,12 @@ def _mouser_offer(part: dict) -> Offer:
         lifecycle=str(part.get("LifecycleStatus") or "").strip(),
         discontinued=str(part.get("IsDiscontinued", "")).lower() == "true",
         replacement=str(part.get("SuggestedReplacement") or "").strip(),
-        stock=_int(part.get("AvailabilityInStock")), availability=str(part.get("Availability") or "").strip(),
+        stock=_int(part.get("AvailabilityInStock")), availability=_mouser_availability(part),
         lead_time=_lead_time(str(part.get("LeadTime") or "")), minimum=_int(part.get("Min")),
         multiple=_int(part.get("Mult")),
-        prices=[(_int(p.get("Quantity")) or 0, f"{p.get('Price', '')} {p.get('Currency', '')}".strip())
-                for p in part.get("PriceBreaks") or []],
+        prices=[(quantity, price) for quantity, price in ((_int(p.get("Quantity")) or 0, _mouser_price(p))
+                                                         for p in part.get("PriceBreaks") or [] if isinstance(p, dict))
+                if price],
         datasheet_url=str(part.get("DataSheetUrl") or "").strip(),
         product_url=str(part.get("ProductDetailUrl") or "").strip(),
         distributor_pn="" if number.upper() == MOUSER_NO_NUMBER else number)
@@ -416,7 +474,8 @@ def format_offer(o: Offer) -> str:
              if restricted(o) else ""]
     if any(marks):
         parts.append(" ".join(m for m in marks if m))
-    parts.append(f"stock: {o.stock if o.stock is not None else o.availability or 'unknown'}"
+    parts.append(f"stock: {o.stock if o.stock is not None else 'unknown'}"
+                 + (f" ({o.availability})" if o.availability else "")
                  + (" (NOT IN STOCK at JLCPCB: the assembly needs an order of the part)"
                     if o.library and o.stock == 0 else ""))
     if o.lead_time:
@@ -523,7 +582,9 @@ def _availability_at(name: str, credential, project, store=None) -> list[str]:
             state += (f". WARNING: {label} does not sell this part now ({o.lifecycle}). This is not the "
                       "lifecycle state of the manufacturer: ask the manufacturer or a different distributor")
         elif not stock:
-            state += (". WARNING: no stock" + (f" ({o.availability})" if o.availability else "")
+            # The quantities on order of each offer (cut tape and reel).
+            more = ", ".join(dict.fromkeys(x.availability for x in orderable or offers if x.availability))
+            state += (". WARNING: no stock" + (f" ({more})" if more else "")
                       + (f", lead time {o.lead_time}" if o.lead_time else ""))
         if part.get("manufacturer") and not own:
             state += (f". WARNING: {label} has no offer from {part['manufacturer']}: the data is of "

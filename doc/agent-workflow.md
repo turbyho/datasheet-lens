@@ -135,9 +135,15 @@ fewer.
 - `model`: the model ID of the agent.
 - `part`: the part, when the document covers more parts.
 
-A new fact has the state `unchecked`. When the page has a fact with the same subject
-or element, the result gives a note. If the new fact is a copy, set its state to
-`disputed`.
+A new fact has the state `unchecked`. The result gives a note with the page and the
+value of each fact of the document that the new fact can be a copy of:
+
+- The same subject, conditions, column and part, also from a different page.
+- The same element, value, unit and column: one cell under a different subject.
+
+The tool ignores case and spaces. A fact with no part agrees with a fact of each
+part. If the new fact is a copy, set its state to `disputed`. A different value of
+the same table gets no note: one table holds many values.
 
 ### 8. Find facts later
 

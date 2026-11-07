@@ -424,6 +424,8 @@ def _digikey_pn(product: dict) -> str:
 def product_line(product: dict, names: list[str], currency: str) -> str:
     """One line for a product: MPN, manufacturer, DigiKey number, state, stock,
     price, the parameters of the filters, datasheet and product URL."""
+    from .distributors import price_text
+
     parts = [f"{product.get('ManufacturerProductNumber', '')} ({(product.get('Manufacturer') or {}).get('Name', '')})"]
     pn = _digikey_pn(product)
     if pn:
@@ -439,8 +441,9 @@ def product_line(product: dict, names: list[str], currency: str) -> str:
                         if restricted(offer) else ""))
     count = stock(product)
     parts.append(f"stock: {count if count is not None else 'unknown'}")
-    if product.get("UnitPrice"):
-        parts.append(f"price 1: {product['UnitPrice']} {currency}")
+    unit_price = price_text(product.get("UnitPrice"), currency)
+    if unit_price:
+        parts.append(f"price 1: {unit_price}")
     for name in names:
         value = _parameter(product, name)
         if value:
@@ -560,7 +563,7 @@ def stock(product: dict) -> int | None:
 def offer_of(product: dict, currency: str):
     """An Offer of distributors.py for a DigiKey product: the cut tape packaging,
     else the first packaging, gives the DigiKey number and the prices."""
-    from .distributors import Offer
+    from .distributors import Offer, price_text
 
     chosen = _chosen_variation(product)
     status = str((product.get("ProductStatus") or {}).get("Status") or "").strip()
@@ -570,8 +573,9 @@ def offer_of(product: dict, currency: str):
         description=str((product.get("Description") or {}).get("ProductDescription") or "").strip(),
         lifecycle=status, discontinued=status.lower() == "obsolete",
         stock=stock(product), minimum=_count(chosen.get("MinimumOrderQuantity")),
-        prices=[(int(float(p.get("BreakQuantity") or 0)), f"{p.get('UnitPrice')} {currency}")
-                for p in chosen.get("StandardPricing") or []],
+        prices=[(quantity, price) for quantity, price in (
+            (int(float(p.get("BreakQuantity") or 0)), price_text(p.get("UnitPrice"), currency))
+            for p in chosen.get("StandardPricing") or []) if price],
         package=_parameter(product, "Supplier Device Package"),
         packaging=str((chosen.get("PackageType") or {}).get("Name") or "").strip(),
         datasheet_url=url(product.get("DatasheetUrl") or ""), product_url=url(product.get("ProductUrl") or ""),

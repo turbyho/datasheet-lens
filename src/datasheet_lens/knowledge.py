@@ -93,11 +93,40 @@ def facts_line(store: Store, doc_id: int, page: int, limit: int = 10) -> str:
     return f"known facts on this page (find_facts gives the values): {shown}{more}"
 
 
-def similar_facts(store: Store, doc_id: int, page: int, subject: str, element_id: str = "") -> list:
-    """The facts of the same page with the same element or the same subject: a
-    new fact can be a copy of one of them."""
-    return [r for r in page_facts(store, doc_id, page)
-            if (element_id and r["element_id"] == element_id) or r["subject"].lower() == subject.strip().lower()]
+def _same_text(a: str, b: str) -> bool:
+    """True for two texts that differ only in case and spaces ("TA = 25 °C" and
+    "TA=25°C")."""
+    return "".join((a or "").split()).casefold() == "".join((b or "").split()).casefold()
+
+
+def similar_facts(store: Store, doc_id: int, subject: str, value: str = "", unit: str = "", conditions: str = "",
+                  column: str = "", part: str = "", element_id: str = "") -> list:
+    """The facts of the document that a new fact can be a copy of (case and
+    spaces are ignored):
+    - the same subject, conditions and column, also from a different page (a
+      summary table and the full table);
+    - the same element, value, unit and column: one cell of a table under a
+      different subject ("VS max" and "Supply voltage max").
+    A fact of the same table with a different subject and a different value is
+    not a copy: one table holds many values. A fact with no part agrees with a
+    fact of each part: the part is optional. An unknown part gives no fact
+    (save_fact gives the error)."""
+    try:
+        part_id = store.find_part(part) if part.strip() else None
+    except LensError:
+        return []
+    rows = store.db.execute("SELECT id, page, element_id, subject, value, unit, conditions, column_name, part_id"
+                            " FROM knowledge WHERE document_id = ? ORDER BY id", (doc_id,)).fetchall()
+
+    def same_part(r) -> bool:
+        return part_id is None or r["part_id"] is None or r["part_id"] == part_id
+
+    def same_value(r) -> bool:
+        return (_same_text(r["subject"], subject) and _same_text(r["conditions"], conditions)) or (
+            bool(element_id) and r["element_id"] == element_id and _same_text(r["value"], value)
+            and _same_text(r["unit"], unit))
+
+    return [r for r in rows if same_value(r) and _same_text(r["column_name"], column) and same_part(r)]
 
 
 def set_status(store: Store, fact_id: int, status: str, note: str = "") -> None:

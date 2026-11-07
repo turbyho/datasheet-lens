@@ -106,10 +106,29 @@ def test_facts(store_home, text_pdf):
     assert "x0 < x1" in tool_error("save_fact", document=doc, page=1, subject="x", value="1",
                                    bbox=[100, 10, 50, 20])
 
-    # A second fact of the same element or subject gets a note; the page tools show the facts.
-    out = text_of(call("save_fact", document=doc, page=1, subject="VS max", value="36", element="p1.P1"))
-    assert f"#{fact_id} supply voltage max" in out and "set_fact_status" in out
+    # A fact with the same subject, conditions, column and part gets a note (case
+    # and spaces are ignored). A different value of the same table (a different
+    # subject, or different conditions) is not a copy: one table holds many values.
+    out = text_of(call("save_fact", document=doc, page=1, subject="Supply  Voltage MAX", value="36", unit="V",
+                       column="MAX", element="p1.P1", part="OPA2134"))
+    assert f"can be a copy of (the same subject and conditions, or the same cell of the table): #{fact_id} page 1: " \
+           f"36 V" in out and "set_fact_status" in out
+    # The same cell under a different subject: a note. A different value of the table: no note.
+    assert f"#{fact_id} page 1: 36 V" in text_of(call("save_fact", document=doc, page=1, subject="VS max",
+                                                      value="36", unit="V", column="MAX", element="p1.P1"))
+    assert "note" not in text_of(call("save_fact", document=doc, page=1, subject="IQ max", value="5", unit="mA",
+                                      column="MAX", element="p1.P1"))
+    # Conditions with other spaces, and a fact with no part: the same fact.
+    first = text_of(call("save_fact", document=doc, page=1, subject="offset", value="0.5", unit="mV",
+                         conditions="TA = 25 °C", part="OPA2134"))
+    offset_id = int(first.split("#")[1].split()[0])
+    assert f"#{offset_id} page 1: 0.5 mV" in text_of(call("save_fact", document=doc, page=1, subject="Offset",
+                                                          value="0.5", unit="mV", conditions="TA=25°C"))
+    assert "note" not in text_of(call("save_fact", document=doc, page=1, subject="supply voltage max", value="30",
+                                      unit="V", column="MAX", conditions="TA = 125 °C", part="OPA2134"))
     assert "note" not in text_of(call("save_fact", document=doc, page=1, subject="new subject", value="1"))
+    assert "part not found" in tool_error("save_fact", document=doc, page=1, subject="offset", value="1",
+                                          part="NO-SUCH-PART")
     assert f"known facts on this page (find_facts gives the values): #{fact_id} supply voltage max" in text_of(
         call("get_page_map", document=doc, page=1))
     assert f"#{fact_id} supply voltage max" in text_of(call("get_page_image", document=doc, element="p1.P1"))

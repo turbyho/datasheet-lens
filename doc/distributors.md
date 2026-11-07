@@ -18,8 +18,12 @@ concrete orderable MPN:
 - The manufacturer and a description.
 - The lifecycle state, for example `New Product` or `Obsolete`. Mouser also gives a
   suggested replacement.
-- The stock. Mouser also gives the availability and the lead time.
-- The prices for different quantities.
+- The stock. Mouser also gives the quantities on order with their dates, the stock of
+  the factory, and the lead time.
+- The prices for different quantities: a number with the currency code (`0.223 CZK`).
+  Mouser gives the text of a price in the format of the account (`0,223 Kč`), and
+  the number: the tool uses the number. When Mouser gives no number, the price is
+  its text with its source (`Mouser: 0,223 Kč (CZK)`).
 - The package, from DigiKey only. Mouser gives no package.
 - The URL of the datasheet and of the product page.
 
@@ -381,7 +385,8 @@ line for each project part with its lifecycle state and its stock. It gives a
 
 - Is not orderable (obsolete or discontinued), with the replacement (Mouser).
 - The distributor does not have (a base part, or a wrong MPN).
-- Has no stock, with the availability and the lead time (Mouser).
+- Has no stock, with the quantities on order and their dates, and the lead time
+  (Mouser).
 - Has the Mouser state `Restricted Availability` or the DigiKey state
   `Discontinued at Digi-Key`: the distributor does not sell the part now. This is not
   the lifecycle state of the manufacturer. Ask the manufacturer or a different
