@@ -290,6 +290,12 @@ changes nothing. `datasheet-lens sync` does these steps:
 8. The CLI builds the element map of each document. The MCP tool builds them in the
    background.
 
+The CLI and the MCP server can work on one project at the same time. A command that
+reads or changes the document folder (`sync`, `ls`, `check`, `set`, `rm`, `add-part`)
+holds a lock of the folder, so that one command does not read a file that the other
+moves. The lock is a file in the store folder (`locks/`), not in the project. A command
+waits for the lock up to 10 minutes, then it stops with an error.
+
 The report gives a line for each change and each problem:
 
 | Line | Meaning | Action |

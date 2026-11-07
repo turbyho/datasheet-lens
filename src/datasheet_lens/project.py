@@ -33,6 +33,7 @@ from tomlkit.items import AoT, Comment, Null, Table, Whitespace
 from . import PROJECT_URL, makers
 from .errors import LensError
 from .fileutil import temp_path, write_atomic
+from .lock import locked
 from .store import LIBRARIES, ROLES, Document, Store, check_source, sha256_file
 
 PROJECT_FILE = "datasheet-lens.toml"
@@ -1070,6 +1071,7 @@ def store_part(store: Store, mpn: str, manufacturer: str = "", document: str = "
     return part_id, doc
 
 
+@locked
 def add_part_with_id(project: Project, store: Store, mpn: str, manufacturer: str = "", document: str = "",
                      role: str = "datasheet", category: str = "", base: str = "",
                      source: dict | None = None) -> tuple[dict, int]:
@@ -1196,6 +1198,7 @@ def _one_part(project: Project, mpn: str, manufacturer: str = "", store: Store |
     return found[0]
 
 
+@locked
 def remove_part(project: Project, mpn: str, manufacturer: str = "", delete_pinned: bool = False,
                 apply: bool = True, store: Store | None = None) -> dict:
     """Remove a part from the project, and delete its copies (see _drop_copies).
@@ -1225,6 +1228,7 @@ def _store_part(store: Store, mpn: str, manufacturer: str, create: bool) -> int 
     return store.find_part(mpn, manufacturer, create=True) if create else None
 
 
+@locked
 def update_part(project: Project, store: Store, mpn: str, manufacturer: str = "", new_mpn: str = "",
                 base: str = "", category: str | None = None, new_manufacturer: str = "", pin: str = "",
                 unpin: str = "") -> dict:
@@ -2780,6 +2784,7 @@ def _reference_test(project: Project, document: str):
     return lambda d: (len(key) >= 8 and d["sha256"].startswith(key.lower())) or d["file"] == _norm_rel(key)
 
 
+@locked
 def remove_document(project: Project, document: str, mpn: str = "", manufacturer: str = "",
                     delete_pinned: bool = False, apply: bool = True, store: Store | None = None) -> dict:
     """Remove a document (SHA-256 prefix of 8 or more characters, or its file
@@ -2874,6 +2879,7 @@ def _store_base(store: Store, part: dict, part_id: int, report: dict) -> int | N
         return None
 
 
+@locked
 def sync(project: Project, store: Store, apply: bool = True, restore: bool = False) -> dict:
     """Compare the project with the store and the folder. If apply is true: add the
     documents that the store links to the parts, copy the missing copies, import
@@ -2886,6 +2892,7 @@ def sync(project: Project, store: Store, apply: bool = True, restore: bool = Fal
     return _sync(project if apply else copy.deepcopy(project), store, apply, restore)
 
 
+@locked
 def dry_run(project: Project, store: Store, details: bool = True) -> tuple[dict, Project]:
     """The state of the documents of a project: the report of sync with no
     change, and a copy of the project as sync would leave it (the references

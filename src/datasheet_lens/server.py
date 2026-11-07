@@ -722,8 +722,8 @@ def project_status(path: ProjectPath = "") -> str:
 
     project = load(path or None)
     with Store() as store:
-        with _add_lock:  # a project_sync does not move the files during the dry run of the folder
-            report = dry_run(project, store, details=False)[0]
+        # dry_run holds the lock of the folder (lock.py); the details need no lock.
+        report = dry_run(project, store, details=False)[0]
         add_details(report, project, store)
         team = model_notes(store)
     return "\n".join(version_notes() + team + format_parts(project) + format_report(report, False, PROJECT_ADD_HINT))
@@ -1255,8 +1255,7 @@ def project_check(
         # added is then not missing (decision 20 of the team server).
         team = sync_before_answer(store)
         result = check_parts(project, store, cad)
-        with _add_lock:  # a project_sync of a different call does not move the files during the dry run
-            result["sync"] = sync_steps(dry_run(project, store, details=False)[0])
+        result["sync"] = sync_steps(dry_run(project, store, details=False)[0])  # with the lock of the folder
         team += model_notes(store)
     return "\n".join(version_notes() + team + [r.summary for r in reads] + format_check(result))
 
