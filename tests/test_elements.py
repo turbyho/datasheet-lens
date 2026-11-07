@@ -164,3 +164,20 @@ def test_find_caption_and_hit_regions(store_home, text_pdf):
         store.db.execute("INSERT INTO captions VALUES (?, 1, 'table', 'Table 7', 'Pins', 4, 50, 60, 1, 1)",
                          (doc.id,))
         assert find_caption(store, doc.id, "Table 7") == [{"page": 4, "element_id": "", "bbox": None}]
+        # The text layer can give a label with no space or with more spaces.
+        assert find_caption(store, doc.id, "Table7") == [{"page": 4, "element_id": "", "bbox": None}]
+
+
+def test_caption_label_with_other_spaces(store_home, text_pdf):
+    """The caption index has "Table5" or "Table  5" (the text layer), the element
+    map "Table 5. ...": the label fits. "Table 5" is still not "Table 57"."""
+    from datasheet_lens.elements import caption_label
+
+    with Store() as store:
+        doc = store.add_document(text_pdf("t.pdf", [[(50, 100, 10, "x")]]))
+        row = {"page": 1, "text": "Table 5. Electrical Characteristics"}
+        for n, label in enumerate(("Table57", "Table  5")):
+            store.db.execute("INSERT INTO captions VALUES (?, ?, 'table', ?, 'x', 1, 50, 60, 1, 1)",
+                             (doc.id, n, label))
+        assert caption_label(store, doc.id, row) == "Table  5"
+        assert caption_label(store, doc.id, {"page": 1, "text": "Table 5-1. Pins"}) == ""

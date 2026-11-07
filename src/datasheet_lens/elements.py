@@ -265,8 +265,11 @@ def list_items(store: Store, doc_id: int, kind: str | None = None) -> list:
 
 def _label_rx(label: str) -> re.Pattern:
     """A text that starts with the caption label: "Table 5" is not "Table 57"
-    and not "Table 5-1"."""
-    return re.compile(rf"^{re.escape(label)}(?![0-9]|[.\-][0-9])", re.I)
+    and not "Table 5-1". The space between the parts of a label is optional:
+    the text layer can give "Table5" or "Table  5" (indexer.CAPTION_RE), and
+    the element map "Table 5"."""
+    tokens = re.findall(r"[0-9]+|[^\s0-9]+", label)
+    return re.compile("^" + r"\s*".join(re.escape(t) for t in tokens) + r"(?![0-9]|\s*[.\-]\s*[0-9])", re.I)
 
 
 def caption_label(store: Store, doc_id: int, row) -> str:

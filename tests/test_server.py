@@ -437,3 +437,6 @@ def test_add_document_title(store_home, text_pdf):
             in out)
     out = text_of(call("add_document", path=str(ldo)))
     assert f"\ntitle: {title!r} (from the PDF metadata or an earlier add)" in out
+    # A document of the store with no title gets the title.
+    out = text_of(call("add_document", path=str(plain), title="Plain"))
+    assert "\ntitle: 'Plain'\n" in out + "\n"

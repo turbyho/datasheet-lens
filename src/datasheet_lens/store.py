@@ -811,8 +811,9 @@ class Store:
 
     def add_document(self, path: Path, title: str = "", source_url: str = "", move: bool = False) -> Document:
         """Copy a file into the store and record it. A file that is already in the
-        store (same SHA-256) is not copied again; it gets the source URL if it has
-        none. move: move the file (a temporary file on the disk of the store)."""
+        store (same SHA-256) is not copied again; it gets the source URL and the
+        title if it has none (a title that it has does not change). move: move
+        the file (a temporary file on the disk of the store)."""
         path = Path(path)
         suffix = path.suffix.lower()
         media_type = MEDIA_TYPES.get(suffix)
@@ -824,8 +825,11 @@ class Store:
             if source_url:
                 self.db.execute("UPDATE documents SET source_url = ? WHERE id = ? AND source_url = ''",
                                 (source_url, existing.id))
-                self.db.commit()
-            return existing
+            if title.strip():
+                self.db.execute("UPDATE documents SET title = ? WHERE id = ? AND title = ''",
+                                (title.strip(), existing.id))
+            self.db.commit()
+            return self.document(sha)
         pages = None
         if media_type == "application/pdf":
             # Open the source first: a PDF that pdfium cannot read (encrypted,
@@ -1057,6 +1061,20 @@ class Store:
             " JOIN parts p ON p.id = b.part_id WHERE a.part_id = ? AND a.role = 'datasheet'"
             " AND b.role = 'datasheet' ORDER BY p.mpn", (part_id,)).fetchall()
         return [r[0] for r in rows] if len(rows) > 1 else []
+
+    def datasheet_parts(self, shas: list[str]) -> dict[str, list[str]]:
+        """The MPNs of the parts that each document is the datasheet of (role
+        datasheet), by SHA-256: the variants of one datasheet."""
+        out: dict[str, list[str]] = {}
+        unique = sorted(set(shas))
+        for i in range(0, len(unique), 500):  # below the limit of the SQL variables
+            chunk = unique[i:i + 500]
+            for sha, mpn in self.db.execute(
+                    "SELECT DISTINCT d.sha256, p.mpn FROM part_documents pd JOIN documents d ON d.id = pd.document_id"
+                    f" JOIN parts p ON p.id = pd.part_id WHERE pd.role = 'datasheet' AND d.sha256 IN"
+                    f" ({','.join('?' * len(chunk))}) ORDER BY d.sha256, p.mpn", chunk):
+                out.setdefault(sha, []).append(mpn)
+        return out
 
     def set_category(self, part_id: int, category: str) -> None:
         """The function of the part (for example ADC). The column is "family"."""

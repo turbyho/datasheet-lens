@@ -23,8 +23,7 @@ from typing import Any
 
 from .. import makers
 from ..bundles import BUNDLE_BACKENDS, canonical_key
-from ..store import ROLES
-from ..store import _VERSION_TABLES as VERSIONED
+from ..store import ROLES, _VERSION_TABLES as VERSIONED
 
 # The tables in the order of a pull: a row comes after the rows that it refers to.
 # A new table comes at the end: a page position of a pull has the index of its table.

@@ -1494,14 +1494,27 @@ def test_status_gives_the_parts_of_a_document_one_time(store_home, text_pdf, tmp
         for mpn in mpns + ["TLV755P"]:
             prj.add_part(project, store, mpn)
         lines = prj.format_parts(prj.load(project.root), store)
-    listed = "parts: " + ", ".join(sorted(mpns))
     doc_lines = [line for line in lines if doc.sha256[:12] in line]
     assert len(doc_lines) == 4
-    assert doc_lines[0].endswith(listed)
-    assert not any("parts:" in line for line in doc_lines[1:])
-    assert not any("variants" in line for line in lines)
+    assert doc_lines[0].endswith("variants: " + ", ".join(sorted(mpns)))
+    assert not any("variants" in line for line in doc_lines[1:])
+    assert not any("variants" in line for line in lines if line[:1] != " ")  # not at the part lines
     ldo = next(line for line in lines if other.sha256[:12] in line)
-    assert "parts:" not in ldo  # a document of one part
+    assert "variants" not in ldo  # a datasheet of one part
+
+
+def test_status_gives_only_the_variants_of_a_datasheet(store_home, text_pdf, tmp_path):
+    """A document of an other role (a package drawing of many parts) gives no
+    list of parts: only a datasheet has variants."""
+    with Store() as store:
+        drawing = store.add_document(text_pdf("sot23.pdf", [[(50, 60, 14, "SOT-23")]]))
+        for mpn in ("BSS138", "2N7002", "BSS84"):
+            store.link(store.add_part(mpn, "onsemi"), drawing.id, "package")
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "BSS138", "onsemi")
+        lines = prj.format_parts(prj.load(project.root), store)
+    assert any(drawing.sha256[:12] in line and "package" in line for line in lines), lines
+    assert not any("variants" in line or "2N7002" in line for line in lines), lines
 
 
 def test_role_package(store_home, text_pdf, tmp_path):

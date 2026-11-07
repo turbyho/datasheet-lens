@@ -318,7 +318,8 @@ def add_document(
             "for ADC34J24. Only with part."))] = None,
         title: Annotated[str, Field(description=(
             "The title of the document, for example \"TLV755P 500-mA Low-Dropout Regulator\". Empty: the "
-            "title of the PDF metadata. The title of a document that the store has already does not change."
+            "title of the PDF metadata. A document that the store has already keeps its title; a document of "
+            "the store with no title gets this title."
         ))] = "") -> str:
     """Add a PDF document to the store: copy or download it, build its index and
     its element map, and link it to its part. Use it when list_documents does
@@ -332,7 +333,7 @@ def add_document(
     tool removes a link of a document to a part in the store: give part only
     when the MPN is sure. The result gives the title of the document: the
     title of the PDF metadata can be wrong (a file name, a different
-    document). No tool changes the title later: give title when you know it.
+    document). No tool changes a title later: give title when you know it.
     To put the part into the user project: project_add_part."""
     from pathlib import Path
 
@@ -519,10 +520,11 @@ def get_element_text(
             "Element IDs from get_page_map or list_items, for example [\"p7.T1\", \"p7.P3\"]."))]) -> str:
     """The full text of elements from the text layer, with their type, page and
     region. Use it for headings and paragraphs. Read table values, figures and
-    formulas from get_page_image: the text layer can lose their structure. For a
-    table, figure or formula, the result gives only its caption, and the call of
-    get_page_image for its image (with the caption label of a table, the call
-    that gives each page of a table that continues on the next pages)."""
+    formulas from get_page_image: the text layer can lose their structure. The
+    text of a table or figure is only its caption. For a table, figure or
+    formula, the result also gives the call of get_page_image for its image
+    (with the caption label of a table, the call that gives each page of a table
+    that continues on the next pages)."""
     from .elements import caption_label, element
 
     with Store() as store:
@@ -754,8 +756,8 @@ def project_status(path: ProjectPath = "") -> str:
     in the project folder: missing or changed copies, new files, problems. It
     changes nothing. Gives one line for each part (MPN, manufacturer, base part)
     and one line for each document (reference, role, file). The first line of a
-    document of more parts (for example the variants of one datasheet) gives
-    these parts; the next lines of the document do not. A first
+    datasheet of more parts gives these parts (variants); the next lines of the
+    document do not. A first
     line can tell about a newer release or a necessary restart of the LLM
     client, or about the team server (a failed sync, a conflict): tell the user."""
     from .project import add_details, dry_run, format_parts, format_report, open_project
