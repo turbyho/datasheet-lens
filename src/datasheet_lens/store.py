@@ -983,10 +983,24 @@ class Store:
         self.db.commit()
 
     def parts(self) -> list[sqlite3.Row]:
-        """All parts, with the number of their documents."""
+        """All parts, with the number of their own documents (documents), the MPN
+        of the base part (base_mpn) and the number of the documents of the base
+        part that are not own documents (base_documents). See count_text."""
         return self.db.execute(
-            "SELECT p.*, count(pd.document_id) AS documents FROM parts p"
-            " LEFT JOIN part_documents pd ON pd.part_id = p.id GROUP BY p.id ORDER BY p.mpn").fetchall()
+            "SELECT p.*, count(pd.document_id) AS documents, b.mpn AS base_mpn,"
+            " (SELECT count(*) FROM part_documents bd WHERE bd.part_id = p.base_id AND bd.document_id"
+            " NOT IN (SELECT document_id FROM part_documents WHERE part_id = p.id)) AS base_documents"
+            " FROM parts p LEFT JOIN part_documents pd ON pd.part_id = p.id"
+            " LEFT JOIN parts b ON b.id = p.base_id GROUP BY p.id ORDER BY p.mpn").fetchall()
+
+    @staticmethod
+    def count_text(row: sqlite3.Row) -> str:
+        """The documents of a row of parts() as a text: "2 documents", or for a
+        concrete part "0 own documents, 1 of the base part AP63203". A concrete
+        part also gets the documents of its base part (documents_of_part)."""
+        if not row["base_mpn"]:
+            return f"{row['documents']} documents"
+        return f"{row['documents']} own documents, {row['base_documents']} of the base part {row['base_mpn']}"
 
     def match_parts(self, mpn: str, manufacturer: str = "") -> list[sqlite3.Row]:
         """The parts with this MPN or alias (case is ignored). With a manufacturer:

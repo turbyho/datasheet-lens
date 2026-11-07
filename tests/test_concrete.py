@@ -279,3 +279,29 @@ def test_ordering_codes(store_home, text_pdf):
         rows = ordering_codes(store, doc.id)
     assert [(c, t) for c, _, _, t in rows] == [("ADC34J24IRGZR", True), ("ADC34J24IRGZT", False)]
     assert "VQFN (RGZ) 48" in rows[0][2]
+
+
+def test_list_parts_counts_the_documents_of_the_base_part(store_home, text_pdf, capsys):
+    """A concrete part has no own documents, but it gets the datasheet of its
+    base part: list_parts must not tell "0 documents" only."""
+    import asyncio
+
+    from datasheet_lens.server import mcp
+
+    with Store() as store:
+        doc = store.add_document(text_pdf("tlv755p.pdf", LDO))
+        base = store.add_part("TLV755P", "TI")
+        store.link(base, doc.id)
+        concrete = store.add_part("TLV75533PDBVR", "TI")
+        store.set_base(concrete, base)
+        both = store.add_part("TLV75518PDQNR", "TI")
+        store.set_base(both, base)
+        store.link(both, doc.id)  # an own link of the same document: not counted two times
+    result = asyncio.run(mcp.call_tool("list_parts", {}))
+    blocks = result[0] if isinstance(result, tuple) else result.content
+    text = "\n".join(b.text for b in blocks)
+    assert "TLV755P (TI): 1 documents" in text
+    assert "TLV75533PDBVR (TI): 0 own documents, 1 of the base part TLV755P" in text
+    assert "TLV75518PDQNR (TI): 1 own documents, 0 of the base part TLV755P" in text
+    assert main(["parts"]) == 0
+    assert "0 own documents, 1 of the base part TLV755P" in capsys.readouterr().out

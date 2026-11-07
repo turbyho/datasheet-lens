@@ -274,13 +274,14 @@ def _elements_ready(store: Store, doc_id: int) -> str:
 def list_parts() -> str:
     """The parts in the store, with their manufacturer and the number of their
     documents. Gives one line for each part: "MPN (manufacturer): N documents".
-    list_documents gives the documents of a part."""
+    A concrete part also gets the documents of its base part: "0 own documents,
+    1 of the base part AP63203". list_documents gives the documents of a part."""
     with Store() as store:
         rows = store.parts()
         if not rows:
             return "No parts. Add a document with add_document."
         return "\n".join(f"{r['mpn']} ({r['manufacturer'] or 'manufacturer unknown'}): "
-                         f"{r['documents']} documents" for r in rows)
+                         f"{Store.count_text(r)}" for r in rows)
 
 
 @tool

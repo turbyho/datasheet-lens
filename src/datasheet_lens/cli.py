@@ -383,7 +383,7 @@ def cmd_parts(_args: argparse.Namespace) -> int:
     """The command parts: list the parts in the store."""
     with Store() as store:
         for p in store.parts():
-            print(f"{p['mpn']:24} {p['manufacturer']:20} documents: {p['documents']}")
+            print(f"{p['mpn']:24} {p['manufacturer']:20} {Store.count_text(p)}")
     return 0
 
 
