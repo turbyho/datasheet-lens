@@ -1502,3 +1502,19 @@ def test_status_gives_the_parts_of_a_document_one_time(store_home, text_pdf, tmp
     assert not any("variants" in line for line in lines)
     ldo = next(line for line in lines if other.sha256[:12] in line)
     assert "parts:" not in ldo  # a document of one part
+
+
+def test_role_package(store_home, text_pdf, tmp_path):
+    """A package drawing in its own document gets the role package: in the
+    store, in the project file, and at the team server."""
+    from datasheet_lens.team.sync import Pusher, Rejected
+
+    with Store() as store:
+        drawing = store.add_document(text_pdf("sot23.pdf", [[(50, 60, 14, "SOT-23 package outline")]]))
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "BSS138", "onsemi", document=drawing.sha256[:12], role="package")
+    part = prj.load(project.root).parts[0]
+    assert [d["role"] for d in part["documents"]] == ["package"]
+    assert Pusher.check_data("part_documents", {"role": "package"}) == {"role": "package"}
+    with pytest.raises(Rejected, match="part_documents.role must be one of"):
+        Pusher.check_data("part_documents", {"role": "drawing"})

@@ -437,7 +437,8 @@ SYNC_KEY = "sync_triggers"
 SYNC_VERSION = hashlib.sha256("\n".join(SYNC_STATEMENTS).encode()).hexdigest()[:12]
 
 MEDIA_TYPES = {".pdf": "application/pdf"}
-ROLES = ("datasheet", "manual", "errata", "appnote", "other")
+# package: a package drawing (dimensions and land pattern) in its own document.
+ROLES = ("datasheet", "manual", "errata", "appnote", "package", "other")
 # The sources of a purchase source (part_sources), and the library classes of JLCPCB.
 SOURCES = ("digikey", "jlcpcb", "mouser")
 LIBRARIES = ("Basic", "Preferred", "Extended")

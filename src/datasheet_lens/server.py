@@ -39,7 +39,9 @@ Page = Annotated[int, Field(description="The page number, from 1, as get_index a
 Manufacturer = Annotated[str, Field(description=(
     "The manufacturer, any of its names (TI or Texas Instruments: the store knows the names of one "
     "manufacturer). Necessary only when two parts have the same MPN."))]
-Role = Annotated[str, Field(description="The role of the document: datasheet, manual, errata, appnote or other.")]
+Role = Annotated[str, Field(description=(
+    "The role of the document: datasheet, manual, errata, appnote, package (a package drawing in its own "
+    "document) or other."))]
 ProjectPath = Annotated[str, Field(description=(
     "A folder of the user project (default: the working folder of the server). The project file "
     "datasheet-lens.toml is in it or in a parent folder."))]
@@ -132,7 +134,8 @@ datasheets in a different folder, tell the user.
 
 Find the content step by step:
 1. The document: project_status, list_documents(part), list_parts (the central
-   store). A part can have a datasheet, a manual and errata.
+   store). A part can have a datasheet, a manual, errata and a package
+   drawing.
 2. find_facts(part or document): the values that a session read before. Do this
    before you read a value.
 3. get_index: the outline and the table and figure captions, with pages.

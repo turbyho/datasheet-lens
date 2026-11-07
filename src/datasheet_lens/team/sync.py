@@ -23,6 +23,7 @@ from typing import Any
 
 from .. import makers
 from ..bundles import BUNDLE_BACKENDS, canonical_key
+from ..store import ROLES
 from ..store import _VERSION_TABLES as VERSIONED
 
 # The tables in the order of a pull: a row comes after the rows that it refers to.
@@ -190,7 +191,7 @@ TYPES = {
     "part_sources": {"url": _TEXT, "library": _TEXT, "found": _TEXT},
 }
 CHOICES = {"relation": ("alias", "distinct"), "source_kind": ("model", "person"),
-           "status": ("unchecked", "checked", "disputed"), "role": ("datasheet", "manual", "errata", "appnote", "other"),
+           "status": ("unchecked", "checked", "disputed"), "role": ROLES,
            "library": ("", "Basic", "Preferred", "Extended")}
 # The tables with a version in the local store (VERSIONED): an update of a different
 # table has no base version (the last change is kept).

@@ -44,7 +44,7 @@ interfaces can change.
   (SHA-256), with its index, its element map, its parts and the facts that sessions
   read from it. A datasheet that one project added is at once available to each
   other project: it is not downloaded, indexed or read again. A part can have a
-  datasheet, a manual and errata.
+  datasheet, a manual, errata and a package drawing.
 - **Facts.** A value that a session read is saved with its source (document, page,
   element), so that a later session finds it.
 - **Project file.** `datasheet-lens.toml` in the repository of a design holds the
