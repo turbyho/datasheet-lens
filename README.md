@@ -61,6 +61,12 @@ interfaces can change.
   stock, Basic and Preferred first (the same MPN; resistors, capacitors and inductors
   with the same parameters). `project_check` compares the JLCPCB (LCSC)
   number of each symbol with the purchase source and with the library.
+- **Manufacturer and distributor in the CAD project.** The manufacturer of a part
+  comes from its datasheet, not from a distributor: the tool asks the user when it
+  cannot read it. `maker check` compares the parts of the store with their
+  datasheets. `project_check` compares the fields `Manufacturer` and `Distributor`
+  of each symbol with the project, so that the BOM export of the CAD tool gives the
+  manufacturer and the preferred distributor of each part.
 - **Parametric search.** Find new parts and replacement parts by their parameters
   at DigiKey or in the JLCPCB parts library, for example "N-channel MOSFET, Vdss 20 V to 40 V, gate drive 2.5 V,
   package 3x3". DigiKey keeps one value of a parameter at its own conditions: the
@@ -155,8 +161,9 @@ only the files that exist: make one of them first if you want the block.
 |---|---|
 | `add PATH\|URL` | Add a document to the store and to the project |
 | `ls`, `sync` | Show the project, or synchronize its copies |
-| `check BOM.csv` | Compare the project with a BOM (CSV) of the CAD project, and find the changes and conflicts of the fields Value, MPN, Value_Confirmed and MPN_Confirmed (tested only with BOM exports of KiCad and Eagle), and the JLCPCB (LCSC) numbers |
-| `set MPN -m NEW` | Change the MPN, base part, category or manufacturer of a project part |
+| `check BOM.csv` | Compare the project with a BOM (CSV) of the CAD project, and find the changes and conflicts of the fields Value, MPN, Value_Confirmed and MPN_Confirmed (tested only with BOM exports of KiCad and Eagle), the JLCPCB (LCSC) numbers, and the fields Manufacturer and Distributor |
+| `set MPN -m NEW` | Change the MPN, base part, category, manufacturer or preferred distributor (`-D`) of a project part |
+| `maker check` | Compare the manufacturer of each part of the store with its datasheet; `-a` does the renames that the user agrees with |
 | `rm MPN` | Remove a part (or `-d DOC`, a document) from the project |
 | `search TEXT --part MPN` | Find a text in the documents of a part |
 | `codes DOC` | Show the orderable codes of a datasheet |

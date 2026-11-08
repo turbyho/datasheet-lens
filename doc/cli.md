@@ -26,7 +26,7 @@ datasheet-lens [-h] [--version] COMMAND ...
 | Code | Meaning |
 |---|---|
 | `0` | The command is done. |
-| `1` | A file cannot be read (missing or damaged), or an element map build failed during `sync`. |
+| `1` | A file cannot be read (missing or damaged), an element map build failed during `sync`, or `add` or `adopt` must have the manufacturer from the user (the command changed no part). |
 | `2` | A wrong input, or a state that you can repair. The error is one line: `datasheet-lens: error: ...`. |
 | `130` | The user stopped the command (Ctrl-C). |
 
@@ -84,14 +84,17 @@ and build its element map. See [projects.md](projects.md).
 | `-y`, `--yes` | Accept the proposed part with no question. |
 | `-p PROJECT`, `--project`, `--path` | The project root. |
 | `--no-project` | Add the document to the store only, not to the project. |
-| `-M MANUFACTURER`, `--manufacturer` | The manufacturer of the part. |
+| `-M MANUFACTURER`, `--manufacturer` | The manufacturer of the part. For a datasheet, the tool reads the manufacturer from the datasheet: a given name must be a name of the same manufacturer (see [projects.md](projects.md#the-manufacturer-of-a-part)). |
 | `-c CATEGORY`, `--category` | The function of the part, for example `ADC`, for the layout of the project. |
 | `--role ROLE` | The role of the document: `datasheet` (default), `manual`, `errata`, `appnote`, `package` (a package drawing in its own document) or `other`. |
 | `--title TITLE` | The title. Default: the title in the PDF metadata. A document that the store has already keeps its title. If it has no title, it gets this title. |
 | `--url URL` | The source URL of a local file. A downloaded file records its URL itself. |
 
 When the input is not a terminal, the command does not ask. Then give `-b` or `-y`.
-A file that is in the store already (the same SHA-256) is not copied again.
+A file that is in the store already (the same SHA-256) is not copied again. When the
+datasheet names no manufacturer that the tool knows and you give none, or the given
+name and the name of the datasheet are not related in the registry, the command
+links no part, tells why, and ends with exit code 1.
 
 ### parts
 
@@ -109,6 +112,7 @@ also gets the documents of its base part. Thus it shows two numbers, for example
 datasheet-lens maker
 datasheet-lens maker alias NAME OTHER
 datasheet-lens maker distinct NAME OTHER
+datasheet-lens maker check [-a [MPN ...]]
 ```
 
 Show the manufacturer registry of the store, or record how two manufacturer names
@@ -121,6 +125,8 @@ same MPN.
 | (none) | Show each manufacturer, its other names and the manufacturers that are not the same. |
 | `alias NAME OTHER` | One manufacturer with two names, for example `TI` and `"Texas Instruments"`. |
 | `distinct NAME OTHER` | Two manufacturers. Each can make a part with the same MPN (a second source). |
+| `check` | Compare the manufacturer of each part of the store with its datasheet: the lists `rename`, `different` and `unread` (see [projects.md](projects.md#the-manufacturer-of-a-part)). |
+| `check -a [MPN ...]` | Do the renames of the check: all, or only the given parts. Do it only when the user agrees. |
 
 Two spellings of one name are always the same manufacturer, with no relation: the
 comparison ignores case, punctuation, spaces and a legal suffix (`Microchip`,
@@ -378,7 +384,7 @@ Add a part to the project, with the documents that the store links to it.
 
 ```text
 datasheet-lens set [-m MPN] [-b MPN] [-c CATEGORY] [-M MANUFACTURER] [--of MANUFACTURER]
-                   [--pin DOC] [--unpin DOC] [-p PATH] MPN
+                   [-D DISTRIBUTOR] [--pin DOC] [--unpin DOC] [-p PATH] MPN
 ```
 
 Change a part of the project in place. The part keeps its place in the project file
@@ -396,6 +402,7 @@ they are the numbers of the old MPN: the result tells them. Take the new part wi
 | `-c CATEGORY`, `--category` | The function of the part. `""` removes it. |
 | `-M MANUFACTURER`, `--manufacturer` | The new manufacturer. |
 | `--of MANUFACTURER` | The manufacturer now, when the project has more parts with the MPN. |
+| `-D DISTRIBUTOR`, `--distributor` | The preferred distributor: `DigiKey`, `Mouser`, `LCSC`, a different name, or `N/A` (none). See [projects.md](projects.md#the-fields-manufacturer-and-distributor). |
 | `--pin DOC` | Pin a document of the part (its ID, a SHA-256 prefix or its file name): sync does not move its file, and `rm` keeps it. See [projects.md](projects.md#copies-and-pinned-files). |
 | `--unpin DOC` | Unpin a document of the part: sync manages its file as a copy. |
 
@@ -441,6 +448,10 @@ the next command for each one:
   `LCSC Part #`, `JLCPCB Part #` and other forms). See
   [projects.md](projects.md#the-jlcpcb-number-of-a-symbol). A finding of a symbol
   that is not fitted (DNP) is information only.
+- The fields `Manufacturer` (the manufacturers of the MPNs of the field `MPN`) and
+  `Distributor` (the preferred distributor of the fitted part) of each symbol,
+  compared with the project (lines `Manufacturer:` and `Distributor:`). See
+  [projects.md](projects.md#the-fields-manufacturer-and-distributor).
 - The state of the project folder (line `project folder`), when `sync` would change
   it. A second line `project folder` gives the files that need a step of the user,
   because `sync` cannot do it (files with no part, changed copies, documents that the
@@ -521,7 +532,7 @@ update`. See
 ### adopt
 
 ```text
-datasheet-lens adopt [-m MPN] [-b BASE] [-c CATEGORY] [-p PATH] SOURCE [NUMBER]
+datasheet-lens adopt [-m MPN] [-b BASE] [-c CATEGORY] [-M MANUFACTURER] [-p PATH] SOURCE [NUMBER]
 ```
 
 Take a part of a source into the store and the project: download its datasheet, add
@@ -536,8 +547,12 @@ risk. See [distributors.md](distributors.md#take-a-found-part).
 | `-m`, `--mpn` | The MPN, in place of `NUMBER`. The source must have one part for it. |
 | `-b`, `--base` | The base part of the datasheet, for example `TLV755P`. |
 | `-c`, `--category` | The function of the part, for example `MOSFET`. |
+| `-M`, `--manufacturer` | The manufacturer as the datasheet names it, when the command asks for it. |
 
-Give `NUMBER` or `--mpn`, not both. The command does not guess if a text is a number
+Give `NUMBER` or `--mpn`, not both. The manufacturer of the part comes from its
+datasheet. When the tool cannot read it, or it is not the manufacturer of the name
+of the source, the command asks in a terminal. With no terminal, it ends with exit
+code 1 and changes nothing: give `-M`. The command does not guess if a text is a number
 of the source or an MPN. Outside a project folder, the command adds the part to the
 store only. In a project folder, it copies the datasheet into the document folder
 (as `sync`).

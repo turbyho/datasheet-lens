@@ -49,7 +49,8 @@ these datasheets to an agent: the MCP server `datasheet-lens`, or the CLI
   server kicad-workbench). The CAD BOM is the master: after each change of a
   part that the user confirms (project_update_part, adopt_part, a replacement),
   write the new or changed part into the CAD project too (MPN, MPN_Confirmed,
-  Value_Confirmed, LCSC).
+  Value_Confirmed, LCSC, Manufacturer, Distributor). The manufacturer of a part
+  comes from its datasheet: when a tool asks (ASK THE USER), ask the user.
   project_status (CLI `datasheet-lens ls`) gives the parts and documents of the
   file. If you cannot get a datasheet, tell the user, with the search links of
   part_links (CLI `datasheet-lens links MPN`; also for symbols, footprints and

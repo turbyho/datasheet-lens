@@ -133,9 +133,10 @@ come before the first `[[part]]`.
 | Key | Value |
 |---|---|
 | `mpn` | Necessary. The MPN of the part in the BOM: the concrete orderable MPN. |
-| `manufacturer` | The manufacturer, as the project writes it (the layout uses its built-in name, see [Layout](#layout)). It can be any name of the manufacturer that the store knows (see `datasheet-lens maker` in [cli.md](cli.md)). Necessary when two parts have the same MPN. |
+| `manufacturer` | The manufacturer, as the project writes it (the layout uses its built-in name, see [Layout](#layout)). It can be any name of the manufacturer that the store knows (see `datasheet-lens maker` in [cli.md](cli.md)). Necessary when two parts have the same MPN. The manufacturer of a part is the manufacturer of its datasheet, not the name of a distributor (see [The manufacturer of a part](#the-manufacturer-of-a-part)). |
 | `base` | The base part of the datasheet, when `mpn` is a concrete part of it. |
 | `category` | The function of the part, for example `ADC`, `LDO`, `MCU`. The layout can use it. |
+| `distributor` | The preferred distributor that the user selected or gave: `DigiKey`, `Mouser`, `LCSC`, a different name, or `N/A` (no preferred distributor). `datasheet-lens set MPN -D NAME` writes it. See [The fields Manufacturer and Distributor](#the-fields-manufacturer-and-distributor). |
 | `variants` | For information only: the parts that the same datasheet covers. The tool writes it from the store. |
 | `exclude` | A list of SHA-256 values: documents that the project does not want for this part. `rm -d` writes it. |
 
@@ -268,6 +269,40 @@ When a project part is probably a base part and not a concrete MPN, `add` and
 2. `project_add_part(mpn, base, document)` adds the concrete MPN to the project.
 3. `project_sync` copies the document into the document folder.
 
+### The manufacturer of a part
+
+The manufacturer of a part is the manufacturer of its datasheet, not the name of a
+distributor. Each step that links a datasheet to a part (`add`, `add-part`,
+`adopt`, `add_document`, `project_add_part`, `adopt_part`, the inbox) reads the
+manufacturer of the datasheet: the built-in names, and the names that a user
+recorded in the registry (`datasheet-lens maker alias`). A name with fewer than 4
+letters and digits (TI, ST) is not a name to find in a text.
+
+| The datasheet | The given name (or the name of the part in the store) | Result |
+|---|---|---|
+| Names a manufacturer that the tool knows | None, or a name of the same manufacturer | The part gets the name of the datasheet. |
+| Names a manufacturer that the tool knows | A name that the registry does not relate to it | The step asks the user (`ASK THE USER`) and adds or links no part. Record the relation with `datasheet-lens maker alias` (one manufacturer) or `distinct` (two manufacturers), then do the step again. |
+| Names a manufacturer that the tool knows | A name of a different manufacturer in the registry | An error: the document is not the datasheet of the part, or the name is wrong. |
+| Names no manufacturer that the tool knows | A name | The part gets the given name. |
+| Names no manufacturer that the tool knows | None | The step asks the user for the name. Give it with `-M` (`manufacturer` in MCP). |
+
+`adopt` also compares the name of the datasheet with the name of the distributor
+(see [distributors.md](distributors.md#take-a-found-part)). With no datasheet, the
+part gets no manufacturer until the user puts the datasheet into the inbox.
+
+Older versions gave a part the name of the distributor. `datasheet-lens maker check`
+(MCP: `manufacturer_check`) compares the manufacturer of each part of the store with
+its datasheet:
+
+| List | Meaning |
+|---|---|
+| `rename` | The datasheet names the same manufacturer with a different name, or the part has no manufacturer. `datasheet-lens maker check -a` changes all these parts, `-a MPN ...` only the given parts, after the user agrees. The change goes to the team server. |
+| `different` | The datasheet names a different manufacturer. The user decides: a wrong datasheet, or a wrong name. |
+| `unread` | The datasheet names no manufacturer that the tool knows. Read page 1, and ask the user. When the name of the datasheet and the name of the part are one manufacturer, record it with `datasheet-lens maker alias`: the next check gives the rename. |
+
+After a rename, `sync` writes the name of the store into the project file, when it
+is the name of the datasheet of the part. Else the project file keeps its name.
+
 ## Synchronize
 
 ```sh
@@ -365,6 +400,9 @@ For each file of the inbox, sync does these steps:
    decide.
 5. It links the document to each part that it goes to, as `add-part` does. The copy
    goes into the subfolder of the layout, and sync removes the file from the inbox.
+   A part with no manufacturer (`adopt` with no datasheet) gets the manufacturer of
+   the datasheet. When the tool cannot read it, the part gets the document, and the
+   report asks the user for the name (`datasheet-lens set MPN -M NAME`).
 
 A file with no part stays in the inbox. The store has its document, and the report
 gives the part that the PDF names, and why a part that agrees did not get it. Select
@@ -393,6 +431,7 @@ of the project file to that folder.
 | Set the base part | `datasheet-lens set TLV75533PDBVR -b TLV755P` | `project_update_part(mpn, base)` |
 | Set or remove the category | `datasheet-lens set MPN -c LDO` (`-c ""` removes it) | `project_update_part(mpn, category)` |
 | Change the manufacturer | `datasheet-lens set MPN -M "Texas Instruments"` | `project_update_part(mpn, new_manufacturer)` |
+| Set the preferred distributor | `datasheet-lens set MPN -D LCSC` (`-D N/A`: none) | `project_update_part(mpn, distributor)` |
 | Pin or unpin a document | `datasheet-lens set MPN --pin DOC` (`--unpin DOC`) | `project_update_part(mpn, pin_document)` (`unpin_document`) |
 | Remove a part | `datasheet-lens rm MPN` | `project_remove_part(mpn)` |
 | Remove a document | `datasheet-lens rm -d DOC` | `project_remove_document(document)` |
@@ -436,10 +475,11 @@ list of the datasheets of the design.
 
 The BOM of the CAD project is the master. A change of a part goes into the two
 places: after each change that the user confirms (a new part, a new MPN, a
-replacement, a JLCPCB number), the agent writes the new or changed part into the
-CAD project (`MPN`, the hidden copies `MPN_Confirmed` and `Value_Confirmed`, the
-LCSC field; KiCad: `set_symbol_fields` of the MCP server kicad-workbench) and into
-the project file (`project_update_part`, `adopt_part`). When the tool cannot
+replacement, a JLCPCB number, a preferred distributor), the agent writes the new
+or changed part into the CAD project (`MPN`, the hidden copies `MPN_Confirmed` and
+`Value_Confirmed`, the LCSC field, `Manufacturer`, `Distributor`; KiCad:
+`set_symbol_fields` of the MCP server kicad-workbench) and into the project file
+(`project_update_part`, `adopt_part`). When the tool cannot
 process a field of the BOM (a JLCPCB number of a different MPN, a text that is not
 a number), the agent asks the user.
 
@@ -765,6 +805,50 @@ purchase source (`[[part.source]]`), or the CAD data has an LCSC field. The line
 | X is a different MPN in the library | The number or the MPN is wrong (needs the JLCPCB parts library). |
 | The library does not have X | A wrong number, or an old database (`datasheet-lens jlc update`). |
 | No JLCPCB number | Select a part of the JLCPCB library with the user, and save it with `adopt`. |
+
+### The fields Manufacturer and Distributor
+
+Each symbol gets the manufacturer and the preferred distributor of its part. Thus
+the BOM export of the CAD tool gives them (the default fields of `export_bom` of
+kicad-workbench include all fields).
+
+- `Manufacturer`: the manufacturers of the MPNs of the field `MPN`, in their order,
+  with the same separators: `onsemi, Nexperia` for `2N7002LT1G, BSS138LT1G`.
+- `Distributor`: the name of the preferred distributor of the fitted part (the first
+  MPN), not its part number. The part number of JLCPCB stays in the LCSC field.
+
+The reader finds the columns by these names: `Manufacturer`, `Mfr`,
+`Manufacturer Name`, `Mfr Name`, and `Distributor`, `Supplier`, `Vendor` (case,
+spaces and `_` do not count: `MFR` and `Manufacturer_Name` are names too). The field
+to write is the column of the BOM, else `Manufacturer` and `Distributor`. With
+`parts`, give the fields `manufacturer` and `distributor` of each part, and
+`manufacturer_field` and `distributor_field` when the fields have different names.
+
+The preferred distributor of a part:
+
+1. The answer of the user in the project file (`distributor`, also `N/A`).
+2. Else the purchase channel of the part (`[[part.source]]`): `DigiKey`, `Mouser`, or
+   `LCSC` for the source `jlcpcb` (JLCPCB is the assembly service, LCSC sells the
+   parts).
+3. A part with more channels: the user selects one.
+4. A part with no channel (a PDF or an MPN that the user added): the user gives a
+   name. The choices are `N/A` first, then the distributors of the project, or a
+   different name.
+
+The project file keeps the answer of the user, also `N/A`. Thus the tool does not
+ask again. The lines `Manufacturer:` and `Distributor:` give:
+
+| Line | Meaning |
+|---|---|
+| The fields that agree | The number of the fields that agree with the project. |
+| The field has no manufacturer (no distributor) | Write the value of the project into the field. |
+| The datasheets give the same manufacturers | The field has other names of the same manufacturers: ask the user, then write the names of the datasheets. |
+| The field gives X, the project gives Y (Manufacturer) | The manufacturer of a part comes from its datasheet: ask the user which is correct. |
+| The project has no manufacturer for X | Run `datasheet-lens maker check`, else ask the user. |
+| The field gives X, the project gives Y (Distributor) | Ask the user which one is correct, then write it into the two places. |
+| The project has no preferred distributor | The field has a name: the CAD BOM is the master, save it with `set MPN -D NAME`. |
+| More purchase channels | Ask the user which one is the preferred distributor. |
+| No purchase channel | Ask the user for the preferred distributor (`N/A`, the distributors of the project, or a name). |
 
 ## Team workflow
 

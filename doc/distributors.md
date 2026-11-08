@@ -368,8 +368,8 @@ datasheet-lens adopt digikey 296-25646-1-ND -b CSD16340
 datasheet-lens adopt mouser --mpn CSD16340Q3
 ```
 
-The MCP tool is `adopt_part(source, number, mpn, base, category)`. Give one of two
-inputs:
+The MCP tool is `adopt_part(source, number, mpn, base, category, manufacturer)`.
+Give one of two inputs:
 
 - `number`: the part number of the source, as the search gives it: a DigiKey number,
   a JLCPCB C number (`C` and digits) or a Mouser number.
@@ -401,10 +401,20 @@ does these steps:
    with no datasheet. The result then gives the URLs to open in a web browser and,
    in a project, the path of its inbox: save the file there, and run `sync` (see
    [projects.md](projects.md#the-inbox)).
-4. It adds the document and the part to the store, and in a project folder to the
+4. It gets the manufacturer of the part from the datasheet, not from the source
+   (see [projects.md](projects.md#the-manufacturer-of-a-part)). The part gets the
+   name of the datasheet when the tool knows it, and the name of the source is a
+   name of the same manufacturer (or the source gives no name). Else the result asks
+   the user (`ASK THE USER`), and the tool adds no part and no purchase source. Read
+   page 1 of the datasheet, ask the user, and do the step again with
+   `-M MANUFACTURER` (`manufacturer` in MCP). When the given name and the name of
+   the source are not related in the registry, a line tells you to record the
+   relation: the offers of the distributors use it. With no datasheet, the part gets
+   no manufacturer until the user puts the datasheet into the inbox.
+5. It adds the document and the part to the store, and in a project folder to the
    project. The CLI copies the datasheet into the document folder of the project. With
    the MCP tool, run `project_sync` after it.
-5. It saves the purchase source: in the store (the team server shares it) and in the
+6. It saves the purchase source: in the store (the team server shares it) and in the
    project file (`[[part.source]]`, see [projects.md](projects.md)). The purchase
    source has the source, the part number, and for JLCPCB the library class. The
    store also keeps the product page and the date. It has no stock and no price:
