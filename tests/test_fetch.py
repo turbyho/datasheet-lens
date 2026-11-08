@@ -1,5 +1,7 @@
 import email.message
+import itertools
 import threading
+import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -105,7 +107,11 @@ def test_download_limits(store_home, server, monkeypatch):
         with pytest.raises(LensError, match="larger than"):
             add_from_url(store, f"{base}/ds.pdf")  # from Content-Length, before the download
         monkeypatch.setattr(fetch, "MAX_BYTES", 300 << 20)
-        monkeypatch.setattr(fetch, "MIN_RATE_AFTER_S", -1)
+        # A clock of the test: each call is one second later (the clock of Windows
+        # has steps of about 16 ms, thus two calls can give the same time).
+        clock = itertools.count()
+        monkeypatch.setattr(fetch, "time", types.SimpleNamespace(monotonic=lambda: float(next(clock))))
+        monkeypatch.setattr(fetch, "MIN_RATE_AFTER_S", 0)
         monkeypatch.setattr(fetch, "MIN_RATE", 1 << 40)
         with pytest.raises(LensError, match="server sends less than"):
             add_from_url(store, f"{base}/ds.pdf")

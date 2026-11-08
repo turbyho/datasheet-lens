@@ -1,10 +1,17 @@
 """The files that the setup wizard of the team server makes (no server is necessary)."""
 
+import sys
+
 import pytest
 
 from datasheet_lens.errors import LensError
 from datasheet_lens.team import setup
 from datasheet_lens.team.config import parse_env
+
+
+# The team server runs only on Linux with systemd: the setup wizard refuses an other
+# system. On Windows, Path gives Windows paths, and chmod sets only the read-only bit.
+LINUX_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="the team server runs only on Linux")
 
 
 def test_domain_check():
@@ -28,6 +35,7 @@ def test_garage_configuration():
     assert "0.0.0.0" not in text and "[::]" not in text  # only the loopback
 
 
+@LINUX_ONLY
 def test_units():
     server = setup.server_unit(8100)
     assert "EnvironmentFile=/var/lib/dslens-server/server.env" in server
