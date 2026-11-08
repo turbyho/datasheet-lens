@@ -308,9 +308,12 @@ def _maker(c: dict, source: str, doc, given: str, lines: list[str]) -> tuple[str
     """The manufacturer of the part: the manufacturer of its datasheet, never
     the name of the distributor (decision of the user, 2026-11-07). Gives (the
     name, ask) and adds a line to lines:
-    - given (the answer of the user): this name. When the registry does not
-      relate it to the name of the distributor, a line tells the user to
-      record the relation: the offers of the distributors use it.
+    - given (the answer of the user): this name, when it agrees with the
+      datasheet (makercheck.datasheet_maker: the name of the datasheet for a
+      name of the same manufacturer, else the question for the relation of
+      the two names). When the registry does not relate the name to the name
+      of the distributor, a line tells the user to record the relation: the
+      offers of the distributors use it.
     - no datasheet: no manufacturer. project_sync gives the part the
       manufacturer of the datasheet when the user puts the file into the inbox.
     - the datasheet names a manufacturer that the registry knows
@@ -318,21 +321,29 @@ def _maker(c: dict, source: str, doc, given: str, lines: list[str]) -> tuple[str
       same manufacturer: the name of the datasheet.
     - else ask: the agent reads page 1 and asks the user."""
     from .identify import propose
+    from .makercheck import datasheet_maker
     from .store import Store
 
     offered = c["manufacturer"].strip()
     if given:
-        lines.append(f"manufacturer: {given} (given)")
+        name = given
+        if doc is not None:  # the given name must agree with the datasheet
+            with Store() as store:
+                name, ask = datasheet_maker(store, doc, given, c["mpn"])
+            if ask:
+                lines.append(ask)
+                return "", True
+        lines.append(f"manufacturer: {name} (given)" if name == given
+                     else f"manufacturer: {name} (from the datasheet; given: {given})")
         with Store() as store:
-            unrelated = offered and not store.same_maker(given, offered) and not store.distinct_makers(given,
-                                                                                                         offered)
+            unrelated = offered and not store.same_maker(name, offered) and not store.distinct_makers(name, offered)
         if unrelated:
-            lines.append(f"manufacturer names: {source} gives {offered}, the datasheet gives {given}, and the "
+            lines.append(f"manufacturer names: {source} gives {offered}, the datasheet gives {name}, and the "
                          "manufacturer registry does not know if they are one manufacturer. Ask the user, then "
                          "record it with manufacturer_relation (CLI: datasheet-lens maker RELATION NAME OTHER): "
-                         f"alias \"{given}\" \"{offered}\" (one manufacturer) or distinct (two manufacturers). The "
+                         f"alias \"{name}\" \"{offered}\" (one manufacturer) or distinct (two manufacturers). The "
                          f"offers of the distributors for {c['mpn']} use this relation.")
-        return given, False
+        return name, False
     if doc is None:
         lines.append(f"manufacturer: none until the datasheet is in the store ({source} gives "
                      f"{offered or 'no name'}, but the manufacturer of a part comes from its datasheet). project_sync "

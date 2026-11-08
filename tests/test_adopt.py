@@ -315,15 +315,17 @@ def test_the_manufacturer_comes_from_the_datasheet(downloads, monkeypatch, text_
         assert row["manufacturer"] == stored and store.part_sources(row["id"])[0]["number"] == "1-X-1"
 
 
-@pytest.mark.parametrize("text, found", [
-    ("TEXAS INSTRUMENTS", "Texas Instruments"),  # a different name than the distributor name
-    ("Made by a small company", "no manufacturer name that the tool knows"),
+@pytest.mark.parametrize("text, found, answer, stored", [
+    # A different name than the distributor name; the user gives a short name of the datasheet manufacturer.
+    ("TEXAS INSTRUMENTS", "Texas Instruments", "TI", "Texas Instruments"),
+    ("Made by a small company", "no manufacturer name that the tool knows", "Small Co", "Small Co"),
 ])
-def test_adopt_asks_for_the_manufacturer(downloads, monkeypatch, text_pdf, tmp_path, text, found):
+def test_adopt_asks_for_the_manufacturer(downloads, monkeypatch, text_pdf, tmp_path, text, found, answer, stored):
     """When the datasheet names no manufacturer that the registry knows, or a
     manufacturer that the registry does not relate to the distributor name,
     the tool asks the user and changes nothing. The answer of the user then
-    adds the part, and a line asks for the relation of the two names."""
+    adds the part (with the name of the datasheet), and a line asks for the
+    relation of the two names."""
     seen = _source(monkeypatch, text_pdf, "X-2", "Maker Q", text)
     project = prj.init_project(tmp_path / "board")
     result = adopt_module.adopt("mouser", "1-X-2", project=prj.load(project.root))
@@ -337,18 +339,38 @@ def test_adopt_asks_for_the_manufacturer(downloads, monkeypatch, text_pdf, tmp_p
     assert prj.load(project.root).parts == []
     with Store() as store:
         assert store.match_parts("X-2") == [] and store.document(sha) is not None
-    result = adopt_module.adopt("mouser", "1-X-2", project=prj.load(project.root), manufacturer="Small Co")
-    assert not result["ask"] and "manufacturer: Small Co (given)" in result["lines"]
-    assert ("manufacturer names: mouser gives Maker Q, the datasheet gives Small Co, and the manufacturer registry "
-            "does not know if they are one manufacturer.") in "\n".join(result["lines"])
-    assert prj.load(project.root).parts[0]["manufacturer"] == "Small Co" and len(seen) == 2
+    result = adopt_module.adopt("mouser", "1-X-2", project=prj.load(project.root), manufacturer=answer)
+    assert not result["ask"]
+    assert (f"manufacturer: {stored} (given)" if stored == answer
+            else f"manufacturer: {stored} (from the datasheet; given: {answer})") in result["lines"]
+    assert (f"manufacturer names: mouser gives Maker Q, the datasheet gives {stored}, and the manufacturer "
+            "registry does not know if they are one manufacturer.") in "\n".join(result["lines"])
+    assert prj.load(project.root).parts[0]["manufacturer"] == stored and len(seen) == 2
     with Store() as store:
         [row] = store.match_parts("X-2")
-        assert row["manufacturer"] == "Small Co" and store.part_sources(row["id"])[0]["number"] == "1-X-2"
-        store.maker_relation("alias", "Small Co", "Maker Q")
+        assert row["manufacturer"] == stored and store.part_sources(row["id"])[0]["number"] == "1-X-2"
+        store.maker_relation("alias", stored, "Maker Q")
     # A relation that the registry has: no line about it.
-    lines = adopt_module.adopt("mouser", "1-X-2", project=prj.load(project.root), manufacturer="Small Co")["lines"]
+    lines = adopt_module.adopt("mouser", "1-X-2", project=prj.load(project.root), manufacturer=answer)["lines"]
     assert not any(line.startswith("manufacturer names:") for line in lines)
+
+
+def test_adopt_with_a_name_that_the_datasheet_does_not_give(downloads, monkeypatch, text_pdf, tmp_path):
+    """A given name that the registry does not relate to the name of the
+    datasheet: the tool asks for the relation and changes nothing. Two
+    manufacturers in the registry: an error."""
+    _source(monkeypatch, text_pdf, "X-7", "", "TEXAS INSTRUMENTS")
+    result = adopt_module.adopt("mouser", "1-X-7", manufacturer="Small Co")
+    assert result["ask"] and result["lines"][-1].startswith(
+        "ASK THE USER: the manufacturer of X-7. Its datasheet (document ")
+    assert ("names Texas Instruments, and the step gives Small Co: the manufacturer registry does not know if they "
+            "are one manufacturer.") in result["lines"][-1]
+    with Store() as store:
+        assert store.match_parts("X-7") == []
+        store.maker_relation("distinct", "Small Co", "Texas Instruments")
+    with pytest.raises(LensError, match="names Texas Instruments, and the manufacturer registry records Small Co as a "
+                                        "different manufacturer: the document is not the datasheet of this part"):
+        adopt_module.adopt("mouser", "1-X-7", manufacturer="Small Co")
 
 
 def test_adopt_with_no_datasheet_gives_no_manufacturer(downloads, monkeypatch, text_pdf, tmp_path):

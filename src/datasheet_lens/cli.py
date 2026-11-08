@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pypdfium2 as pdfium
 
-from . import __version__
+from . import __version__, makercheck
 from .config import data_lines, store_home
 from .errors import LensError
 from .store import ROLES, SOURCES, Store
@@ -121,6 +121,12 @@ def cmd_add(args: argparse.Namespace) -> int:
         category = (args.category or "").strip()
         # The link first: an index error must not lose it. The datasheet is also
         # the datasheet of each variant that it covers.
+        ask = ""
+        if mpn:  # the manufacturer of a datasheet comes from the datasheet
+            manufacturer, ask = makercheck.part_maker(store, doc, mpn, manufacturer, args.role)
+        if ask:
+            print(ask, file=sys.stderr)
+            mpn = ""
         if mpn:
             part_id, failures = store.link_parts(doc.id, mpn, variants, manufacturer, args.role, category)
             for text in failures:
@@ -135,7 +141,7 @@ def cmd_add(args: argparse.Namespace) -> int:
             print(f"index: {idx['outline']} outline entries, {idx['captions']} captions")
     if not args.no_project:  # after the store: the lock of the folder comes first (lock.py)
         _add_to_project(doc, mpn, manufacturer, category, args)
-    return 0
+    return 1 if ask else 0
 
 
 def _add_to_project(doc, mpn: str, manufacturer: str, category: str, args: argparse.Namespace) -> None:

@@ -97,7 +97,8 @@ def test_add_in_a_project(store_home, text_pdf, capsys, monkeypatch, tmp_path):
     assert (project.folder_path / "Texas Instruments/SN74LV1T34DBVRG4_Texas_Instruments.pdf").is_file()
 
     # Outside a project: the store only.
-    assert main(["add", str(text_pdf("other.pdf", [[(50, 60, 12, "LM20144-Q1 Buck")]])), "--part", "LM20144-Q1"]) == 0
+    assert main(["add", str(text_pdf("other.pdf", [[(50, 60, 12, "LM20144-Q1 Buck")]])), "--part", "LM20144-Q1",
+                 "-M", "Texas Instruments"]) == 0
     assert "project" not in capsys.readouterr().out
 
 
@@ -131,14 +132,15 @@ def test_review_cases(store_home, text_pdf, capsys):
         p = propose(store.add_document(text_pdf("nrf54l15.pdf", [[(50, 60, 14, "nRF54L15 Product")]])))
     assert p.mpn == "nRF54L15" and "NRF54L15" not in p.candidates
 
-    # An MPN of two manufacturers with no manufacturer: the document is in the
-    # store with its index, not linked, and the command says why.
+    # An MPN of two manufacturers, with no manufacturer from the user and none
+    # that the datasheet names: the document is in the store with its index,
+    # not linked, and the command asks for the manufacturer.
     with Store() as store:
         store.maker_relation("distinct", "TI", "onsemi")
         store.add_part("LM358", "TI")
         store.add_part("LM358", "onsemi")
-    assert main(["add", str(text_pdf("lm358.pdf", [[(50, 60, 12, "LM358 Dual Op Amp")]])), "--part", "LM358"]) == 0
-    assert "not linked: part LM358 is not unique" in capsys.readouterr().err
+    assert main(["add", str(text_pdf("lm358.pdf", [[(50, 60, 12, "LM358 Dual Op Amp")]])), "--part", "LM358"]) == 1
+    assert "ASK THE USER: the manufacturer of LM358. Its datasheet" in capsys.readouterr().err
     with Store() as store:
         assert store.build(1, "index") is not None or store.build(2, "index") is not None
 
@@ -205,8 +207,9 @@ def test_mcp_variant_failures(store_home, text_pdf, monkeypatch):
         store.add_part("ADC34J23", "TI")
         store.add_part("ADC34J23", "ADI")
     path = text_pdf("adc34j24.pdf", [[(50, 60, 14, "ADC34J24")]])
+    # The datasheet names no manufacturer: the user gives one that the registry does not relate to TI and ADI.
     result = asyncio.run(server.mcp.call_tool("add_document", {"path": str(path), "part": "ADC34J24",
-                                                               "variants": ["ADC34J23"]}))
+                                                               "variants": ["ADC34J23"], "manufacturer": "Maker X"}))
     blocks = result[0] if isinstance(result, tuple) else getattr(result, "content", result)
     text = "\n".join(getattr(b, "text", "") for b in blocks)
     assert "part ADC34J23: not linked" in text and "element map" in text

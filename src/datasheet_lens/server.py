@@ -26,7 +26,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import BlobResourceContents, EmbeddedResource
 from pydantic import BaseModel, Field
 
-from . import __version__
+from . import __version__, makercheck
 from .errors import LensError
 from .store import ROLES, Store
 
@@ -364,7 +364,10 @@ def add_document(
         with _add_lock, Store() as store:
             # An MPN or an alias, as in the CLI command add. A failure is a line of
             # the result: the document, its index and its element map stay.
-            failures = store.link_parts(doc.id, part, variants or [], manufacturer, role)[1] if part.strip() else []
+            failures = []
+            if part.strip():  # the manufacturer of a datasheet comes from the datasheet
+                maker, ask = makercheck.part_maker(store, doc, part.strip(), manufacturer, role)
+                failures = [ask] if ask else store.link_parts(doc.id, part, variants or [], maker, role)[1]
             job = _build_elements(doc.id)
             proposal = "" if part.strip() or store.parts_of_document(doc.id) else _proposal(store, doc)
     job["thread"].join(ELEMENT_WAIT)

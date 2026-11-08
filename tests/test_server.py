@@ -77,7 +77,7 @@ def test_drill_down(store_home, text_pdf):
 
 def test_facts(store_home, text_pdf):
     path = text_pdf("opa.pdf", [PAGE])
-    call("add_document", path=str(path), part="OPA2134")
+    call("add_document", path=str(path), part="OPA2134", manufacturer="Texas Instruments")
     doc = text_of(call("list_documents")).split()[0]
     out = text_of(call("save_fact", document=doc, page=1, subject="supply voltage max", value="36",
                        unit="V", column="MAX", element="p1.P1", model="test-model", part="OPA2134"))
@@ -217,7 +217,8 @@ def test_missing_index(store_home, text_pdf, monkeypatch):
         raise LensError("index failed")
 
     monkeypatch.setattr(indexer, "build_index", fail)
-    assert main(["add", str(text_pdf("rtc.pdf", [[(50, 60, 12, "1 RTC")]])), "--part", "RV-3149-C3"]) == 2
+    assert main(["add", str(text_pdf("rtc.pdf", [[(50, 60, 12, "1 RTC")]])), "--part", "RV-3149-C3",
+                 "-M", "Micro Crystal"]) == 2
     with Store() as store:
         assert [r["filename"] for r in store.part_documents("RV-3149-C3")] == ["rtc.pdf"]
 

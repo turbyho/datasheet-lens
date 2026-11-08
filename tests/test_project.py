@@ -422,7 +422,10 @@ def test_layout(store_home, text_pdf, tmp_path):
         shutil.copyfile(rtc, project.folder_path / "rv3149.pdf")
         report = prj.sync(project, store)
         sha = report["unassigned"][0]["sha256"]
-        part = prj.add_part(project, store, "RV-3149-C3", document=sha[:12])
+        # The datasheet names no manufacturer that the tool knows: the user gives it.
+        with pytest.raises(LensError, match="ASK THE USER: the manufacturer of RV-3149-C3"):
+            prj.add_part(project, store, "RV-3149-C3", document=sha[:12])
+        part = prj.add_part(project, store, "RV-3149-C3", "Micro Crystal", document=sha[:12])
         assert part["documents"] == [{"sha256": sha, "file": "rv3149.pdf", "role": "datasheet", "pinned": True}]
         assert prj.sync(project, store)["moved"] == []
         assert "pinned = true" in project.path.read_text(encoding="utf-8")
@@ -1512,11 +1515,11 @@ def test_the_inbox(store_home, text_pdf, tmp_path):
         assert not (inbox / "opa2134.pdf").exists() and (inbox / "copy.pdf").is_file()
         assert store.document(widget["sha256"]) is not None  # in the store, with no part
         # The user decides: the widget is XYZ123. The next sync takes the file from the inbox.
-        prj.add_part(prj.load(project.root), store, "XYZ123", document=widget["sha256"][:12])
+        prj.add_part(prj.load(project.root), store, "XYZ123", "Small Co", document=widget["sha256"][:12])
         report = prj.sync(prj.load(project.root), store)
         assert report["inbox_known"] == ["_inbox/more/widget.pdf"]
         assert not (inbox / "more").exists() and inbox.is_dir()
-        assert (project.folder_path / "_unknown/widget.pdf").is_file()  # XYZ123 has no manufacturer
+        assert (project.folder_path / "Small Co/widget.pdf").is_file()
 
 
 def test_the_inbox_gives_the_manufacturer_of_the_datasheet(store_home, text_pdf, tmp_path):
@@ -1599,7 +1602,7 @@ def test_the_inbox_rules(store_home, text_pdf, tmp_path, monkeypatch):
         # A reference to a file in the inbox (a pinned file of an older version): a copy.
         loaded = prj.load(project.root)
         widget = report["inbox_waiting"][0]["sha256"]
-        prj.add_part(loaded, store, "XYZ123", document=widget[:12])
+        prj.add_part(loaded, store, "XYZ123", "Small Co", document=widget[:12])
         loaded = prj.load(project.root)
         part = next(p for p in loaded.parts if p["mpn"] == "XYZ123")
         part["documents"] = [{"sha256": widget, "file": "_inbox/widget.pdf", "role": "datasheet", "pinned": True}]

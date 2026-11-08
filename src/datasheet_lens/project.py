@@ -837,7 +837,7 @@ def _inbox(project: Project, store: Store, apply: bool, report: dict) -> list[di
             parts, proposal, reasons, maker = _inbox_parts(project, store, doc)
             for part in parts:
                 store_part(store, part["mpn"], part["manufacturer"] or maker, doc.sha256, "datasheet", "",
-                           part.get("base", ""))
+                           part.get("base", ""), check_maker=False)
                 if not part["manufacturer"]:  # step 1 of _sync fills the project part from the store
                     report["inbox_maker" if maker else "inbox_ask"].append(
                         {"part": part["mpn"], "file": rel, "sha256": doc.sha256, "manufacturer": maker})
@@ -1059,10 +1059,13 @@ def add_part(project: Project, store: Store, mpn: str, manufacturer: str = "", d
 
 
 def store_part(store: Store, mpn: str, manufacturer: str = "", document: str = "", role: str = "datasheet",
-               category: str = "", base: str = ""):
+               category: str = "", base: str = "", check_maker: bool = True):
     """The store part of add_part (made if necessary), with its base part, its
     category and the link of the document (to the base part when there is
-    one). Gives (part ID, the document or None)."""
+    one). Gives (part ID, the document or None). The manufacturer of a
+    datasheet comes from the datasheet (makercheck.datasheet_maker); a
+    question for the user is a LensError. check_maker false: the caller did the
+    check (the inbox, _inbox_parts)."""
     if role not in ROLES:
         raise LensError(f"role must be one of {', '.join(ROLES)}")
     doc = store.document(document) if document else None
@@ -1070,6 +1073,12 @@ def store_part(store: Store, mpn: str, manufacturer: str = "", document: str = "
         raise LensError(f"document not found: {document}")
     owner = None
     existing = store.match_parts(mpn)  # an existing concrete part, with any spelling of its manufacturer
+    if doc is not None and role == "datasheet" and check_maker:
+        # The manufacturer of the part is the manufacturer of its datasheet. A
+        # part of the store gives its name when the caller gives none.
+        manufacturer, ask = makercheck.part_maker(store, doc, mpn, manufacturer, role)
+        if ask:
+            raise LensError(ask)
     if base.strip() and base.strip().lower() != mpn.strip().lower():
         owner = store.find_part(base.strip(), manufacturer, create=True)
         if not manufacturer and len(existing) == 1:

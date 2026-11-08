@@ -132,7 +132,7 @@ def test_file_names():
 
 def test_cli_and_mcp(store_home, server, capsys, monkeypatch):
     base = server[0]
-    assert main(["add", f"{base}/ds.pdf", "--part", "OPA2134"]) == 0
+    assert main(["add", f"{base}/ds.pdf", "--part", "OPA2134", "-M", "Texas Instruments"]) == 0
     assert "ds.pdf (1 pages)" in capsys.readouterr().out
     assert main(["add", f"{base}/login"]) == 2
     assert "did not give a PDF" in capsys.readouterr().err
@@ -144,7 +144,8 @@ def test_cli_and_mcp(store_home, server, capsys, monkeypatch):
     from datasheet_lens import server as srv
 
     monkeypatch.setattr("datasheet_lens.setup.element_backend", lambda: "text")
-    result = asyncio.run(srv.mcp.call_tool("add_document", {"path": f"{base}/get?id=7", "part": "OPA2134"}))
+    result = asyncio.run(srv.mcp.call_tool("add_document", {"path": f"{base}/get?id=7", "part": "OPA2134",
+                                                                "manufacturer": "Texas Instruments"}))
     blocks = result[0] if isinstance(result, tuple) else getattr(result, "content", result)
     assert "1 pages" in "\n".join(getattr(b, "text", "") for b in blocks)
     for job in list(srv._builds.values()):

@@ -111,3 +111,40 @@ def test_sync_takes_the_checked_name_into_the_project_file(store_home, text_pdf,
         [part] = prj.load(project.root).parts
         assert part["manufacturer"] == "UNI-ROYAL" and len(part["documents"]) == 1
         assert "was" not in part and prj.sync(prj.load(project.root), store)["renamed"] == []
+
+
+def test_add_document_and_project_add_part_take_the_name_of_the_datasheet(store_home, text_pdf, tmp_path):
+    """The manufacturer of a datasheet comes from the datasheet also in
+    add_document and project_add_part: a name of the same manufacturer gives
+    the name of the datasheet, a name that the registry does not relate to it
+    gives the question for the relation, and nothing is linked."""
+    import asyncio
+
+    from datasheet_lens import project as prj
+    from datasheet_lens.server import mcp
+
+    def call(tool, **args):
+        try:
+            result = asyncio.run(mcp.call_tool(tool, args))
+        except Exception as e:  # a LensError of a tool
+            return str(e)
+        blocks = result[0] if isinstance(result, tuple) else result.content
+        return "\n".join(b.text for b in blocks)
+
+    page = [[(50, 60, 14, "TPS7A02 Regulator"), (50, 760, 8, "TEXAS INSTRUMENTS")]]
+    text = call("add_document", path=str(text_pdf("a.pdf", page)), part="TPS7A02", manufacturer="Small Co")
+    assert ("ASK THE USER: the manufacturer of TPS7A02. Its datasheet (document " in text
+            and "names Texas Instruments, and the step gives Small Co" in text)
+    with Store() as store:
+        assert store.match_parts("TPS7A02") == []
+    call("add_document", path=str(text_pdf("a.pdf", page)), part="TPS7A02", manufacturer="TI")
+    with Store() as store:
+        [row] = store.match_parts("TPS7A02")
+        assert row["manufacturer"] == "Texas Instruments"  # the name of the datasheet, not TI
+        doc = store.add_document(text_pdf("b.pdf", [[(50, 60, 14, "XYZ125 Widget"), (50, 760, 8, "TEXAS INSTRUMENTS")]]))
+    project = prj.init_project(tmp_path / "board")
+    text = call("project_add_part", mpn="XYZ125", manufacturer="Small Co", document=doc.sha256[:12],
+                path=str(project.root))
+    assert "ASK THE USER: the manufacturer of XYZ125" in text and prj.load(project.root).parts == []
+    call("project_add_part", mpn="XYZ125", document=doc.sha256[:12], path=str(project.root))
+    assert prj.load(project.root).parts[0]["manufacturer"] == "Texas Instruments"

@@ -25,6 +25,53 @@ from .errors import LensError
 from .store import Store
 
 
+def datasheet_maker(store: Store, doc, given: str, mpn: str) -> tuple[str, str]:
+    """The manufacturer of a part from its datasheet doc (decision of the user,
+    2026-11-08): the manufacturer of a part is the manufacturer of its
+    datasheet. given: the name of the step (the user, the agent or the store).
+    Gives (the name, "") or ("", the question for the user: the caller adds
+    and links no part):
+    - the datasheet names a manufacturer that the tool knows (identify.propose):
+      its name, when given is empty or a name of the same manufacturer
+    - the datasheet names no manufacturer that the tool knows: given; with no
+      given, the question for the name
+    - the registry does not relate the two names: the question for the relation
+    A LensError when the registry records the two names as two manufacturers."""
+    from .identify import propose
+
+    found = propose(doc, store.text_names()).manufacturer
+    given = given.strip()
+    if found and (not given or store.same_maker(found, given)):
+        return found, ""
+    if not found and given:
+        return given, ""
+    if not found:
+        return "", (f"ASK THE USER: the manufacturer of {mpn}. Its datasheet (document {doc.sha256[:12]}) names no "
+                    "manufacturer that the tool knows. Read page 1 of the datasheet (get_page_image), ask the "
+                    "user, then do the step again with the manufacturer (the name in the datasheet). The "
+                    "tool did not add or link the part.")
+    if store.distinct_makers(found, given):
+        raise LensError(f"the datasheet (document {doc.sha256[:12]}) of {mpn} names {found}, and the manufacturer "
+                        f"registry records {given} as a different manufacturer: the document is not the datasheet "
+                        f"of this part, or the manufacturer of the part is {found}. The tool did not add or "
+                        "link the part.")
+    return "", (f"ASK THE USER: the manufacturer of {mpn}. Its datasheet (document {doc.sha256[:12]}) names "
+                f"{found}, and the step gives {given}: the manufacturer registry does not know if they are one "
+                "manufacturer. Ask the user, then record it with manufacturer_relation (CLI: datasheet-lens maker "
+                f"RELATION NAME OTHER): alias \"{found}\" \"{given}\" (one manufacturer: the part gets the name "
+                "of the datasheet) or distinct (two manufacturers: the document is not the datasheet of this "
+                "part). Then do the step again. The tool did not add or link the part.")
+
+
+def part_maker(store: Store, doc, mpn: str, manufacturer: str, role: str) -> tuple[str, str]:
+    """The manufacturer for a link of the document doc to the part mpn (as
+    datasheet_maker): for a datasheet, the given name or the name of the part
+    in the store must agree with the datasheet. An other role: the given name."""
+    if role != "datasheet":
+        return manufacturer.strip(), ""
+    return datasheet_maker(store, doc, manufacturer.strip() or store.known_maker(mpn, ""), mpn)
+
+
 def _read(store: Store, part_id: int, names: dict[str, str], cache: dict[str, tuple[str, str]]) -> tuple:
     """The datasheets of a part and the manufacturers that they name. Gives
     (the SHA-256 of the datasheets, {name: SHA-256} with one name for each
