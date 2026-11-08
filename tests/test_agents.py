@@ -26,7 +26,9 @@ def test_block_in_agent_files(tmp_path, capsys):
 
     # A second run changes nothing; an old block is replaced, the rest stays.
     assert main(["project", "init", "-p", str(root)]) == 0
-    assert "AGENTS.md: datasheet-lens block current" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "AGENTS.md: datasheet-lens block current" in out and "CLAUDE.md: datasheet-lens block current" in out
+    assert (root / "CLAUDE.md").read_bytes() == claude
     old = text.replace("Do not change the copies by hand.", "An old text.") + "\n## After\n"
     (root / "AGENTS.md").write_text(old, encoding="utf-8")
     assert agents.update(root, "datasheets")[0] == ("AGENTS.md", "updated")
@@ -40,6 +42,122 @@ def test_claude_md_that_includes_agents_md(tmp_path):
     result = dict(agents.update(tmp_path, "datasheets"))
     assert result["AGENTS.md"] == "added" and result["CLAUDE.md"].startswith("not changed: it includes")
     assert (tmp_path / "CLAUDE.md").read_text(encoding="utf-8") == "@AGENTS.md\n"
+
+
+def test_block_in_a_file_with_crlf(tmp_path):
+    """A file with CRLF line ends: the markers are found, thus a second update finds
+    the block current, and an update replaces the block and keeps the CRLF."""
+    path = tmp_path / "AGENTS.md"
+    path.write_bytes(b"# Board\r\n")
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "added")]
+    first = path.read_bytes()
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "current")]
+    assert path.read_bytes() == first
+    path.write_bytes(first.replace(b"Do not change the copies by hand.", b"An old text."))
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "updated")]
+    assert path.read_bytes() == first
+    half = b"<!-- datasheet-lens -->\r\nhalf a block\r\n"
+    path.write_bytes(half)
+    assert agents.update(tmp_path, "datasheets")[0][1].startswith("not changed")
+    assert path.read_bytes() == half
+
+
+@pytest.mark.parametrize("head, newline", [
+    (b"\xef\xbb\xbf# Board\r\n", b"\r\n"),  # a byte order mark, as an editor of Windows writes it
+    (b"# Board\r# Notes\r", b"\r"),  # CR line ends
+    (b"# Board", b"\n"),  # no line end
+])
+def test_block_in_files_of_other_editors(tmp_path, head, newline):
+    """The block gets the line ends of the file, the byte order mark stays at the
+    start, and a second update finds the block current."""
+    path = tmp_path / "AGENTS.md"
+    path.write_bytes(head)
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "added")]
+    first = path.read_bytes()
+    assert first.startswith(head.rstrip(b"\r\n")) and first.count(b"<!-- datasheet-lens -->") == 1
+    assert first.endswith(b"<!-- /datasheet-lens -->" + newline)
+    rest = first.replace(newline, b"")
+    assert b"\r" not in rest and b"\n" not in rest  # only the line end of the file
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "current")]
+    assert path.read_bytes() == first
+
+
+def test_marker_lines_that_are_not_markers(tmp_path):
+    """A marker line in a fenced code block is an example, not a marker. Spaces after
+    a marker do not make the block different. The line ends outside the block stay."""
+    path = tmp_path / "AGENTS.md"
+    example = ("```\n<!-- datasheet-lens -->\n```\n"
+               "~~~\n<!-- datasheet-lens -->\nexample\n<!-- /datasheet-lens -->\n~~~\n")
+    path.write_bytes(example.encode("utf-8"))
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "added")]
+    text = path.read_bytes().decode("utf-8")
+    assert text.startswith(example) and text.count("<!-- datasheet-lens -->") == 3
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "current")]
+    # Spaces after the markers, CRLF in the block, and LF on the first line.
+    block = agents.block("datasheets").replace("\n", "\r\n").replace("-->\r\n", "--> \t\r\n", 1)
+    path.write_bytes(b"# a\n# b\r\n" + block.encode("utf-8") + b" \r\n")
+    before = path.read_bytes()
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "current")]
+    assert path.read_bytes() == before
+    path.write_bytes(before.replace(b"Do not change the copies by hand.", b"An old text."))
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "updated")]
+    # A new block with no spaces after the markers. The text outside the block
+    # stays: the LF of "# a".
+    clean = agents.block("datasheets").replace("\n", "\r\n").encode("utf-8")
+    assert path.read_bytes() == b"# a\n# b\r\n" + clean + b"\r\n"
+
+
+@pytest.mark.parametrize("example", [
+    "````\n```\n<!-- datasheet-lens -->\n```\n````\n",  # a longer fence holds a shorter one
+    "  ```\n<!-- datasheet-lens -->\n  ```\n",  # a fence with up to 3 spaces
+    "~~~ text\n<!-- datasheet-lens -->\n~~~\n",  # tildes and an info string
+])
+def test_markers_in_fences_of_commonmark(tmp_path, example):
+    path = tmp_path / "AGENTS.md"
+    path.write_bytes(example.encode("utf-8"))
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "added")]
+    assert path.read_bytes().decode("utf-8").startswith(example)
+
+
+def test_lines_that_do_not_make_a_fence(tmp_path):
+    """Four spaces make an indented code block, and backticks in the info string of
+    a backtick line make inline code: no fence, thus the marker lines are markers."""
+    for head in ("    ```\n", "``` a`b\n"):
+        (tmp_path / "AGENTS.md").write_bytes((head + "<!-- datasheet-lens -->\nhalf\n").encode("utf-8"))
+        assert agents.update(tmp_path, "datasheets")[0][1] == "not changed: <!-- datasheet-lens --> has no " \
+            "<!-- /datasheet-lens --> line after it (outside a code block)"
+
+
+def test_file_that_ends_in_an_open_fence(tmp_path):
+    """A fence with no end runs to the end of the file: a block after it is code."""
+    path = tmp_path / "AGENTS.md"
+    path.write_bytes(b"# Board\n```\ncode\n")
+    assert agents.update(tmp_path, "datasheets") == [
+        ("AGENTS.md", "not changed: the end of the file is in a code block or an HTML block with no end")]
+    assert path.read_bytes() == b"# Board\n```\ncode\n"
+
+
+def test_half_block_before_a_full_block(tmp_path):
+    """A BEGIN with no END before an other block: no change, the text of the user stays."""
+    path = tmp_path / "AGENTS.md"
+    text = "<!-- datasheet-lens -->\nnotes of the user\n\n" + agents.block("datasheets") + "\n"
+    path.write_bytes(text.encode("utf-8"))
+    assert agents.update(tmp_path, "datasheets")[0][1].startswith("not changed")
+    assert path.read_bytes() == text.encode("utf-8")
+
+
+def test_line_end_of_the_text_of_the_user(tmp_path):
+    """The line end comes from the text outside the block: an LF block in a CRLF file
+    gets CRLF, also when the block has more lines than the text of the user."""
+    path = tmp_path / "AGENTS.md"
+    path.write_bytes(b"# Board\r\n\r\n" + agents.block("datasheets").encode("utf-8") + b"\r\n")
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "updated")]
+    assert path.read_bytes() == (b"# Board\r\n\r\n" + agents.block("datasheets").replace(
+        "\n", "\r\n").encode("utf-8") + b"\r\n")
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "current")]
+    # A file with only the block keeps the line end of the block.
+    path.write_bytes(agents.block("datasheets").encode("utf-8"))
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "current")]
 
 
 def test_block_with_no_end_marker(tmp_path):
@@ -107,3 +225,85 @@ def test_block_names_the_project_tools():
     wanted = {n for n in names if n.startswith("project_") and n not in ("project_remove_document",)}
     wanted |= {"get_ordering_codes", "find_facts", "save_fact"}
     assert not {n for n in wanted if n not in TEXT}, wanted
+
+
+def test_fences_in_list_items(tmp_path):
+    """A fenced code block in a list item ends in the list item: its lines do not
+    hide the block, and the block is found one time."""
+    path = tmp_path / "AGENTS.md"
+    text = ("1. ```\n   x\n   ```\n\n" + agents.block("datasheets") + "\n\n- ```\n  y\n  ```\n"
+            "   ```\n    <!-- datasheet-lens -->\n    ```\n")
+    path.write_bytes(text.encode("utf-8"))
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "current")]
+    path.write_bytes(text.replace("Do not change the copies by hand.", "An old text.").encode("utf-8"))
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "updated")]
+    assert path.read_bytes() == text.encode("utf-8")
+
+
+def test_include_after_a_fence_in_a_list_item(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_bytes(b"- ```\n  a\n  ```\n\n@AGENTS.md\n\n- ```\n  b\n  ```\n")
+    result = dict(agents.update(tmp_path, "datasheets"))
+    assert result["AGENTS.md"] == "added" and result["CLAUDE.md"].startswith("not changed: it includes")
+
+
+def test_two_blocks(tmp_path):
+    """Two blocks (for example after a merge): no change, and the result tells it."""
+    path = tmp_path / "AGENTS.md"
+    text = agents.block("datasheets") + "\n\n" + agents.block("datasheets") + "\n"
+    path.write_bytes(text.encode("utf-8"))
+    assert agents.update(tmp_path, "datasheets") == [
+        ("AGENTS.md", "not changed: 2 <!-- datasheet-lens --> lines: keep one block")]
+    assert path.read_bytes() == text.encode("utf-8")
+
+
+def test_code_block_with_no_end_in_the_block(tmp_path):
+    """A code block with no end in the block makes code of the END line: the result
+    tells that the END line is not outside a code block."""
+    path = tmp_path / "AGENTS.md"
+    text = "<!-- datasheet-lens -->\n```\nold\n<!-- /datasheet-lens -->\n"
+    path.write_bytes(text.encode("utf-8"))
+    assert agents.update(tmp_path, "datasheets") == [("AGENTS.md", "not changed: <!-- datasheet-lens --> has no "
+                                                     "<!-- /datasheet-lens --> line after it (outside a code block)")]
+    assert path.read_bytes() == text.encode("utf-8")
+
+
+@pytest.mark.parametrize("end", ["<!-- note\n", "<pre>\ncode\n"])
+def test_file_that_ends_in_an_open_html_block(tmp_path, end):
+    path = tmp_path / "AGENTS.md"
+    path.write_bytes(("# Board\n" + end).encode("utf-8"))
+    assert agents.update(tmp_path, "datasheets") == [
+        ("AGENTS.md", "not changed: the end of the file is in a code block or an HTML block with no end")]
+    assert path.read_bytes() == ("# Board\n" + end).encode("utf-8")
+
+
+@pytest.mark.parametrize("wrap", [
+    "<details>\n{block}\n</details>\n",  # an HTML block holds the markers
+    "<div>\n{block}\n</div>\n",
+    "- item\n\n  {block}\n",  # a block in a list item
+])
+def test_block_that_is_not_at_the_top_level(tmp_path, wrap):
+    """The tool does not add a second block when the old block is not at the top
+    level: the result tells it, and the file does not change."""
+    path = tmp_path / "AGENTS.md"
+    text = wrap.format(block=agents.block("datasheets").replace("\n", "\n  " if wrap.startswith("-") else "\n"))
+    path.write_bytes(text.encode("utf-8"))
+    result = agents.update(tmp_path, "datasheets")[0][1]
+    assert result.startswith("not changed: a <!-- datasheet-lens --> or <!-- /datasheet-lens --> line in an HTML")
+    assert path.read_bytes() == text.encode("utf-8")
+
+
+@pytest.mark.parametrize("claude", [
+    "<!-- @AGENTS.md (disabled) -->\n",  # Claude Code removes the HTML comments
+    "Write `@AGENTS.md` to import it.\n",  # an import in inline code is not an import
+])
+def test_text_that_does_not_import_agents_md(tmp_path, claude):
+    (tmp_path / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_bytes(claude.encode("utf-8"))
+    assert dict(agents.update(tmp_path, "datasheets"))["CLAUDE.md"] == "added"
+
+
+def test_import_in_a_sentence(tmp_path):
+    (tmp_path / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_bytes(b"# Claude\n\nRead *the rules*: @./AGENTS.md\n")
+    assert dict(agents.update(tmp_path, "datasheets"))["CLAUDE.md"].startswith("not changed: it includes")

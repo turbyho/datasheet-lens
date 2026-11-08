@@ -33,6 +33,9 @@ dependencies = [
     "keyring>=25.6",
     # The comparison of versions for the update check (version_check.py).
     "packaging>=24",
+    # The Markdown of AGENTS.md and CLAUDE.md (CommonMark): the markers of the block
+    # outside code blocks (agents.py).
+    "markdown-it-py>=4.2",
 ]
 
 [project.urls]

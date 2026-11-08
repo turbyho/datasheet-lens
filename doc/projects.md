@@ -67,9 +67,21 @@ The block is between the lines `<!-- datasheet-lens -->` and
   that exist. Make the file first if you want the block.
 - A second run replaces the block only when its text is different (for example
   from an older version).
-- When `CLAUDE.md` imports `AGENTS.md` (a line `@AGENTS.md`) and `AGENTS.md` has the
-  block, `CLAUDE.md` does not get a second block.
-- The tool keeps the line ends of the file (LF or CRLF).
+- When `CLAUDE.md` imports `AGENTS.md` (`@AGENTS.md` in the text, not in code and
+  not in an HTML comment) and `AGENTS.md` has the block, `CLAUDE.md` does not get a
+  second block.
+- The tool keeps the line ends of the file (LF, CRLF or CR) and a byte order mark
+  at its start. The block gets the line end of most lines of the text outside it.
+- The tool reads the file as CommonMark. The marker lines must be at the top level
+  of the file: a marker line in a code block (also in a list item or a block quote)
+  is an example, not a marker.
+- The tool does not change a file in these conditions. The result of `project init`
+  tells the reason:
+  - The file has more than one block.
+  - A `<!-- datasheet-lens -->` line has no `<!-- /datasheet-lens -->` line after it.
+  - A marker line is in an HTML block (for example `<details>`), in a list item, or
+    has spaces before it.
+  - The file ends in a code block or an HTML block with no end.
 
 ## The project file
 

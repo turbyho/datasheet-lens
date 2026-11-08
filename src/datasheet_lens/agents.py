@@ -12,6 +12,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from markdown_it import MarkdownIt
+
 from .fileutil import write_atomic
 
 BEGIN = "<!-- datasheet-lens -->"
@@ -101,13 +103,96 @@ def block(folder: str) -> str:
     return f"{BEGIN}\n{TEXT.format(folder=folder).rstrip()}\n{END}"
 
 
-# A marker is a line of its own: a mention of a marker in a sentence or in
-# inline code is not a marker.
-BEGIN_RE = re.compile(r"(?m)^" + re.escape(BEGIN) + r"[ \t]*$")
-END_RE = re.compile(r"(?m)^" + re.escape(END) + r"[ \t]*$")
-# CLAUDE.md that imports AGENTS.md ("@AGENTS.md", "@./AGENTS.md"), outside code blocks.
-INCLUDE_RE = re.compile(r"(?m)(^|\s)@(\./)?AGENTS\.md\b")
-FENCE_RE = re.compile(r"(?ms)^(```|~~~).*?^\1")
+# A line and its line end (CRLF, LF or CR). markdown-it counts the lines with the
+# same line ends, thus the line numbers of its tokens are the numbers of these lines.
+LINE_RE = re.compile(r"([^\r\n]*)(\r\n|\r|\n|\Z)")
+# CLAUDE.md that imports AGENTS.md ("@AGENTS.md", "@./AGENTS.md").
+INCLUDE_RE = re.compile(r"(^|\s)@(\./)?AGENTS\.md\b")
+BOM = "\ufeff"
+_COMMONMARK = MarkdownIt("commonmark")
+
+Span = tuple[int, int, int]  # a line: its start, the end of its text, the end of its line end
+
+
+class _NoBlock(Exception):
+    """The text has a marker, but no block that the tool can change: the reason."""
+
+
+class _Lines:
+    """The lines of a Markdown text, with the code blocks, the markers and the text
+    of the paragraphs that markdown-it (CommonMark) finds.
+
+    A marker is a line that starts an HTML block at the top level of the document,
+    and that has only the marker and spaces or tabs. Thus a marker in a code block
+    (also in a list item or a block quote), in a sentence or in inline code is an
+    example, not a marker. The spaces and tabs after a marker are part of its line,
+    not of the block.
+    """
+
+    def __init__(self, text: str):
+        self.text = text
+        self.spans: list[Span] = []
+        pos = 0
+        while pos < len(text):
+            m = LINE_RE.match(text, pos)
+            self.spans.append((pos, m.end(1), m.end()))
+            pos = m.end()
+        code: set[int] = set()  # the line numbers of the code blocks
+        html_starts: set[int] = set()  # the first lines of the HTML blocks at the top level
+        # The text of the paragraphs and headings, with no code span and no HTML: Claude
+        # Code reads an import only there (it removes the HTML comments, and an import
+        # in code is not an import).
+        prose: list[str] = []
+        for token in _COMMONMARK.parse(text):
+            if token.type in ("fence", "code_block") and token.map:
+                code.update(range(*token.map))
+            elif token.type == "html_block" and token.level == 0 and token.map:
+                html_starts.add(token.map[0])
+            elif token.type == "inline":
+                prose.append("".join(child.content if child.type == "text" else
+                                     "\n" if child.type in ("softbreak", "hardbreak") else " "
+                                     for child in token.children or []))
+        self.prose = "\n".join(prose)
+        self.markers: list[tuple[int, str]] = []  # (line number, BEGIN or END)
+        self.other_markers = 0  # marker lines that are not markers, outside code
+        for i, (start, stop, _) in enumerate(self.spans):
+            line = text[start:stop]
+            if i in code or line.strip(" \t") not in (BEGIN, END):
+                continue
+            if i in html_starts and line.rstrip(" \t") in (BEGIN, END):
+                self.markers.append((i, line.rstrip(" \t")))
+            else:
+                self.other_markers += 1
+
+    def block(self) -> tuple[Span, Span] | None:
+        """The two marker lines of the block (BEGIN, END), or None with no BEGIN.
+
+        Raises:
+            _NoBlock: a marker line that the tool cannot change safely.
+        """
+        if self.other_markers:
+            # For example a block in <details> or in a list item: a second block at the
+            # top level would leave the old one.
+            raise _NoBlock(f"a {BEGIN} or {END} line in an HTML block, in a list item or with spaces before "
+                           "it: put the block at the top level of the file")
+        begins = [i for i, (_, kind) in enumerate(self.markers) if kind == BEGIN]
+        if not begins:
+            return None
+        if len(begins) > 1:
+            raise _NoBlock(f"{len(begins)} {BEGIN} lines: keep one block")
+        b = begins[0]
+        # The next marker must be END: a BEGIN with no END is a block with no end.
+        if b + 1 == len(self.markers) or self.markers[b + 1][1] != END:
+            raise _NoBlock(f"{BEGIN} has no {END} line after it (outside a code block)")
+        return self.spans[self.markers[b][0]], self.spans[self.markers[b + 1][0]]
+
+
+def _line_end(text: str) -> str:
+    """The line end of most lines: CRLF, LF or CR (LF when there is no line end, or
+    when LF is one of the most frequent)."""
+    crlf = text.count("\r\n")
+    counts = {"\n": text.count("\n") - crlf, "\r\n": crlf, "\r": text.count("\r") - crlf}
+    return max(counts, key=lambda end: counts[end])  # max keeps the first of equal counts
 
 
 def update(root: Path, folder: str) -> list[tuple[str, str]]:
@@ -126,7 +211,7 @@ def update(root: Path, folder: str) -> list[tuple[str, str]]:
             results.append((name, f"{done[real]} (the same file as {FILES[0]})"))
             continue
         try:
-            action = _update_file(path, folder, root, results)
+            action = _update_file(path, folder, results)
         except (OSError, UnicodeDecodeError) as e:
             action = f"not changed: {e}"
         done[real] = action
@@ -134,25 +219,47 @@ def update(root: Path, folder: str) -> list[tuple[str, str]]:
     return results
 
 
-def _update_file(path: Path, folder: str, root: Path, results: list[tuple[str, str]]) -> str:
-    text = path.read_bytes().decode("utf-8")  # keep the line ends of the file (CRLF or LF)
-    # The line ends of most lines.
-    newline = "\r\n" if text.count("\r\n") * 2 > text.count("\n") else "\n"
-    wanted = block(folder).replace("\n", newline)
-    begin = BEGIN_RE.search(text)
+def _current(body: str, marker_lines: tuple[Span, Span], wanted: str) -> bool:
+    """True when the block between the two marker lines is the wanted block (the
+    spaces after the markers are not part of it)."""
+    first, last = marker_lines
+    return BEGIN + body[first[1]:last[0]] + END == wanted
+
+
+def _update_file(path: Path, folder: str, results: list[tuple[str, str]]) -> str:
+    text = path.read_bytes().decode("utf-8")  # keep the line ends of the file (CRLF, LF or CR)
+    bom = BOM if text.startswith(BOM) else ""  # an editor of Windows can write one
+    body = text[len(bom):]
+    lines = _Lines(body)
+    try:
+        found = lines.block()
+    except _NoBlock as e:
+        return f"not changed: {e}"
     agents_ok = any(n == "AGENTS.md" and a in ("added", "updated", "current") for n, a in results)
-    if path.name == "CLAUDE.md" and begin is None and agents_ok \
-            and INCLUDE_RE.search(FENCE_RE.sub("", text)):
+    if path.name == "CLAUDE.md" and found is None and agents_ok and INCLUDE_RE.search(lines.prose):
         return "not changed: it includes AGENTS.md, which has the block"
-    if begin is not None:
-        end = END_RE.search(text, begin.end())
-        if end is None:
-            return f"not changed: {BEGIN} has no {END} line"
-        if text[begin.start():end.end()] == wanted:
+    if found is not None:
+        start, stop = found[0][0], found[1][1]  # the two marker lines, with their spaces
+        outside = body[:start] + body[stop:]
+        # The line end of the text of the user; the block alone: its own line end.
+        newline = _line_end(outside if "\r" in outside or "\n" in outside else body)
+        wanted = block(folder).replace("\n", newline)
+        if _current(body, found, wanted):
             return "current"
-        new, action = text[:begin.start()] + wanted + text[end.end():], "updated"
+        new, action = body[:start] + wanted + body[stop:], "updated"
     else:
-        base = text.rstrip("\r\n")
+        newline = _line_end(body)
+        wanted = block(folder).replace("\n", newline)
+        base = body.rstrip("\r\n")
         new, action = (base + newline * 2 if base else "") + wanted + newline, "added"
-    write_atomic(path, new.encode("utf-8"))
+    # The new text must have the block as a block. The parser decides it: for example a
+    # code block or an HTML block (<pre>, a comment) with no end at the end of the file
+    # makes code or HTML of a block after it.
+    try:
+        check = _Lines(new).block()
+    except _NoBlock:
+        check = None
+    if check is None or not _current(new, check, wanted):
+        return "not changed: the end of the file is in a code block or an HTML block with no end"
+    write_atomic(path, (bom + new).encode("utf-8"))
     return action
