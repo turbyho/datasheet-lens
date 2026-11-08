@@ -1102,19 +1102,41 @@ class Store:
         # Two levels only: documents_of_part follows one step.
         if base["base_id"] is not None:
             raise LensError(f"the base part {base['mpn']} is a concrete part (it has a base part)")
+        part = self.part(part_id)
+        if part is None:
+            raise LensError(f"part not found: {part_id}")
         if self.db.execute("SELECT 1 FROM parts WHERE base_id = ? LIMIT 1", (part_id,)).fetchone():
-            raise LensError(f"{self.part(part_id)['mpn']} is the base part of other parts: it cannot get a base part")
-        self.db.execute("UPDATE parts SET base_id = ? WHERE id = ?", (base_id, part_id))
+            raise LensError(f"{part['mpn']} is the base part of other parts: it cannot get a base part")
         # A concrete part with no manufacturer gets the one of its base part, and
-        # a base part with no manufacturer the one of the concrete part (not when
-        # a part with this MPN and manufacturer is there: the pair is unique).
-        with contextlib.suppress(sqlite3.IntegrityError):
-            self.db.execute("UPDATE parts SET manufacturer = ? WHERE id = ? AND manufacturer = ''",
-                            (base["manufacturer"], part_id))
-        with contextlib.suppress(sqlite3.IntegrityError):
-            self.db.execute("UPDATE parts SET manufacturer = (SELECT manufacturer FROM parts WHERE id = ?)"
-                            " WHERE id = ? AND manufacturer = ''", (part_id, base_id))
+        # a base part with no manufacturer the one of the concrete part. When the
+        # store has a part with this MPN of this manufacturer already, the part
+        # with no manufacturer is a second row of that part: the caller must use
+        # that part. The check comes before each change.
+        if not part["manufacturer"] and base["manufacturer"]:
+            self._no_named_twin(part, base["manufacturer"], base)
+        if not base["manufacturer"] and part["manufacturer"]:
+            self._no_named_twin(base, part["manufacturer"], part)
+        self.db.execute("UPDATE parts SET base_id = ? WHERE id = ?", (base_id, part_id))
+        self.db.execute("UPDATE parts SET manufacturer = ? WHERE id = ? AND manufacturer = ''",
+                        (base["manufacturer"], part_id))
+        self.db.execute("UPDATE parts SET manufacturer = ? WHERE id = ? AND manufacturer = ''",
+                        (part["manufacturer"], base_id))
         self.db.commit()
+
+    def _no_named_twin(self, unnamed: sqlite3.Row, manufacturer: str, other: sqlite3.Row) -> None:
+        """A LensError when the store has a part with the MPN of the part unnamed
+        (which has no manufacturer) and of this manufacturer (any name of it in
+        the registry): set_base must not give unnamed this manufacturer, because
+        then the store has two rows of one part. other gives the manufacturer."""
+        for row in self.db.execute("SELECT id, mpn, manufacturer FROM parts WHERE mpn = ? COLLATE NOCASE"
+                                   " AND id != ? AND manufacturer != ''", (unnamed["mpn"], unnamed["id"])):
+            if makers.same(self.db, row["manufacturer"], manufacturer):
+                raise LensError(
+                    f"the store has {row['mpn']} from {row['manufacturer']} already, and {unnamed['mpn']} with no "
+                    f"manufacturer is a second part with this MPN. {other['mpn']} is from {manufacturer}, thus it "
+                    f"refers to {row['mpn']} ({row['manufacturer']}). Give the manufacturer {row['manufacturer']} "
+                    f"for {unnamed['mpn']}: then the tool uses the part {row['mpn']} ({row['manufacturer']}). "
+                    "Nothing changed.")
 
     def base_of(self, part_id: int) -> sqlite3.Row | None:
         """The base part of a concrete part, or None."""

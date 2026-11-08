@@ -263,6 +263,47 @@ def test_no_second_concrete_part_for_an_other_spelling(store_home, text_pdf, tmp
         assert store.part(concrete)["manufacturer"] == "TI"
 
 
+def _parts(store):
+    return [tuple(r) for r in store.db.execute("SELECT mpn, manufacturer, base_id FROM parts ORDER BY id")]
+
+
+def test_set_base_does_not_make_a_second_row_of_a_named_part(store_home):
+    """A part with no manufacturer next to the parts of the same MPN from two
+    manufacturers: a base part of one manufacturer makes it a second row of the
+    part of that manufacturer. set_base tells it and changes nothing (before,
+    the part stayed with no manufacturer and no error)."""
+    with Store() as store:
+        store.maker_relation("distinct", "TI", "onsemi")
+        store.add_part("X1", "Texas Instruments")  # an other name of TI in the registry
+        store.add_part("X1", "onsemi")
+        unnamed = store.add_part("X1", "")
+        base = store.add_part("XB", "TI")
+        before = _parts(store)
+        with pytest.raises(LensError, match=r"has X1 from Texas Instruments already.*Give the manufacturer "
+                                            r"Texas Instruments for X1.*Nothing changed"):
+            store.set_base(unnamed, base)
+        assert _parts(store) == before
+        # The part of the other manufacturer is not a twin: the base part fills it.
+        concrete = store.add_part("X2", "")
+        store.set_base(concrete, base)
+        assert store.part(concrete)["manufacturer"] == "TI"
+
+
+def test_set_base_does_not_make_a_second_row_of_a_named_base_part(store_home):
+    """The same for a base part with no manufacturer: its concrete part must not
+    give it a manufacturer that a part with its MPN has."""
+    with Store() as store:
+        store.maker_relation("distinct", "TI", "onsemi")
+        store.add_part("XB", "TI")
+        store.add_part("XB", "onsemi")
+        unnamed = store.add_part("XB", "")
+        concrete = store.add_part("X2", "TI")
+        before = _parts(store)
+        with pytest.raises(LensError, match="has XB from TI already.*Nothing changed"):
+            store.set_base(concrete, unnamed)
+        assert _parts(store) == before
+
+
 def test_ordering_codes(store_home, text_pdf):
     """The codes of an ordering table first, then the codes in the text. Not a
     code: an evaluation board, a list (TMP112A/B/D/N), the part in a sentence."""
