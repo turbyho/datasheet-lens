@@ -409,8 +409,12 @@ does these steps:
    page 1 of the datasheet, ask the user, and do the step again with
    `-M MANUFACTURER` (`manufacturer` in MCP). When the given name and the name of
    the source are not related in the registry, a line tells you to record the
-   relation: the offers of the distributors use it. With no datasheet, the part gets
-   no manufacturer until the user puts the datasheet into the inbox.
+   relation: the offers of the distributors use it. When the user confirms a name that
+   the text of the datasheet does not give (a module), add `-C`
+   (`manufacturer_confirmed` in MCP). When the datasheet names no manufacturer that
+   the tool knows, a part of the store with the MPN of the manufacturer of the source
+   gives its name. With no datasheet, see
+   [projects.md](projects.md#the-manufacturer-of-a-part).
 5. It adds the document and the part to the store, and in a project folder to the
    project. The CLI copies the datasheet into the document folder of the project. With
    the MCP tool, run `project_sync` after it.

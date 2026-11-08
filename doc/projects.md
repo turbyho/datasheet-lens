@@ -285,10 +285,18 @@ letters and digits (TI, ST) is not a name to find in a text.
 | Names a manufacturer that the tool knows | A name of a different manufacturer in the registry | An error: the document is not the datasheet of the part, or the name is wrong. |
 | Names no manufacturer that the tool knows | A name | The part gets the given name. |
 | Names no manufacturer that the tool knows | None | The step asks the user for the name. Give it with `-M` (`manufacturer` in MCP). |
+| Any | A name that the user confirms (`-C`, `manufacturer_confirmed` in MCP) | The part gets the given name. Use it when the user read page 1, for example for a module whose datasheet names the maker of its chip more often than its own maker. |
+
+The tool counts the mentions of all names of one manufacturer together, and gives
+the name that the datasheet uses most often. For a built-in manufacturer, it gives
+the built-in name.
 
 `adopt` also compares the name of the datasheet with the name of the distributor
-(see [distributors.md](distributors.md#take-a-found-part)). With no datasheet, the
-part gets no manufacturer until the user puts the datasheet into the inbox.
+(see [distributors.md](distributors.md#take-a-found-part)). With no datasheet, a
+part of the store with the MPN of the manufacturer of the distributor is the part.
+When the store has the MPN only of other manufacturers, `adopt` asks the user: a
+part of a different manufacturer never gets the purchase source. Else the part gets
+no manufacturer until the user puts the datasheet into the inbox.
 
 Older versions gave a part the name of the distributor. `datasheet-lens maker check`
 (MCP: `manufacturer_check`) compares the manufacturer of each part of the store with
@@ -302,6 +310,10 @@ its datasheet:
 
 After a rename, `sync` writes the name of the store into the project file, when it
 is the name of the datasheet of the part. Else the project file keeps its name.
+`project_check` tells it as a step of sync (`manufacturer name to update`), and
+compares the field `Manufacturer` with the name after the next sync. A part whose
+datasheet names a different manufacturer than its confirmed name (a module) stays in
+the list `different` of the check.
 
 ## Synchronize
 
@@ -836,7 +848,11 @@ The preferred distributor of a part:
    different name.
 
 The project file keeps the answer of the user, also `N/A`. Thus the tool does not
-ask again. The lines `Manufacturer:` and `Distributor:` give:
+ask again. A field with one name is the name as it is (a name can have a comma:
+`Murata Manufacturing Co., Ltd.`). A field with more names is a list, as the field
+`MPN`. The findings are steps of the user, but they do not stop the next steps
+(`sync`, then `stock`): these do not use the fields. The lines `Manufacturer:` and
+`Distributor:` give:
 
 | Line | Meaning |
 |---|---|

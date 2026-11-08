@@ -963,7 +963,7 @@ class Store:
         """True if the two names are the same manufacturer (makers.same)."""
         return makers.same(self.db, a, b)
 
-    def text_names(self) -> dict[str, str]:
+    def text_names(self) -> dict[str, tuple[str, str]]:
         """The names of the registry for the search of the manufacturer in a PDF (makers.text_names)."""
         return makers.text_names(self.db)
 

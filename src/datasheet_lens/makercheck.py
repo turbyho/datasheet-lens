@@ -19,28 +19,63 @@ JLCPCB. The check reads the manufacturer of each datasheet of a part
 
 from __future__ import annotations
 
+from collections import OrderedDict
+
 import pypdfium2 as pdfium
 
 from .errors import LensError
 from .store import Store
 
+# The manufacturer that each datasheet names (identify.propose), by the SHA-256 and
+# the title of the document and the names of the registry: a PDF does not change,
+# thus each process reads its page 1 one time (sync and project_check run often).
+_FOUND: OrderedDict[tuple, tuple[str, str]] = OrderedDict()
+_FOUND_SIZE = 2048
 
-def datasheet_maker(store: Store, doc, given: str, mpn: str) -> tuple[str, str]:
+CONFIRM = ("When the user read page 1 and confirms the given name (for example the maker of a module whose "
+           "datasheet names the maker of its chip more often), give it with manufacturer_confirmed=true (CLI: "
+           "--confirmed).")
+
+
+def found_maker(store: Store, doc, names: dict[str, tuple[str, str]] | None = None) -> tuple[str, str]:
+    """The manufacturer that the datasheet doc names (identify.propose with the
+    names of the registry, Store.text_names), and an error text of a PDF that
+    the tool cannot read ("" for none). Kept for the process (_FOUND)."""
+    from .identify import propose
+
+    names = store.text_names() if names is None else names
+    key = (doc.sha256, doc.title or "", tuple(sorted(names.items())))
+    if key in _FOUND:
+        _FOUND.move_to_end(key)
+        return _FOUND[key]
+    try:
+        value = (propose(doc, names).manufacturer, "")
+    except (LensError, OSError, pdfium.PdfiumError) as e:
+        value = ("", str(e))
+    _FOUND[key] = value
+    if len(_FOUND) > _FOUND_SIZE:
+        _FOUND.popitem(last=False)
+    return value
+
+
+def datasheet_maker(store: Store, doc, given: str, mpn: str, confirmed: bool = False) -> tuple[str, str]:
     """The manufacturer of a part from its datasheet doc (decision of the user,
     2026-11-08): the manufacturer of a part is the manufacturer of its
     datasheet. given: the name of the step (the user, the agent or the store).
     Gives (the name, "") or ("", the question for the user: the caller adds
     and links no part):
-    - the datasheet names a manufacturer that the tool knows (identify.propose):
+    - confirmed: the user read page 1 and confirms given (a module datasheet
+      can name the maker of its chip more often than its own maker): given
+    - the datasheet names a manufacturer that the tool knows (found_maker):
       its name, when given is empty or a name of the same manufacturer
     - the datasheet names no manufacturer that the tool knows: given; with no
       given, the question for the name
     - the registry does not relate the two names: the question for the relation
     A LensError when the registry records the two names as two manufacturers."""
-    from .identify import propose
-
-    found = propose(doc, store.text_names()).manufacturer
     given = given.strip()
+    if confirmed and given:
+        return given, ""
+    found = found_maker(store, doc)[0]
     if found and (not given or store.same_maker(found, given)):
         return found, ""
     if not found and given:
@@ -53,51 +88,45 @@ def datasheet_maker(store: Store, doc, given: str, mpn: str) -> tuple[str, str]:
     if store.distinct_makers(found, given):
         raise LensError(f"the datasheet (document {doc.sha256[:12]}) of {mpn} names {found}, and the manufacturer "
                         f"registry records {given} as a different manufacturer: the document is not the datasheet "
-                        f"of this part, or the manufacturer of the part is {found}. The tool did not add or "
-                        "link the part.")
+                        f"of this part, or the manufacturer of the part is {found}. {CONFIRM} The tool did not add "
+                        "or link the part.")
     return "", (f"ASK THE USER: the manufacturer of {mpn}. Its datasheet (document {doc.sha256[:12]}) names "
                 f"{found}, and the step gives {given}: the manufacturer registry does not know if they are one "
                 "manufacturer. Ask the user, then record it with manufacturer_relation (CLI: datasheet-lens maker "
-                f"RELATION NAME OTHER): alias \"{found}\" \"{given}\" (one manufacturer: the part gets the name "
+                f"RELATION NAME OTHER): alias \"{given}\" \"{found}\" (one manufacturer: the part gets the name "
                 "of the datasheet) or distinct (two manufacturers: the document is not the datasheet of this "
-                "part). Then do the step again. The tool did not add or link the part.")
+                f"part). Then do the step again. {CONFIRM} The tool did not add or link the part.")
 
 
-def part_maker(store: Store, doc, mpn: str, manufacturer: str, role: str) -> tuple[str, str]:
+def part_maker(store: Store, doc, mpn: str, manufacturer: str, role: str,
+               confirmed: bool = False) -> tuple[str, str]:
     """The manufacturer for a link of the document doc to the part mpn (as
     datasheet_maker): for a datasheet, the given name or the name of the part
     in the store must agree with the datasheet. An other role: the given name."""
     if role != "datasheet":
         return manufacturer.strip(), ""
-    return datasheet_maker(store, doc, manufacturer.strip() or store.known_maker(mpn, ""), mpn)
+    return datasheet_maker(store, doc, manufacturer.strip() or store.known_maker(mpn, ""), mpn,
+                           confirmed and bool(manufacturer.strip()))
 
 
-def _read(store: Store, part_id: int, names: dict[str, str], cache: dict[str, tuple[str, str]]) -> tuple:
+def _read(store: Store, part_id: int, names: dict[str, tuple[str, str]]) -> tuple:
     """The datasheets of a part and the manufacturers that they name. Gives
     (the SHA-256 of the datasheets, {name: SHA-256} with one name for each
-    manufacturer of the registry, the first error of a datasheet or "").
-    cache: SHA-256 -> (the manufacturer of the datasheet, an error)."""
-    from .identify import propose
-
+    manufacturer of the registry, the first error of a datasheet or "")."""
     shas = list(dict.fromkeys(r["sha256"] for r in store.documents_of_part(part_id) if r["role"] == "datasheet"))
-    for sha in shas:
-        if sha not in cache:
-            try:
-                cache[sha] = (propose(store.document(sha), names).manufacturer, "")
-            except (LensError, OSError, pdfium.PdfiumError) as e:
-                cache[sha] = ("", str(e))
+    found = {sha: found_maker(store, store.document(sha), names) for sha in shas}
     groups: dict[str, str] = {}
     for sha in shas:
-        name = cache[sha][0]
+        name = found[sha][0]
         if name and not any(store.same_maker(name, other) for other in groups):
             groups[name] = sha
-    return shas, groups, next((cache[s][1] for s in shas if cache[s][1]), "")
+    return shas, groups, next((found[s][1] for s in shas if found[s][1]), "")
 
 
 def datasheet_name(store: Store, part_id: int) -> str:
     """The manufacturer that the datasheets of the part name, when they name
     one manufacturer that the tool knows, else "" (see check)."""
-    _, groups, _ = _read(store, part_id, store.text_names(), {})
+    _, groups, _ = _read(store, part_id, store.text_names())
     return next(iter(groups)) if len(groups) == 1 else ""
 
 
@@ -109,10 +138,9 @@ def check(store: Store) -> dict:
     and for rename "new" (the name of the datasheet), for different "names"
     (the names of the datasheets), for unread "reason" (empty, or an error)."""
     names = store.text_names()
-    cache: dict[str, tuple[str, str]] = {}
     out: dict = {"rename": [], "different": [], "unread": [], "ok": 0}
     for part in store.db.execute("SELECT id, mpn, manufacturer FROM parts ORDER BY mpn COLLATE NOCASE, id").fetchall():
-        shas, groups, reason = _read(store, part["id"], names, cache)
+        shas, groups, reason = _read(store, part["id"], names)
         if not shas:
             continue
         item = {"id": part["id"], "mpn": part["mpn"], "manufacturer": part["manufacturer"], "document": shas[0]}

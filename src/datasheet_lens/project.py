@@ -1047,6 +1047,23 @@ def _entry(project: Project, store: Store, part_id: int, manufacturer: str = "")
     return part
 
 
+def checked_name(store: Store, part: dict) -> str:
+    """The manufacturer of a project part as sync writes it: the name of the
+    store part when it is another name of the same manufacturer and the name
+    of the datasheet of the part (makercheck.datasheet_name: manufacturer_check
+    gave the store this name; decision of the user, 2026-11-08). Else the name
+    of the project file: the store can have a short name (TI) or the name of a
+    distributor. project_check uses it too: it compares the field Manufacturer
+    with the name after the next sync."""
+    if not part["manufacturer"]:
+        return ""
+    rows = store.match_parts(part["mpn"], part["manufacturer"])  # one manufacturer in the registry
+    if len(rows) != 1 or not rows[0]["manufacturer"] or rows[0]["manufacturer"] == part["manufacturer"]:
+        return part["manufacturer"]
+    name = rows[0]["manufacturer"]
+    return name if makercheck.datasheet_name(store, rows[0]["id"]) == name else part["manufacturer"]
+
+
 def _fill(part: dict, row) -> None:
     """Fill an empty manufacturer or category of a project part from the store.
     The project file holds them, so that each person of a team gets the same
@@ -1058,23 +1075,25 @@ def _fill(part: dict, row) -> None:
 
 
 def add_part(project: Project, store: Store, mpn: str, manufacturer: str = "", document: str = "",
-             role: str = "datasheet", category: str = "", base: str = "") -> dict:
+             role: str = "datasheet", category: str = "", base: str = "", confirmed: bool = False) -> dict:
     """Add a part to the project, with the documents that the store links to it.
     A document (ID or SHA-256 prefix) is first linked to the part in the store.
     category: the function of the part (for example ADC), for the layout.
     base: mpn is a concrete orderable part (TLV75533PDBVR) of this base part
     (TLV755P); the document is then linked to the base part."""
-    return add_part_with_id(project, store, mpn, manufacturer, document, role, category, base)[0]
+    return add_part_with_id(project, store, mpn, manufacturer, document, role, category, base,
+                            confirmed=confirmed)[0]
 
 
 def store_part(store: Store, mpn: str, manufacturer: str = "", document: str = "", role: str = "datasheet",
-               category: str = "", base: str = "", check_maker: bool = True):
+               category: str = "", base: str = "", check_maker: bool = True, confirmed: bool = False):
     """The store part of add_part (made if necessary), with its base part, its
     category and the link of the document (to the base part when there is
     one). Gives (part ID, the document or None). The manufacturer of a
     datasheet comes from the datasheet (makercheck.datasheet_maker); a
     question for the user is a LensError. check_maker false: the caller did the
-    check (the inbox, _inbox_parts)."""
+    check (the inbox, _inbox_parts). confirmed: the user confirms the given
+    manufacturer (makercheck.datasheet_maker)."""
     if role not in ROLES:
         raise LensError(f"role must be one of {', '.join(ROLES)}")
     doc = store.document(document) if document else None
@@ -1085,7 +1104,7 @@ def store_part(store: Store, mpn: str, manufacturer: str = "", document: str = "
     if doc is not None and role == "datasheet" and check_maker:
         # The manufacturer of the part is the manufacturer of its datasheet. A
         # part of the store gives its name when the caller gives none.
-        manufacturer, ask = makercheck.part_maker(store, doc, mpn, manufacturer, role)
+        manufacturer, ask = makercheck.part_maker(store, doc, mpn, manufacturer, role, confirmed)
         if ask:
             raise LensError(ask)
     if base.strip() and base.strip().lower() != mpn.strip().lower():
@@ -1113,7 +1132,7 @@ def store_part(store: Store, mpn: str, manufacturer: str = "", document: str = "
 @locked
 def add_part_with_id(project: Project, store: Store, mpn: str, manufacturer: str = "", document: str = "",
                      role: str = "datasheet", category: str = "", base: str = "",
-                     source: dict | None = None) -> tuple[dict, int]:
+                     source: dict | None = None, confirmed: bool = False) -> tuple[dict, int]:
     """add_part, and the ID of the store part: the caller gets the same store
     part as the project part (adopt saves its purchase source there). source:
     a purchase source ({"source", "number", "library"}) of the project part, in
@@ -1122,7 +1141,7 @@ def add_part_with_id(project: Project, store: Store, mpn: str, manufacturer: str
                                      or project.path.read_text(encoding="utf-8") != project.text):
         # The check of save, before the store changes.
         raise LensError(f"{project.path} changed after datasheet-lens read it: run the command again")
-    part_id, doc = store_part(store, mpn, manufacturer, document, role, category, base)
+    part_id, doc = store_part(store, mpn, manufacturer, document, role, category, base, confirmed=confirmed)
     part = _entry(project, store, part_id, manufacturer)
     if category.strip():
         part["category"] = category.strip()
@@ -1270,7 +1289,7 @@ def _store_part(store: Store, mpn: str, manufacturer: str, create: bool) -> int 
 @locked
 def update_part(project: Project, store: Store, mpn: str, manufacturer: str = "", new_mpn: str = "",
                 base: str = "", category: str | None = None, new_manufacturer: str = "", pin: str = "",
-                unpin: str = "", distributor: str = "") -> dict:
+                unpin: str = "", distributor: str = "", confirmed: bool = False) -> dict:
     """Change a part of the project in place: its MPN (TMP112D0 to the concrete
     TMP112D0IDPWR), its base part, its category, its manufacturer or its
     preferred distributor (a name, or N/A: see preferred_distributor). An empty
@@ -1284,7 +1303,9 @@ def update_part(project: Project, store: Store, mpn: str, manufacturer: str = ""
     the base part; with no base part, it gets the documents of the old MPN. The
     manufacturer must be the same manufacturer as in the store (any of its names
     in the registry), so that the store does not get a second part with the same
-    MPN."""
+    MPN. A new manufacturer must agree with the datasheets of the part
+    (makercheck.datasheet_maker; confirmed: the user confirms it): a question
+    for the user is a LensError, and nothing changes."""
     part = _one_part(project, mpn, manufacturer, store)
     pins = []
     for key, state in ((pin, True), (unpin, False)):
@@ -1315,6 +1336,12 @@ def update_part(project: Project, store: Store, mpn: str, manufacturer: str = ""
                                      or project.path.read_text(encoding="utf-8") != project.text):
         raise LensError(f"{project.path} changed after datasheet-lens read it: run the command again")
     old_id = _store_part(store, part["mpn"], part["manufacturer"], create=False)
+    if new_manufacturer.strip() and old_id is not None:  # before each change of the store
+        for row in store.documents_of_part(old_id):
+            if row["role"] == "datasheet":
+                maker, ask = makercheck.datasheet_maker(store, store.document(row["sha256"]), maker, target, confirmed)
+                if ask:
+                    raise LensError(ask)
     part_id = _store_part(store, target, maker, create=True)
     known = store.part(part_id)["manufacturer"]
     if new_manufacturer.strip() and known and not store.same_maker(known, maker):
@@ -2117,11 +2144,13 @@ def _field_findings(project: Project, store: Store, symbols: list[tuple[str, Cad
                  for m in mpns]
         item = {"reference": label, "mpn": mpns[0], "symbol": id(symbol), "choices": []}
         if all(p is not None for p in parts):
-            names = [p["manufacturer"] for p in parts]
-            expected = format_mpns(names) if all(names) else ""
+            names = [checked_name(store, p) for p in parts]  # the names after the next sync
+            # One name: the text of the field as it is (a name can have a comma: "Co., Ltd.").
+            # More names: a list, as the field MPN.
+            expected = (names[0] if len(names) == 1 else format_mpns(names)) if all(names) else ""
             bom = _filled(symbol.manufacturer or "")
             maker = {**item, "bom": bom, "expected": expected, "fields": symbol.manufacturer_fields}
-            items, problem = field_list(bom)
+            items, problem = ([bom], "") if len(names) == 1 else field_list(bom)
             if not expected:
                 findings.append({**maker, "kind": "maker_unknown",
                                  "mpn": ", ".join(m for m, n in zip(mpns, names) if not n)})
@@ -3011,7 +3040,10 @@ def format_check(result: dict, cli: bool = False) -> list[str]:
     # step of the user: the next steps of the project (the server instructions).
     # Not with no part at all (an empty BOM, or a BOM with no MPN or Value column).
     # A JLCPCB finding of a symbol that is not fitted is information only.
-    blocking = [f for f in result.get("lcsc", []) + result.get("fields", []) if not f.get("dnp")]
+    # The fields Manufacturer and Distributor are steps of the user, but not of
+    # the next steps: sync and the availability do not use them (decision of the
+    # user, 2026-11-08).
+    blocking = [f for f in result.get("lcsc", []) if not f.get("dnp")]
     if result["ok"] and not blocking and not any(result.get(kind) for kind in (
             "conflicts", "changes", "unconfirmed", "move", "no_mpn", "different", "missing", "extra")):
         dnp = result.get("not_fitted_parts", [])
@@ -3342,7 +3374,8 @@ def sync_steps(report: dict) -> dict[str, list[str]]:
         (len(report["copied"]), "copy missing", "copies missing"),
         (len(report["moved"]), "copy to move to its subfolder", "copies to move to their subfolders"),
         (sum(len(report[k]) for k in ("inbox_assigned", "inbox_known", "inbox_new")), "file of the inbox to take",
-         "files of the inbox to take"))),
+         "files of the inbox to take"),
+        (len(report.get("renamed", [])), "manufacturer name to update", "manufacturer names to update"))),
         "user": count((
             (len(report["suggested"]) + len(report["unassigned"]), "file of the folder with no part",
              "files of the folder with no part"),
@@ -3413,16 +3446,11 @@ def _sync(project: Project, store: Store, apply: bool, restore: bool, details: b
         else:
             row = store.part(rows[0]["id"])
             _fill(part, row)  # first: the base part search needs the manufacturer
-            if (part["manufacturer"] and row["manufacturer"] and part["manufacturer"] != row["manufacturer"]
-                    and makercheck.datasheet_name(store, row["id"]) == row["manufacturer"]):
-                # match_parts found the part through the registry: one manufacturer with two names. The
-                # project file gets the name of the store when it is the name of the datasheet
-                # (manufacturer_check; decision of the user, 2026-11-08). Else the project file keeps its
-                # name: the store can have a short name (TI) or the name of a distributor. save finds the
-                # table by the old name ("was").
-                report["renamed"].append(f"{part['mpn']}: {part['manufacturer']} -> {row['manufacturer']}")
+            name = checked_name(store, part)
+            if name != part["manufacturer"]:  # save finds the table by the old name ("was")
+                report["renamed"].append(f"{part['mpn']}: {part['manufacturer']} -> {name}")
                 part.setdefault("was", (part["mpn"], part["manufacturer"]))
-                part["manufacturer"] = row["manufacturer"]
+                part["manufacturer"] = name
             if apply:
                 _store_base(store, part, rows[0]["id"], report)
             # A concrete part with no manufacturer (an older version) gets the one of its base part.

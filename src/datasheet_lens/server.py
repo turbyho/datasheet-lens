@@ -40,6 +40,10 @@ Manufacturer = Annotated[str, Field(description=(
     "The manufacturer, any of its names (TI or Texas Instruments: the store knows the names of one "
     "manufacturer). Necessary only when two parts have the same MPN. With a datasheet, the tool reads the "
     "manufacturer from it: a given name must be a name of the same manufacturer."))]
+ManufacturerConfirmed = Annotated[bool, Field(description=(
+    "True when the user read page 1 of the datasheet and confirms the given manufacturer, for example the maker "
+    "of a module whose datasheet names the maker of its chip more often: the tool does not compare it with the "
+    "text of the PDF. Give it only when the user confirms it."))]
 Role = Annotated[str, Field(description=(
     "The role of the document: datasheet, manual, errata, appnote, package (a package drawing in its own "
     "document) or other."))]
@@ -323,7 +327,8 @@ def add_document(
             "The title of the document, for example \"TLV755P 500-mA Low-Dropout Regulator\". Empty: the "
             "title of the PDF metadata. A document that the store has already keeps its title; a document of "
             "the store with no title gets this title."
-        ))] = "") -> str:
+        ))] = "",
+        manufacturer_confirmed: ManufacturerConfirmed = False) -> str:
     """Add a PDF document to the store: copy or download it, build its index and
     its element map, and link it to its part. Use it when list_documents does
     not find the datasheet; the URL can come from a distributor tool or from the
@@ -370,8 +375,12 @@ def add_document(
             # the result: the document, its index and its element map stay.
             failures = []
             if part.strip():  # the manufacturer of a datasheet comes from the datasheet
-                maker, ask = makercheck.part_maker(store, doc, part.strip(), manufacturer, role)
-                failures = [ask] if ask else store.link_parts(doc.id, part, variants or [], maker, role)[1]
+                try:
+                    maker, ask = makercheck.part_maker(store, doc, part.strip(), manufacturer, role,
+                                                       manufacturer_confirmed)
+                    failures = [ask] if ask else store.link_parts(doc.id, part, variants or [], maker, role)[1]
+                except LensError as e:  # the document, its index and its element map stay
+                    failures = [f"part {part.strip()}: not linked: {e}"]
             job = _build_elements(doc.id)
             proposal = "" if part.strip() or store.parts_of_document(doc.id) else _proposal(store, doc)
     job["thread"].join(ELEMENT_WAIT)
@@ -850,6 +859,7 @@ def project_add_part(
         base: Annotated[str, Field(description=(
             "The base part of the datasheet, for example TLV755P. The concrete part gets the documents "
             "of the base part."))] = "",
+        manufacturer_confirmed: ManufacturerConfirmed = False,
         path: ProjectPath = "") -> str:
     """Add a part to the user project, with the documents that the store links to
     it. Then project_sync copies the documents into the project folder. A link
@@ -864,7 +874,8 @@ def project_add_part(
     from .project import add_part, open_project
 
     with open_project(path or None) as project, _add_lock, Store() as store:
-        part = add_part(project, store, mpn, manufacturer, document, role, category, base)
+        part = add_part(project, store, mpn, manufacturer, document, role, category, base,
+                        confirmed=manufacturer_confirmed)
         from .identify import project_base_note
 
         note = project_base_note(store, part, "project_update_part(mpn='{mpn}', new_mpn='{code}', base='{base}')")
@@ -1108,6 +1119,7 @@ def adopt_part(
         manufacturer: Annotated[str, Field(description=(
             "The manufacturer as the datasheet names it, from the user. Give it only when a result of adopt_part "
             "asks for it (ASK THE USER)."))] = "",
+        manufacturer_confirmed: ManufacturerConfirmed = False,
         path: ProjectPath = "") -> str:
     """Take a part that find_parts or search_distributors found: add its
     datasheet (one in the store, else a download: the site of the manufacturer
@@ -1136,7 +1148,8 @@ def adopt_part(
     from .project import load_optional
 
     project = load_optional(path or None)
-    result = adopt(source, number, mpn, base, category, project, lock=_add_lock, manufacturer=manufacturer)
+    result = adopt(source, number, mpn, base, category, project, lock=_add_lock, manufacturer=manufacturer,
+                   confirmed=manufacturer_confirmed)
     if (project is not None and not result["ask"]
             and not any(line.startswith("datasheet: NOT ADDED") for line in result["lines"])):
         result["lines"].append("Run project_sync: it copies the datasheet into the project folder.")
@@ -1411,9 +1424,12 @@ def project_update_part(
             "The preferred distributor of the part that the user selected or gave (DigiKey, Mouser, LCSC, an "
             "other name), or N/A for none. The field Distributor of the CAD project gets it. Empty: no "
             "change."))] = "",
+        manufacturer_confirmed: ManufacturerConfirmed = False,
         path: ProjectPath = "") -> str:
     """Change a part of the user project in place: its MPN, base part, category,
-    manufacturer, preferred distributor, or a pinned document. A file of the folder with the content of
+    manufacturer, preferred distributor, or a pinned document. A new
+    manufacturer must agree with the datasheet of the part (as
+    project_add_part). A file of the folder with the content of
     a document is a copy of sync when it is in the subfolder of the layout of
     its part, else it is pinned: project_sync tells it for each new reference,
     and pin_document or unpin_document changes it. The part keeps its place in
@@ -1428,7 +1444,8 @@ def project_update_part(
 
     with open_project(path or None) as project, _add_lock, Store() as store:
         part = update_part(project, store, mpn, manufacturer, new_mpn, base, category, new_manufacturer,
-                           document_ref(store, pin_document), document_ref(store, unpin_document), distributor)
+                           document_ref(store, pin_document), document_ref(store, unpin_document), distributor,
+                           manufacturer_confirmed)
     notes = part.pop("notes", [])
     changes = [f"changed: {text}" for text in part.pop("changes")] or ["no change"]
     return "\n".join(changes

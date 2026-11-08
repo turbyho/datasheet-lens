@@ -42,7 +42,7 @@ def test_the_check_of_the_manufacturers(store_home, text_pdf, capsys):
         assert store.match_parts("0603WAF1002T5E")[0]["manufacturer"] == "UNI-ROYAL"
         assert store.match_parts("TPS2")[0]["manufacturer"] == ""
         # The user tells that Small Co is the name of Maker Q: the next check proposes the rename.
-        store.maker_relation("alias", "Small Co", "Maker Q")
+        store.maker_relation("alias", "Maker Q", "Small Co")  # the order that the tools give
         assert [(i["mpn"], i["new"]) for i in makercheck.check(store)["rename"]] == [
             ("SMC1", "Small Co"), ("TPS2", "Texas Instruments")]
     assert main(["maker", "check", "-a"]) == 0

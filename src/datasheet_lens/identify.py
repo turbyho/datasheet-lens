@@ -101,27 +101,35 @@ def _names_re(names: tuple[str, ...]) -> re.Pattern:
                       + r")(?![A-Z0-9])")
 
 
-def _manufacturer(texts: list[str], mpn: str = "", names: dict[str, str] | None = None) -> str:
+def _manufacturer(texts: list[str], mpn: str = "", names: dict[str, tuple[str, str]] | None = None) -> str:
     """The manufacturer that the texts name most often, else the manufacturer of
-    the prefix of mpn. The names: the built-in names (MANUFACTURERS), and the
-    names of the registry of the store (makers.text_names: name in upper case,
-    the name to give). Any spelling is good for the store: its manufacturer
-    registry knows the names of one manufacturer (makers.py)."""
-    counts: dict[str, int] = {}
+    the prefix of mpn. The names: the built-in names (MANUFACTURERS: their
+    built-in name), and the names of the registry of the store
+    (makers.text_names: name in upper case, (the name to give, the group)). The
+    mentions of the names of one manufacturer count together; of its names, the
+    one that the texts name most often comes back. Any spelling is good for
+    the store: its manufacturer registry knows the names of one manufacturer
+    (makers.py)."""
+    counts: dict[str, dict[str, int]] = {}  # group -> the name to give -> the mentions
+
+    def count(group: str, name: str) -> None:
+        counts.setdefault(group, {})[name] = counts.get(group, {}).get(name, 0) + 1
+
     pattern = _names_re(tuple(sorted(names))) if names else None
     for text in texts:
         upper = text.upper().replace("_", " ")
         for alias in ALIAS_RE.findall(upper):
-            counts[OWNER[alias]] = counts.get(OWNER[alias], 0) + 1
+            count(OWNER[alias], OWNER[alias])
         for alias in pattern.findall(upper) if pattern else []:
-            counts[names[alias]] = counts.get(names[alias], 0) + 1
+            count(names[alias][1], names[alias][0])
     if counts:
-        return max(counts, key=counts.get)
+        best = max(counts.values(), key=lambda c: sum(c.values()))
+        return max(best, key=best.get)
     return next((m for p, m in MPN_PREFIXES.items() if mpn.upper().startswith(p)), "")
 
 
 @pdfium_locked
-def propose(doc: Document, names: dict[str, str] | None = None) -> Proposal:
+def propose(doc: Document, names: dict[str, tuple[str, str]] | None = None) -> Proposal:
     """Propose the part of a document from its PDF (see the module docstring). It is
     only a proposal: the user or the model confirms it. names: the names of the
     registry of the store for the manufacturer (Store.text_names); None: only

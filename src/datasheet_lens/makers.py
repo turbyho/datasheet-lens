@@ -292,17 +292,20 @@ def seed(db: sqlite3.Connection) -> None:
 MIN_TEXT_KEY = 4
 
 
-def text_names(db: sqlite3.Connection) -> dict[str, str]:
+def text_names(db: sqlite3.Connection) -> dict[str, tuple[str, str]]:
     """The names of the registry that are not built-in names, for the search of
     the manufacturer in the text of a PDF (identify.propose finds the built-in
-    names itself): the name in upper case, with the name to give. A name of a
-    manufacturer that has a built-in name gives that name (as builtin_name). An
-    other name gives itself: a name that the user recorded is a name of a
-    datasheet. Not a name with a key of less than MIN_TEXT_KEY characters."""
+    names itself): the name in upper case, with (the name to give, the group).
+    The mentions of the names of one group count together (identify).
+    - A name of a manufacturer that has a built-in name: that name, and the
+      group of the built-in name (as builtin_name).
+    - An other name: the name itself, as a datasheet writes it, and the group
+      of its manufacturer in the registry ("id:" and its number).
+    Not a name with a key of less than MIN_TEXT_KEY characters."""
     rows = db.execute("SELECT key, manufacturer_id, name FROM manufacturer_aliases").fetchall()
     builtin = {mid: _BUILTIN[k] for k, mid, _ in rows if k in _BUILTIN}
-    return {name.strip().upper(): builtin.get(mid, name.strip()) for k, mid, name in rows
-            if k not in _BUILTIN and len(k) >= MIN_TEXT_KEY}
+    return {name.strip().upper(): ((builtin[mid], builtin[mid]) if mid in builtin else (name.strip(), f"id:{mid}"))
+            for k, mid, name in rows if k not in _BUILTIN and len(k) >= MIN_TEXT_KEY}
 
 
 # The key of each built-in name, with the name of its manufacturer (builtin_name).

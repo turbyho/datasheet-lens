@@ -331,11 +331,13 @@ def test_adopt_asks_for_the_manufacturer(downloads, monkeypatch, text_pdf, tmp_p
     result = adopt_module.adopt("mouser", "1-X-2", project=prj.load(project.root))
     assert result["ask"] and result["part"] is None and result["document"] is not None
     sha = result["lines"][-1].split("(document ")[1][:12]
-    assert result["lines"][-1] == (
+    assert result["lines"][-1].startswith(
         f"ASK THE USER: the manufacturer of X-2. The datasheet (document {sha}) gives {found}, and mouser gives "
         "Maker Q. The manufacturer of a part comes from its datasheet. Read page 1 of the datasheet "
         "(get_page_image), ask the user, then call adopt_part again with manufacturer=<the name in the "
         "datasheet> (CLI: --manufacturer). The tool added no part and no purchase source.")
+    # A name of the datasheet: the user can confirm a different name (a module and its chip).
+    assert ("manufacturer_confirmed=true" in result["lines"][-1]) == (found == "Texas Instruments")
     assert prj.load(project.root).parts == []
     with Store() as store:
         assert store.match_parts("X-2") == [] and store.document(sha) is not None
@@ -404,13 +406,20 @@ def test_the_registry_names_of_the_store_in_the_datasheet(downloads, monkeypatch
     from datasheet_lens import makers
 
     with Store() as store:
-        store.maker_relation("alias", "Small Co", "Maker Q")
-        store.maker_relation("alias", "SCO", "Maker Q")
+        # The order of the result of adopt: the name of the distributor, then the name of the datasheet.
+        store.maker_relation("alias", "Maker Q", "Small Co")
+        store.maker_relation("alias", "SCO", "Small Co")
         store.maker_relation("alias", "Uniroyal Global", "UNI-ROYAL")  # a new name of a built-in manufacturer
         names = store.text_names()
-    assert names["SMALL CO"] == "Small Co" and names["MAKER Q"] == "Maker Q"
+    group = names["SMALL CO"][1]  # one group: the mentions of the two names count together
+    assert names["SMALL CO"] == ("Small Co", group) and names["MAKER Q"] == ("Maker Q", group)
     assert "SCO" not in names and len(makers.key("SCO")) < makers.MIN_TEXT_KEY
-    assert names["UNIROYAL GLOBAL"] == "UNI-ROYAL" and "TEXAS INSTRUMENTS" not in names  # built-in: identify
+    assert names["UNIROYAL GLOBAL"] == ("UNI-ROYAL", "UNI-ROYAL") and "TEXAS INSTRUMENTS" not in names  # built-in: identify
+    # The mentions of one manufacturer count together (3 against 2 of TI), and the name that the text gives most
+    # often comes back: the spelling of the datasheet.
+    from datasheet_lens.identify import _manufacturer
+
+    assert _manufacturer(["Maker Q Maker Q Small Co TEXAS INSTRUMENTS TEXAS INSTRUMENTS"], names=names) == "Maker Q"
     _source(monkeypatch, text_pdf, "X-4", "Maker Q", "Small Co Ltd")
     result = adopt_module.adopt("mouser", "1-X-4")
     assert not result["ask"] and "manufacturer: Small Co (from the datasheet)" in result["lines"]
