@@ -67,8 +67,12 @@ def test_document_state_of_the_session_review(store_home, text_pdf, tmp_path, ca
     (5.2). pin and unpin change a reference."""
     project, d, e = setup_project(store_home, text_pdf, tmp_path)
     root = str(project.root)
-    cad = [{"mpn": "OPA2134", "reference": "U1"}, {"mpn": "OPA134", "reference": "U2"}]
+    # The fields Manufacturer and Distributor agree with the project: no step for them.
+    cad = [{"mpn": "OPA2134", "reference": "U1", "manufacturer": "TI", "distributor": "N/A"},
+           {"mpn": "OPA134", "reference": "U2", "manufacturer": "TI", "distributor": "N/A"}]
     with Store() as store:
+        for mpn in ("OPA2134", "OPA134"):
+            prj.update_part(prj.load(root), store, mpn, distributor="N/A")
         doc = store.add_document(text_pdf("pkg.pdf", [[(50, 60, 12, "OPA2134 package drawing")]]))
         store.link(store.find_part("OPA2134", "TI", create=False), doc.id, "other")
         result = prj.check_parts(prj.load(root), store, cad)

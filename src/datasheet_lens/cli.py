@@ -822,13 +822,13 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 def cmd_set(args: argparse.Namespace) -> int:
     """The command set: change a part of the project in place (MPN, base part,
-    category, manufacturer, pinned documents)."""
+    category, manufacturer, preferred distributor, pinned documents)."""
     from .project import document_ref, open_project, update_part
 
     with open_project(args.path) as project, Store() as store:
         part = update_part(project, store, args.part, args.of or "", args.mpn or "", args.base or "",
                            args.category, args.manufacturer or "", document_ref(store, args.pin or ""),
-                           document_ref(store, args.unpin or ""))
+                           document_ref(store, args.unpin or ""), args.distributor or "")
     print(f"{part['mpn']} ({part['manufacturer'] or 'manufacturer unknown'})"
           + (f", base part {part['base']}" if part.get("base") else ""))
     for text in part.pop("changes") or ["no change"]:
@@ -884,12 +884,14 @@ def build_parser() -> argparse.ArgumentParser:
     rm.add_argument("-n", "--dry-run", action="store_true", help="only show what would change")
     rm.set_defaults(func=cmd_rm)
     st = sub.add_parser("set", help="change a part of the project in place: its MPN, base part, category, "
-                                    "manufacturer, or a pinned document")
+                                    "manufacturer, preferred distributor, or a pinned document")
     st.add_argument("part", metavar="MPN", help="the part of the project now")
     st.add_argument("-m", "--mpn", help="the new MPN, for example the concrete orderable MPN")
     st.add_argument("-b", "--base", metavar="MPN", help="the base part of the datasheet")
     st.add_argument("-c", "--category", help="the function of the part (\"\" removes it)")
     st.add_argument("-M", "--manufacturer", help="the new manufacturer")
+    st.add_argument("-D", "--distributor", help="the preferred distributor (DigiKey, Mouser, LCSC, an other name), "
+                                                "or N/A for none")
     st.add_argument("--of", metavar="MANUFACTURER", help="the manufacturer now, if the project has more parts "
                                                          "with the MPN")
     st.add_argument("--pin", metavar="DOC", help="pin a document of the part (its ID, a SHA-256 prefix or its "

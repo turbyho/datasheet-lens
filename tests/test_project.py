@@ -633,8 +633,10 @@ def test_check_dnp_and_next_steps(store_home, tmp_path):
     with Store() as store:
         project = prj.init_project(tmp_path / "board")
         for mpn in ("XQ1001", "YQ2002", "ZQ3003"):
-            prj.add_part(project, store, mpn)
-        cad = [{"mpn": "XQ1001", "reference": "U1"}, {"mpn": "YQ2002", "reference": "U2", "dnp": True},
+            prj.add_part(project, store, mpn, "Maker A")
+            prj.update_part(project, store, mpn, distributor="N/A")
+        fields = {"manufacturer": "Maker A", "distributor": "N/A"}  # the fields agree with the project
+        cad = [{"mpn": "XQ1001", "reference": "U1", **fields}, {"mpn": "YQ2002", "reference": "U2", "dnp": True},
                {"mpn": "ZQ3003", "reference": "R1, R2", "dnp": True}]
         result = prj.check_parts(project, store, cad)
         assert result["extra"] == [] and result["missing"] == [] and result["lines"] == 3
@@ -675,7 +677,7 @@ def test_check_dnp_and_next_steps(store_home, tmp_path):
         # A JLCPCB number of a symbol that no variant fits: information, no step (the
         # assembly does not place it). A fitted symbol with no number: a step.
         prj.set_source(project, project.parts[0], "jlcpcb", "C1")
-        lines = [{"mpn": "XQ1001", "reference": "U1", "lcsc": ""},
+        lines = [{"mpn": "XQ1001", "reference": "U1", "lcsc": "", **fields},
                  {"mpn": "YQ2002", "reference": "U2", "lcsc": "", "dnp": True},
                  {"mpn": "ZQ3003", "reference": "R1, R2", "lcsc": "", "dnp": True}]
         result = prj.check_parts(project, store, lines[1:] + [dict(lines[0], lcsc="C1")])
@@ -1028,7 +1030,13 @@ def test_check_tells_about_changes(store_home, tmp_path, capsys):
             "parameters, search_distributors and get_ordering_codes by its MPN), write its MPN into the symbol (the "
             "field MPN), then run project_check again. The same part: Write MPN_Confirmed = 'GRM1' and "
             "Value_Confirmed = '220nF' into the symbol.") in out
-    assert "Q2" not in out  # the variant gives the same fields as the default variant
+    # The variant gives the same fields as the default variant: only the default line of Q2 gives a message
+    # (the fields Manufacturer and Distributor of Q2 are empty).
+    assert not [line for line in out.splitlines() if "Q2" in line and not line.startswith(("Manufacturer:",
+                                                                                            "Distributor:"))]
+    assert [line.split(":")[0] for line in out.splitlines() if line.startswith(("Manufacturer: Q2:",
+                                                                                 "Distributor: Q2:"))] == [
+        "Manufacturer", "Distributor"]
     assert "Q3 (variant b)" in out and "into the fields of the symbol in the variant of the BOM file b" in out
     assert result["lines"] == 6  # Q1, U1, R5, C5, Q2, Q3
     # A line of a group (Q5,Q6) and a line of one of its symbols in a variant file.

@@ -38,7 +38,8 @@ PartRef = Annotated[str, Field(description="A part number (MPN) or an alias. Cas
 Page = Annotated[int, Field(description="The page number, from 1, as get_index and search_text give it.")]
 Manufacturer = Annotated[str, Field(description=(
     "The manufacturer, any of its names (TI or Texas Instruments: the store knows the names of one "
-    "manufacturer). Necessary only when two parts have the same MPN."))]
+    "manufacturer). Necessary only when two parts have the same MPN. With a datasheet, the tool reads the "
+    "manufacturer from it: a given name must be a name of the same manufacturer."))]
 Role = Annotated[str, Field(description=(
     "The role of the document: datasheet, manual, errata, appnote, package (a package drawing in its own "
     "document) or other."))]
@@ -98,9 +99,9 @@ newer release or a restart of the client, tell the user one time.
 User project: the project file datasheet-lens.toml must hold the same parts as
 the CAD project (schematic, BOM). At the start of the work, and after each
 change of the CAD project, do these steps:
-1. Get the parts of the CAD project (Value, MPN, Value_Confirmed,
-   MPN_Confirmed, Datasheet, DNP, the field names) from the CAD tool: a BOM file (CSV, for example
-   export_bom of kicad-workbench) or a list from its MCP server. A general
+1. Get the parts of the CAD project (all fields of each symbol, with their
+   names) from the CAD tool: a BOM file (CSV, for example export_bom of
+   kicad-workbench) or a list from its MCP server. A general
    value with no MPN (10k) has no selected part. MPN = '-' tells that the
    symbol needs no part (a test point).
 2. project_check(bom=<CSV file>) or project_check(parts) with all parts: it
@@ -116,9 +117,9 @@ change of the CAD project, do these steps:
    and its datasheet do not agree (value, package, variant). For a new MPN, add
    its datasheet at once; a change is valid only when the user confirms it. The
    CAD BOM is the master: write each part that the user confirms into the CAD
-   project too (MPN, the hidden copies MPN_Confirmed and Value_Confirmed, LCSC;
-   kicad-workbench: set_symbol_fields), and into the project file
-   (project_update_part, adopt_part). Remove a part only when the user agrees.
+   project too (the fields that project_check names; kicad-workbench:
+   set_symbol_fields), and into the project file (project_update_part,
+   adopt_part). Remove a part only when the user agrees.
 5. project_sync: it copies the documents into the project folder. Then
    project_check again: it must give no missing, extra or different part.
 6. project_availability, as the next steps of project_check give it: tell the
@@ -336,7 +337,10 @@ def add_document(
     when the MPN is sure. The result gives the title of the document: the
     title of the PDF metadata can be wrong (a file name, a different
     document). No tool changes a title later: give title when you know it.
-    To put the part into the user project: project_add_part."""
+    The manufacturer of a datasheet comes from the datasheet: when the tool
+    cannot read it, or the given name differs, the result asks (ASK THE USER)
+    and links no part. To put the part into the user project:
+    project_add_part."""
     from pathlib import Path
 
     from .config import data_home
@@ -852,9 +856,11 @@ def project_add_part(
     of a document to the store part stays in the store (no tool removes it):
     check the MPN and the base part before you give document. A new part of
     the design: The CAD BOM is the master: write the change that the user confirmed
-    into the CAD project too (MPN, MPN_Confirmed, Value_Confirmed, LCSC;
-    kicad-workbench: set_symbol_fields), then
-    project_check. Gives the part and its documents."""
+    into the CAD project too (MPN, MPN_Confirmed, Value_Confirmed, LCSC,
+    Manufacturer, Distributor; kicad-workbench: set_symbol_fields), then
+    project_check. The manufacturer of a datasheet comes from the datasheet:
+    when the tool cannot read it, or the given name differs, the result asks
+    (ASK THE USER) and adds nothing. Gives the part and its documents."""
     from .project import add_part, open_project
 
     with open_project(path or None) as project, _add_lock, Store() as store:
@@ -1122,10 +1128,10 @@ def adopt_part(
     of the part comes from its datasheet, not from the distributor: when the
     tool cannot read it, or the two names differ, the result asks (ASK THE
     USER) and adds nothing. A purchase source
-    is added, not replaced: project_remove_source removes a wrong one. The CAD BOM is the master: write the change that the user confirmed
-    into the CAD project too (MPN, MPN_Confirmed, Value_Confirmed, LCSC;
-    kicad-workbench: set_symbol_fields), then
-    project_check."""
+    is added, not replaced: project_remove_source removes a wrong one. The CAD
+    BOM is the master: write the change that the user confirmed into the CAD
+    project too (MPN, MPN_Confirmed, Value_Confirmed, LCSC, Manufacturer,
+    Distributor; kicad-workbench: set_symbol_fields), then project_check."""
     from .adopt import adopt
     from .project import load_optional
 
@@ -1249,6 +1255,18 @@ class CadPart(BaseModel):
     lcsc_field: str = Field("", description=(
         "The name of the field of the JLCPCB (LCSC) number in the CAD tool, for example 'LCSC Part #'. Empty: "
         "LCSC."))
+    manufacturer: str | None = Field(None, description=(
+        "The field Manufacturer of the symbol, as it is: the manufacturers of the MPNs of the field MPN, in "
+        "their order. Null when the symbol has no such field."))
+    manufacturer_field: str = Field("", description=(
+        "The name of the field Manufacturer in the CAD tool, when it has an other name (MFR). Empty: "
+        "Manufacturer."))
+    distributor: str | None = Field(None, description=(
+        "The field Distributor of the symbol, as it is: the preferred distributor of the fitted part, or N/A. "
+        "Null when the symbol has no such field."))
+    distributor_field: str = Field("", description=(
+        "The name of the field Distributor in the CAD tool, when it has an other name (Supplier). Empty: "
+        "Distributor."))
 
 
 @tool
@@ -1330,7 +1348,11 @@ def project_check(
     that uses JLCPCB (a JLCPCB purchase source, or an LCSC field), the lines
     "LCSC:" compare the JLCPCB number of each symbol (the LCSC column of the
     BOM, or lcsc of the parts) with the purchase source and with the JLCPCB
-    parts library. It changes nothing in the project."""
+    parts library. The lines "Manufacturer:" and "Distributor:" compare the
+    fields Manufacturer (the manufacturers of the MPNs of the field MPN, in
+    their order) and Distributor (the preferred distributor of the fitted
+    part) with the project: write the given fields, and ask the user where a
+    line tells it. It changes nothing in the project."""
     from .project import bom_files, check_parts, dry_run, find_project, format_check, open_project, sync_steps
     from .version_check import version_notes
 
@@ -1385,9 +1407,13 @@ def project_update_part(
         unpin_document: Annotated[str, Field(description=(
             "A document of the part to unpin: project_sync manages its file as a copy (it moves it to the "
             "subfolder of the layout, and a removal deletes it). Empty: no change."))] = "",
+        distributor: Annotated[str, Field(description=(
+            "The preferred distributor of the part that the user selected or gave (DigiKey, Mouser, LCSC, an "
+            "other name), or N/A for none. The field Distributor of the CAD project gets it. Empty: no "
+            "change."))] = "",
         path: ProjectPath = "") -> str:
     """Change a part of the user project in place: its MPN, base part, category,
-    manufacturer, or a pinned document. A file of the folder with the content of
+    manufacturer, preferred distributor, or a pinned document. A file of the folder with the content of
     a document is a copy of sync when it is in the subfolder of the layout of
     its part, else it is pinned: project_sync tells it for each new reference,
     and pin_document or unpin_document changes it. The part keeps its place in
@@ -1395,14 +1421,14 @@ def project_update_part(
     would delete and copy them again). Then project_sync moves a copy when the
     layout gives it a different subfolder. The CAD BOM is the master: write the
     change that the user confirmed into the CAD project too (MPN,
-    MPN_Confirmed, Value_Confirmed, LCSC; kicad-workbench:
-    set_symbol_fields), then project_check. Gives each changed field with its
-    old and new value, then the part and its documents."""
+    MPN_Confirmed, Value_Confirmed, LCSC, Manufacturer, Distributor;
+    kicad-workbench: set_symbol_fields), then project_check. Gives each changed
+    field with its old and new value, then the part and its documents."""
     from .project import document_ref, open_project, update_part
 
     with open_project(path or None) as project, _add_lock, Store() as store:
         part = update_part(project, store, mpn, manufacturer, new_mpn, base, category, new_manufacturer,
-                           document_ref(store, pin_document), document_ref(store, unpin_document))
+                           document_ref(store, pin_document), document_ref(store, unpin_document), distributor)
     notes = part.pop("notes", [])
     changes = [f"changed: {text}" for text in part.pop("changes")] or ["no change"]
     return "\n".join(changes
