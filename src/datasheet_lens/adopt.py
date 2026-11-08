@@ -339,19 +339,30 @@ def _maker(c: dict, source: str, doc, given: str, lines: list[str], confirmed: b
     from .store import Store
 
     offered = c["manufacturer"].strip()
-    with Store() as store:
-        rows = store.match_parts(c["mpn"])
-        same = [r for r in rows if r["manufacturer"] and offered and store.same_maker(r["manufacturer"], offered)]
-        if given:
-            name, ask = (datasheet_maker(store, doc, given, c["mpn"], confirmed) if doc is not None
-                         else (given, ""))
-            if ask:
-                lines.append(ask)
-                return "", True
-            unrelated = offered and not store.same_maker(name, offered) and not store.distinct_makers(name, offered)
-        else:
-            found = found_maker(store, doc)[0] if doc is not None else ""
-            agrees = bool(found) and (not offered or store.same_maker(found, offered))
+    # An error of the check (two manufacturers in the registry, a datasheet that
+    # the tool cannot read) is a line of the result, as a question: the result
+    # keeps the new document (its element map) and retry.
+    try:
+        with Store() as store:
+            rows = store.match_parts(c["mpn"])
+            same = [r for r in rows if r["manufacturer"] and offered and store.same_maker(r["manufacturer"], offered)]
+            if given:
+                name, ask = (datasheet_maker(store, doc, given, c["mpn"], confirmed) if doc is not None
+                             else (given, ""))
+                if ask:
+                    lines.append(ask)
+                    return "", True
+                unrelated = (offered and not store.same_maker(name, offered)
+                             and not store.distinct_makers(name, offered))
+            else:
+                found, error = found_maker(store, doc) if doc is not None else ("", "")
+                if error:
+                    raise LensError(f"the tool cannot read the datasheet (document {doc.sha256[:12]}) of "
+                                    f"{c['mpn']}: {error}. The tool did not add or link the part.")
+                agrees = bool(found) and (not offered or store.same_maker(found, offered))
+    except LensError as e:
+        lines.append(f"ASK THE USER: the manufacturer of {c['mpn']}: {e}")
+        return "", True
     if given:
         lines.append(f"manufacturer: {name} (given)" if name == given
                      else f"manufacturer: {name} (from the datasheet; given: {given})")

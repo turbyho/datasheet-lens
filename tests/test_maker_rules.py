@@ -137,3 +137,49 @@ def test_the_fields_after_the_next_sync(store_home, text_pdf, tmp_path):
         text = "\n".join(prj.format_check(result))
         assert "project folder: 1 copy missing, 1 manufacturer name to update. Run project_sync" in text
         assert "next steps: project_sync copies the documents" in text  # the fields do not block them
+
+
+def test_one_mention_counts_one_time_and_the_prefix_is_no_name(store_home, text_pdf):
+    """A name of the registry that holds a built-in name counts one time for one
+    mention. A guess from the prefix of the MPN is a proposal, not a name of
+    the datasheet: the check of a given name does not use it."""
+    from datasheet_lens.identify import named_manufacturer, propose
+
+    names = {"MURATA ELECTRONICS NORTH AMERICA": ("Murata", "Murata")}
+    text = "MURATA ELECTRONICS NORTH AMERICA, TEXAS INSTRUMENTS, TEXAS INSTRUMENTS"
+    assert named_manufacturer([text], names) == "Texas Instruments"  # 2 against 1, not 2 against 2
+    with Store() as store:
+        doc = store.add_document(text_pdf("nrf.pdf", [[(50, 60, 14, "nRF52840 Module")]]))
+        p = propose(doc)
+        assert (p.manufacturer, p.named) == ("Nordic Semiconductor", "")
+        # The datasheet names no manufacturer: the given name of the maker of the module.
+        from datasheet_lens.makercheck import datasheet_maker
+
+        assert datasheet_maker(store, doc, "Raytac", "nRF52840-MOD") == ("Raytac", "")
+
+
+def test_a_read_error_is_not_kept_and_not_hidden(store_home, text_pdf, monkeypatch):
+    from datasheet_lens import identify
+    from datasheet_lens.makercheck import datasheet_maker, found_maker
+
+    with Store() as store:
+        doc = store.add_document(text_pdf("lm358.pdf", TI_PAGE))
+        real = identify.propose
+        monkeypatch.setattr(identify, "propose", lambda d, names=None: (_ for _ in ()).throw(OSError("busy")))
+        assert found_maker(store, doc) == ("", "busy")
+        with pytest.raises(LensError, match="the tool cannot read the datasheet .* of LM358: busy"):
+            datasheet_maker(store, doc, "Small Co", "LM358")  # not the given name with no check
+        monkeypatch.setattr(identify, "propose", real)
+        assert found_maker(store, doc) == ("Texas Instruments", "")  # the error was not kept
+
+
+def test_the_selection_of_the_part_blocks_the_next_steps(store_home, tmp_path):
+    with Store() as store:
+        store.maker_relation("distinct", "UMW", "Texas Instruments")
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "SN74LVC1G14DBVR", "Texas Instruments")
+        prj.add_part(prj.load(project.root), store, "SN74LVC1G14DBVR", "UMW")
+        result = prj.check_parts(prj.load(project.root), store, [{"reference": "U7", "mpn": "SN74LVC1G14DBVR"}])
+        assert [f["kind"] for f in result["fields"]] == ["maker_select"]
+        text = "\n".join(prj.format_check(result, cli=True))
+        assert "Then run datasheet-lens check again" in text and "next steps" not in text

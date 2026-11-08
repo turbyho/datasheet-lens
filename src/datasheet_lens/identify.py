@@ -76,6 +76,9 @@ class Proposal:
     (title, page 1, file name), other candidates and the variants."""
     mpn: str = ""
     manufacturer: str = ""
+    # The manufacturer that the text names (named_manufacturer), not a guess from
+    # the prefix of the MPN: the check of a given name uses only this one.
+    named: str = ""
     sources: list[str] = field(default_factory=list)
     candidates: list[str] = field(default_factory=list)  # other MPN candidates, best first
     # The parts that the datasheet covers (mpn and the others), when there are
@@ -96,36 +99,41 @@ def _is_mpn(token: str) -> bool:
 
 @functools.lru_cache(maxsize=8)
 def _names_re(names: tuple[str, ...]) -> re.Pattern:
-    """The pattern of the names of the registry (makers.text_names), as ALIAS_RE."""
-    return re.compile(r"(?<![A-Z0-9])(" + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+    """One pattern of the built-in names (OWNER) and the names of the registry
+    (makers.text_names), as ALIAS_RE: non-overlapping matches of whole words,
+    the longest name first. Thus one mention counts one time, also when a name
+    of the registry holds a built-in name ("MURATA ELECTRONICS NORTH AMERICA")."""
+    every = set(OWNER) | set(names)
+    return re.compile(r"(?<![A-Z0-9])(" + "|".join(re.escape(n) for n in sorted(every, key=len, reverse=True))
                       + r")(?![A-Z0-9])")
 
 
-def _manufacturer(texts: list[str], mpn: str = "", names: dict[str, tuple[str, str]] | None = None) -> str:
-    """The manufacturer that the texts name most often, else the manufacturer of
-    the prefix of mpn. The names: the built-in names (MANUFACTURERS: their
-    built-in name), and the names of the registry of the store
-    (makers.text_names: name in upper case, (the name to give, the group)). The
-    mentions of the names of one manufacturer count together; of its names, the
-    one that the texts name most often comes back. Any spelling is good for
-    the store: its manufacturer registry knows the names of one manufacturer
-    (makers.py)."""
+def named_manufacturer(texts: list[str], names: dict[str, tuple[str, str]] | None = None) -> str:
+    """The manufacturer that the texts name most often, or "". The names: the
+    built-in names (MANUFACTURERS: their built-in name), and the names of the
+    registry of the store (makers.text_names: name in upper case, (the name to
+    give, the group)). The mentions of the names of one manufacturer count
+    together; of its names, the one that the texts name most often comes back.
+    Any spelling is good for the store: its manufacturer registry knows the
+    names of one manufacturer (makers.py)."""
     counts: dict[str, dict[str, int]] = {}  # group -> the name to give -> the mentions
-
-    def count(group: str, name: str) -> None:
-        counts.setdefault(group, {})[name] = counts.get(group, {}).get(name, 0) + 1
-
-    pattern = _names_re(tuple(sorted(names))) if names else None
+    names = {k: v for k, v in (names or {}).items() if k not in OWNER}
+    pattern = _names_re(tuple(sorted(names))) if names else ALIAS_RE
     for text in texts:
-        upper = text.upper().replace("_", " ")
-        for alias in ALIAS_RE.findall(upper):
-            count(OWNER[alias], OWNER[alias])
-        for alias in pattern.findall(upper) if pattern else []:
-            count(names[alias][1], names[alias][0])
-    if counts:
-        best = max(counts.values(), key=lambda c: sum(c.values()))
-        return max(best, key=best.get)
-    return next((m for p, m in MPN_PREFIXES.items() if mpn.upper().startswith(p)), "")
+        for alias in pattern.findall(text.upper().replace("_", " ")):
+            name, group = (OWNER[alias], OWNER[alias]) if alias in OWNER else names[alias]
+            counts.setdefault(group, {})[name] = counts.get(group, {}).get(name, 0) + 1
+    if not counts:
+        return ""
+    best = max(counts.values(), key=lambda c: sum(c.values()))
+    return max(best, key=best.get)
+
+
+def _manufacturer(texts: list[str], mpn: str = "", names: dict[str, tuple[str, str]] | None = None) -> str:
+    """The manufacturer that the texts name most often (named_manufacturer),
+    else a guess from the prefix of mpn (MPN_PREFIXES): only a proposal."""
+    return named_manufacturer(texts, names) or next(
+        (m for p, m in MPN_PREFIXES.items() if mpn.upper().startswith(p)), "")
 
 
 @pdfium_locked
@@ -194,9 +202,10 @@ def propose(doc: Document, names: dict[str, tuple[str, str]] | None = None) -> P
     best = ranked[0] if ranked else ""
     variants = [spelling[k] for k in sorted(
         k for k in order if k == best or (best and _variant(spelling[best], spelling[k], found[k], k == stem_norm)))]
-    return Proposal(mpn=spelling.get(best, ""),
-                    manufacturer=_manufacturer([title, page1[:3000], stem, meta.get("Author", ""),
-                                                meta.get("Creator", "")], spelling.get(best, ""), names),
+    texts = [title, page1[:3000], stem, meta.get("Author", ""), meta.get("Creator", "")]
+    named = named_manufacturer(texts, names)
+    return Proposal(mpn=spelling.get(best, ""), named=named,
+                    manufacturer=named or _manufacturer([], spelling.get(best, "")),
                     sources=found.get(best, []), candidates=[spelling[k] for k in ranked[1:5]],
                     variants=variants if len(variants) > 1 else [])
 

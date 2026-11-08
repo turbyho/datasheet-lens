@@ -19,6 +19,8 @@ JLCPCB. The check reads the manufacturer of each datasheet of a part
 
 from __future__ import annotations
 
+import hashlib
+import threading
 from collections import OrderedDict
 
 import pypdfium2 as pdfium
@@ -27,35 +29,48 @@ from .errors import LensError
 from .store import Store
 
 # The manufacturer that each datasheet names (identify.propose), by the SHA-256 and
-# the title of the document and the names of the registry: a PDF does not change,
-# thus each process reads its page 1 one time (sync and project_check run often).
-_FOUND: OrderedDict[tuple, tuple[str, str]] = OrderedDict()
+# the title of the document and a digest of the names of the registry: a PDF does
+# not change, thus each process reads its page 1 one time (sync and project_check
+# run often). Only a result: a read error is not kept. The MCP server calls the
+# tools in threads: _FOUND_LOCK.
+_FOUND: OrderedDict[tuple, str] = OrderedDict()
 _FOUND_SIZE = 2048
+_FOUND_LOCK = threading.Lock()
+
+
+def names_digest(names: dict[str, tuple[str, str]]) -> str:
+    """A short key of the names of the registry (Store.text_names) for _FOUND."""
+    return hashlib.sha256(repr(sorted(names.items())).encode("utf-8")).hexdigest()[:16]
 
 CONFIRM = ("When the user read page 1 and confirms the given name (for example the maker of a module whose "
            "datasheet names the maker of its chip more often), give it with manufacturer_confirmed=true (CLI: "
            "--confirmed).")
 
 
-def found_maker(store: Store, doc, names: dict[str, tuple[str, str]] | None = None) -> tuple[str, str]:
-    """The manufacturer that the datasheet doc names (identify.propose with the
-    names of the registry, Store.text_names), and an error text of a PDF that
-    the tool cannot read ("" for none). Kept for the process (_FOUND)."""
+def found_maker(store: Store, doc, names: dict[str, tuple[str, str]] | None = None,
+                digest: str = "") -> tuple[str, str]:
+    """The manufacturer that the text of the datasheet doc names
+    (identify.propose with the names of the registry, Store.text_names; not a
+    guess from the prefix of the MPN), and the error text of a PDF that the
+    tool cannot read ("" for none). digest: names_digest(names), when the
+    caller has it. A result is kept for the process (_FOUND)."""
     from .identify import propose
 
     names = store.text_names() if names is None else names
-    key = (doc.sha256, doc.title or "", tuple(sorted(names.items())))
-    if key in _FOUND:
-        _FOUND.move_to_end(key)
-        return _FOUND[key]
+    key = (doc.sha256, doc.title or "", digest or names_digest(names))
+    with _FOUND_LOCK:
+        if key in _FOUND:
+            _FOUND.move_to_end(key)
+            return _FOUND[key], ""
     try:
-        value = (propose(doc, names).manufacturer, "")
+        name = propose(doc, names).named
     except (LensError, OSError, pdfium.PdfiumError) as e:
-        value = ("", str(e))
-    _FOUND[key] = value
-    if len(_FOUND) > _FOUND_SIZE:
-        _FOUND.popitem(last=False)
-    return value
+        return "", str(e)
+    with _FOUND_LOCK:
+        _FOUND[key] = name
+        if len(_FOUND) > _FOUND_SIZE:
+            _FOUND.popitem(last=False)
+    return name, ""
 
 
 def datasheet_maker(store: Store, doc, given: str, mpn: str, confirmed: bool = False) -> tuple[str, str]:
@@ -75,7 +90,10 @@ def datasheet_maker(store: Store, doc, given: str, mpn: str, confirmed: bool = F
     given = given.strip()
     if confirmed and given:
         return given, ""
-    found = found_maker(store, doc)[0]
+    found, error = found_maker(store, doc)
+    if error:  # not "the datasheet names no manufacturer": the tool cannot tell
+        raise LensError(f"the tool cannot read the datasheet (document {doc.sha256[:12]}) of {mpn}: {error}. "
+                        "The tool did not add or link the part.")
     if found and (not given or store.same_maker(found, given)):
         return found, ""
     if not found and given:
@@ -109,12 +127,12 @@ def part_maker(store: Store, doc, mpn: str, manufacturer: str, role: str,
                            confirmed and bool(manufacturer.strip()))
 
 
-def _read(store: Store, part_id: int, names: dict[str, tuple[str, str]]) -> tuple:
+def _read(store: Store, part_id: int, names: dict[str, tuple[str, str]], digest: str = "") -> tuple:
     """The datasheets of a part and the manufacturers that they name. Gives
     (the SHA-256 of the datasheets, {name: SHA-256} with one name for each
     manufacturer of the registry, the first error of a datasheet or "")."""
     shas = list(dict.fromkeys(r["sha256"] for r in store.documents_of_part(part_id) if r["role"] == "datasheet"))
-    found = {sha: found_maker(store, store.document(sha), names) for sha in shas}
+    found = {sha: found_maker(store, store.document(sha), names, digest) for sha in shas}
     groups: dict[str, str] = {}
     for sha in shas:
         name = found[sha][0]
@@ -138,9 +156,10 @@ def check(store: Store) -> dict:
     and for rename "new" (the name of the datasheet), for different "names"
     (the names of the datasheets), for unread "reason" (empty, or an error)."""
     names = store.text_names()
+    digest = names_digest(names)
     out: dict = {"rename": [], "different": [], "unread": [], "ok": 0}
     for part in store.db.execute("SELECT id, mpn, manufacturer FROM parts ORDER BY mpn COLLATE NOCASE, id").fetchall():
-        shas, groups, reason = _read(store, part["id"], names)
+        shas, groups, reason = _read(store, part["id"], names, digest)
         if not shas:
             continue
         item = {"id": part["id"], "mpn": part["mpn"], "manufacturer": part["manufacturer"], "document": shas[0]}

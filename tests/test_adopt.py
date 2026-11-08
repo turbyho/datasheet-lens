@@ -149,7 +149,9 @@ def test_cli(jlc, downloads, tmp_path, capsys):  # noqa: F811
     project = prj.init_project(tmp_path / "board")
     # No terminal: the question of the manufacturer stops the command, with no change.
     assert main(["adopt", "jlcpcb", "--mpn", "FET-B", "-p", str(project.root)]) == 1
-    assert "ASK THE USER: the manufacturer of FET-B" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "ASK THE USER: the manufacturer of FET-B" in out
+    assert "element map:" in out  # the new document of the store gets its element map
     assert prj.load(project.root).parts == []
     assert main(["adopt", "jlcpcb", "--mpn", "FET-B", "-M", "Maker B", "-p", str(project.root)]) == 0
     out = capsys.readouterr().out
@@ -360,7 +362,8 @@ def test_adopt_asks_for_the_manufacturer(downloads, monkeypatch, text_pdf, tmp_p
 def test_adopt_with_a_name_that_the_datasheet_does_not_give(downloads, monkeypatch, text_pdf, tmp_path):
     """A given name that the registry does not relate to the name of the
     datasheet: the tool asks for the relation and changes nothing. Two
-    manufacturers in the registry: an error."""
+    manufacturers in the registry: a question with the error, and the
+    confirmation of the user adds the part."""
     _source(monkeypatch, text_pdf, "X-7", "", "TEXAS INSTRUMENTS")
     result = adopt_module.adopt("mouser", "1-X-7", manufacturer="Small Co")
     assert result["ask"] and result["lines"][-1].startswith(
@@ -370,9 +373,15 @@ def test_adopt_with_a_name_that_the_datasheet_does_not_give(downloads, monkeypat
     with Store() as store:
         assert store.match_parts("X-7") == []
         store.maker_relation("distinct", "Small Co", "Texas Instruments")
-    with pytest.raises(LensError, match="names Texas Instruments, and the manufacturer registry records Small Co as a "
-                                        "different manufacturer: the document is not the datasheet of this part"):
-        adopt_module.adopt("mouser", "1-X-7", manufacturer="Small Co")
+    # An error of the check is a question of the result: the new document stays (its element map), and the
+    # confirmation of the user is the way out (a module and its chip).
+    result = adopt_module.adopt("mouser", "1-X-7", manufacturer="Small Co")
+    assert result["ask"] and result["document"] is not None  # it gets its element map
+    assert ("names Texas Instruments, and the manufacturer registry records Small Co as a different manufacturer: "
+            "the document is not the datasheet of this part") in result["lines"][-1]
+    assert "manufacturer_confirmed=true" in result["lines"][-1]
+    result = result["retry"]("Small Co", True)
+    assert not result["ask"] and "manufacturer: Small Co (given)" in result["lines"]
 
 
 def test_adopt_with_no_datasheet_gives_no_manufacturer(downloads, monkeypatch, text_pdf, tmp_path):

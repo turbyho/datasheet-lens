@@ -680,9 +680,7 @@ def cmd_find(args: argparse.Namespace) -> int:
 def cmd_adopt(args: argparse.Namespace) -> int:
     """The command adopt: a part of a source, with its datasheet and its purchase source."""
     from .adopt import adopt
-    from .elements import build_elements
     from .project import load_optional, sync_project
-    from .setup import element_backend
 
     project = load_optional(args.path)
     result = adopt(args.source, args.number, args.mpn, args.base, args.category, project,
@@ -692,24 +690,33 @@ def cmd_adopt(args: argparse.Namespace) -> int:
         # The question of the result: the user reads the datasheet and types its manufacturer. The person at
         # the terminal is the user: the answer is confirmed. retry uses the datasheet of the first step.
         answer = _input("  Type the manufacturer as the datasheet names it (empty = stop): ")
-        if not answer:
-            return 1
-        asked = len(result["lines"]) - 1  # the lines before the question: the retry gives them again
-        result = result["retry"](answer, True)
-        print("\n".join(result["lines"][asked:]))
-    if result["ask"]:
+        if answer:
+            asked = len(result["lines"]) - 1  # the lines before the question: the retry gives them again
+            result = result["retry"](answer, True)
+            print("\n".join(result["lines"][asked:]))
+    if result["ask"]:  # the new document stays in the store: it gets its element map
+        _build_new_elements(result["document"])
         return 1
     if result["project"] is not None:  # as the command add: the copy in the document folder
         with Store() as store:
             report, _ = sync_project(store, result["project"].root)
         for text in report["problems"]:
             print(f"problem: {text}")
-    with Store() as store:
-        if result["document"] is not None:
-            built = build_elements(store, result["document"], element_backend())
-            if not built["skipped"]:
-                print(f"element map: {built['elements']} elements ({built['backend']})")
+    _build_new_elements(result["document"])
     return 0
+
+
+def _build_new_elements(doc_id: int | None) -> None:
+    """Build the element map of a new document of adopt (None: no new document)."""
+    from .elements import build_elements
+    from .setup import element_backend
+
+    if doc_id is None:
+        return
+    with Store() as store:
+        built = build_elements(store, doc_id, element_backend())
+    if not built["skipped"]:
+        print(f"element map: {built['elements']} elements ({built['backend']})")
 
 
 def cmd_jlc(args: argparse.Namespace) -> int:
@@ -765,8 +772,6 @@ def cmd_stock(args: argparse.Namespace) -> int:
 def cmd_maker(args: argparse.Namespace) -> int:
     """The command maker: show the manufacturer registry, or record a relation
     of two manufacturer names."""
-    from . import makercheck
-
     with Store() as store:
         if not args.relation:
             print("\n".join(store.maker_listing()))
@@ -845,6 +850,11 @@ def cmd_set(args: argparse.Namespace) -> int:
     return 0
 
 
+# The help of the option -C (add, adopt, set, project add-part): see makercheck.datasheet_maker.
+CONFIRMED_HELP = ("the user read page 1 and confirms the given manufacturer (for example of a module whose "
+                  "datasheet names the maker of its chip more often)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The argument parser of the CLI: one subcommand for each task."""
     parser = argparse.ArgumentParser(
@@ -870,7 +880,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="the project folder (default: the current folder or a parent folder)")
     add.add_argument("--no-project", action="store_true", help="add to the store only, not to the project")
     add.add_argument("-M", "--manufacturer", help="the manufacturer of the part")
-    add.add_argument("-C", "--confirmed", action="store_true", help="the user read page 1 and confirms the given manufacturer (for example of a module whose datasheet names the maker of its chip more often)")
+    add.add_argument("-C", "--confirmed", action="store_true", help=CONFIRMED_HELP)
     add.add_argument("-c", "--category", help="the function of the part, for example ADC (for the project layout)")
     add.add_argument("--role", choices=ROLES, default="datasheet", help="the role of the document")
     add.add_argument("--title", help="the title (default: from the PDF metadata)")
@@ -897,7 +907,7 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("-b", "--base", metavar="MPN", help="the base part of the datasheet")
     st.add_argument("-c", "--category", help="the function of the part (\"\" removes it)")
     st.add_argument("-M", "--manufacturer", help="the new manufacturer")
-    st.add_argument("-C", "--confirmed", action="store_true", help="the user read page 1 and confirms the given manufacturer (for example of a module whose datasheet names the maker of its chip more often)")
+    st.add_argument("-C", "--confirmed", action="store_true", help=CONFIRMED_HELP)
     st.add_argument("-D", "--distributor", help="the preferred distributor (DigiKey, Mouser, LCSC, an other name), "
                                                 "or N/A for none")
     st.add_argument("--of", metavar="MANUFACTURER", help="the manufacturer now, if the project has more parts "
@@ -967,7 +977,7 @@ def build_parser() -> argparse.ArgumentParser:
     ad.add_argument("-c", "--category", default="", help="the function of the part, for example MOSFET")
     ad.add_argument("-M", "--manufacturer", default="",
                     help="the manufacturer as the datasheet names it, when adopt asks for it")
-    ad.add_argument("-C", "--confirmed", action="store_true", help="the user read page 1 and confirms the given manufacturer (for example of a module whose datasheet names the maker of its chip more often)")
+    ad.add_argument("-C", "--confirmed", action="store_true", help=CONFIRMED_HELP)
     ad.add_argument("-p", "--path", "--project", dest="path",
                     help="the project folder (default: the current folder or a parent folder)")
     ad.set_defaults(func=cmd_adopt)
@@ -1122,7 +1132,7 @@ def build_parser() -> argparse.ArgumentParser:
     padd = psub.add_parser("add-part", help="add a part, with the documents that the store links to it")
     padd.add_argument("mpn", help="the part number (MPN) or an alias")
     padd.add_argument("--manufacturer", help="the manufacturer of the part")
-    padd.add_argument("-C", "--confirmed", action="store_true", help="the user read page 1 and confirms the given manufacturer (for example of a module whose datasheet names the maker of its chip more often)")
+    padd.add_argument("-C", "--confirmed", action="store_true", help=CONFIRMED_HELP)
     padd.add_argument("--category", help="the function of the part, for example ADC (for the layout)")
     padd.add_argument("--base", metavar="MPN",
                       help="mpn is a concrete orderable part of this base part (the part of the datasheet)")

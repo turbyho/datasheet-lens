@@ -853,7 +853,8 @@ The project file keeps the answer of the user, also `N/A`. Thus the tool does no
 ask again. A field with one name is the name as it is (a name can have a comma:
 `Murata Manufacturing Co., Ltd.`). A field with more names is a list, as the field
 `MPN`. The findings are steps of the user, but they do not stop the next steps
-(`sync`, then `stock`): these do not use the fields. The lines `Manufacturer:` and
+(`sync`, then `stock`): these do not use the fields. Only the selection of the part
+of a symbol (the project has its MPN from more manufacturers) stops them. The lines `Manufacturer:` and
 `Distributor:` give:
 
 | Line | Meaning |
@@ -863,7 +864,7 @@ ask again. A field with one name is the name as it is (a name can have a comma:
 | The datasheets give the same manufacturers | The field has other names of the same manufacturers: ask the user, then write the names of the datasheets. |
 | The field gives X, the project gives Y (Manufacturer) | The manufacturer of a part comes from its datasheet: ask the user which is correct. |
 | The project has no manufacturer for X | Run `datasheet-lens maker check`, else ask the user. |
-| The project has X from A and B | The project has the MPN from more manufacturers (an original and a copy), and the field does not select one: ask the user which part the symbol uses, and write its manufacturer into the field. The LCSC number and the distributor of the symbol come from the selected part. |
+| The project has X from A and B | The project has the MPN from more manufacturers (an original and a copy), and the field does not select one: ask the user which part the symbol uses, and write its manufacturer into the field. The LCSC number and the distributor of the symbol come from the selected part. Until then, the check of the LCSC number waits, and the next steps do not come. |
 | The field gives X, the project gives Y (Distributor) | Ask the user which one is correct, then write it into the two places. |
 | The project has no preferred distributor | The field has a name: the CAD BOM is the master, save it with `set MPN -D NAME`. |
 | More purchase channels | Ask the user which one is the preferred distributor. |

@@ -925,8 +925,6 @@ def manufacturer_check(
     manufacturer that the tool knows. Show the renames to the user, and apply
     them only when the user agrees. The changes go to the team server with the
     other changes of the store."""
-    from . import makercheck
-
     with Store() as store:
         if not apply:
             return "\n".join(makercheck.lines(makercheck.check(store)))

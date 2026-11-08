@@ -767,8 +767,9 @@ def _has_datasheet(project_part: dict, store: Store) -> bool:
 def _inbox_parts(project: Project, store: Store, doc: Document) -> tuple[list[dict], str, list[str], str]:
     """The project parts that a document of the inbox goes to, the part that
     the PDF proposes ("MPN (manufacturer)" or ""), the reasons why a part
-    that agrees does not get it, and the manufacturer of the datasheet that the
-    registry knows (identify.propose), or "".
+    that agrees does not get it, and the manufacturer that the text of the
+    datasheet names (Proposal.named: not a guess from the prefix of the MPN), or
+    "".
 
     A part agrees when its MPN is an ordering code of the document, or when its
     MPN or its base part is the part of the PDF or one of its variants. A live
@@ -807,7 +808,7 @@ def _inbox_parts(project: Project, store: Store, doc: Document) -> tuple[list[di
         else:
             agree.append(part)
     text = f"{proposal.mpn} ({proposal.manufacturer or 'manufacturer unknown'})" if proposal.mpn else ""
-    return agree, text, reasons, proposal.manufacturer
+    return agree, text, reasons, proposal.named
 
 
 def _inbox(project: Project, store: Store, apply: bool, report: dict) -> list[dict]:
@@ -3086,8 +3087,10 @@ def format_check(result: dict, cli: bool = False) -> list[str]:
     # A JLCPCB finding of a symbol that is not fitted is information only.
     # The fields Manufacturer and Distributor are steps of the user, but not of
     # the next steps: sync and the availability do not use them (decision of the
-    # user, 2026-11-08).
-    blocking = [f for f in result.get("lcsc", []) if not f.get("dnp")]
+    # user, 2026-11-08). A symbol whose part the user must select first
+    # (maker_select) blocks them: its JLCPCB number is not checked until then.
+    blocking = [f for f in result.get("lcsc", []) + [f for f in result.get("fields", [])
+                                                      if f["kind"] == "maker_select"] if not f.get("dnp")]
     if result["ok"] and not blocking and not any(result.get(kind) for kind in (
             "conflicts", "changes", "unconfirmed", "move", "no_mpn", "different", "missing", "extra")):
         dnp = result.get("not_fitted_parts", [])
@@ -3199,7 +3202,8 @@ def _field_lines(result: dict, cli: bool) -> list[str]:
                     + (f"gives '{bom}', which selects none of them" if bom else "does not select one")
                     + ". Ask the user which part the symbol uses, then write its manufacturer into "
                     f"{' and '.join(f['fields'])} of the symbol (with more MPNs: the manufacturer of each MPN, in "
-                    "their order). Then run project_check again: the other fields of the symbol depend on it.")
+                    f"their order). Then run {'datasheet-lens check' if cli else 'project_check'} again: the "
+                    "other fields of the symbol and its JLCPCB number depend on it.")
         elif kind == "maker_unknown":
             check = "datasheet-lens maker check" if cli else "manufacturer_check"
             text = (f"Manufacturer: {ref}: the project has no manufacturer for {mpn}: {check} reads it from the "
