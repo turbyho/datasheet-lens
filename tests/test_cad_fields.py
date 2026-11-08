@@ -113,3 +113,33 @@ def test_the_preferred_distributor_in_the_project_file(store_home, tmp_path, cap
             {"reference": "C1", "mpn": "C1", "manufacturer": "YAGEO", "distributor": "TME"}])
     assert [(f["reference"], f["kind"]) for f in result["fields"]] == [("U1", "maker_unknown")]
     assert result["fields_ok"] == 5
+
+
+def test_the_field_manufacturer_selects_the_part_of_a_second_source(store_home, tmp_path):
+    """The project has one MPN from two manufacturers (an original and a copy).
+    The field Manufacturer of a symbol selects the part: its LCSC number and its
+    distributor. With no field, or a name of neither, the user selects first
+    (a live test, 2026-11-08: SN74LVC1G14DBVR of TI and of UMW)."""
+    with Store() as store:
+        store.maker_relation("distinct", "UMW", "Texas Instruments")
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "SN74LVC1G14DBVR", "Texas Instruments")
+        prj.add_part(prj.load(project.root), store, "SN74LVC1G14DBVR", "UMW")
+        project = prj.load(project.root)
+        ti, umw = project.parts
+        prj.set_source(project, ti, "jlcpcb", "C7835")
+        prj.set_source(project, umw, "jlcpcb", "C434069")
+        project = prj.load(project.root)
+        result = prj.check_parts(project, store, [
+            {"reference": "U5", "mpn": "SN74LVC1G14DBVR", "manufacturer": "UMW", "distributor": "LCSC",
+             "lcsc": "C434069"},
+            {"reference": "U6", "mpn": "SN74LVC1G14DBVR", "manufacturer": "TI", "lcsc": ""},
+            {"reference": "U7", "mpn": "SN74LVC1G14DBVR", "lcsc": ""}])
+        assert result["lcsc_ok"] == 1  # U5: the number of the UMW part
+        assert [(f["reference"], f["kind"], f["source"]) for f in result["lcsc"]] == [("U6", "write", "C7835")]
+        assert [(f["reference"], f["kind"]) for f in result["fields"]] == [
+            ("U6", "maker_names"), ("U6", "distributor_write"), ("U7", "maker_select")]
+        assert result["fields_ok"] == 2  # U5: Manufacturer and Distributor
+        text = "\n".join(prj.format_check(result))
+        assert ("Manufacturer: U7: the project has SN74LVC1G14DBVR from Texas Instruments and UMW, and the field "
+                "does not select one. Ask the user which part the symbol uses") in text

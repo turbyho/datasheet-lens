@@ -825,7 +825,9 @@ the BOM export of the CAD tool gives them (the default fields of `export_bom` of
 kicad-workbench include all fields).
 
 - `Manufacturer`: the manufacturers of the MPNs of the field `MPN`, in their order,
-  with the same separators: `onsemi, Nexperia` for `2N7002LT1G, BSS138LT1G`.
+  with the same separators: `onsemi, Nexperia` for `2N7002LT1G, BSS138LT1G`. When
+  the project has an MPN from more manufacturers (an original and a copy), this
+  field selects the part of the symbol.
 - `Distributor`: the name of the preferred distributor of the fitted part (the first
   MPN), not its part number. The part number of JLCPCB stays in the LCSC field.
 
@@ -861,6 +863,7 @@ ask again. A field with one name is the name as it is (a name can have a comma:
 | The datasheets give the same manufacturers | The field has other names of the same manufacturers: ask the user, then write the names of the datasheets. |
 | The field gives X, the project gives Y (Manufacturer) | The manufacturer of a part comes from its datasheet: ask the user which is correct. |
 | The project has no manufacturer for X | Run `datasheet-lens maker check`, else ask the user. |
+| The project has X from A and B | The project has the MPN from more manufacturers (an original and a copy), and the field does not select one: ask the user which part the symbol uses, and write its manufacturer into the field. The LCSC number and the distributor of the symbol come from the selected part. |
 | The field gives X, the project gives Y (Distributor) | Ask the user which one is correct, then write it into the two places. |
 | The project has no preferred distributor | The field has a name: the CAD BOM is the master, save it with `set MPN -D NAME`. |
 | More purchase channels | Ask the user which one is the preferred distributor. |

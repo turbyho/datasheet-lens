@@ -1948,7 +1948,7 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
     fitted_mpns: set[str] = set()  # the parts (_norm) of each fitted symbol, also with no reference
     part_mpns: set[str] = set()  # the parts (_norm) of each symbol with a part (has_part)
     dnp_symbols: list[tuple[frozenset[str], str, list[str], CadSymbol]] = []
-    lcsc_symbols: list[tuple[str, CadSymbol, str]] = []  # (label, symbol, the fitted MPN)
+    lcsc_symbols: list[tuple[str, CadSymbol, list[str]]] = []  # (label, symbol, its parts, the fitted part first)
     lcsc_seen: set = set()
     field_symbols: list[tuple[str, CadSymbol, list[str]]] = []  # (label, symbol, its parts): _field_findings
     field_seen: set = set()
@@ -2030,7 +2030,7 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
         key = (frozenset(refs) or label, (symbol.lcsc or "").strip().upper(), state.parts[0] if state.parts else "")
         if has_part and key not in lcsc_seen:
             lcsc_seen.add(key)
-            lcsc_symbols.append((label, symbol, state.parts[0]))
+            lcsc_symbols.append((label, symbol, list(state.parts)))
         # The fields Manufacturer and Distributor (the same rule for a variant line).
         key = (frozenset(refs) or label, _filled(symbol.manufacturer or ""), _filled(symbol.distributor or ""),
                tuple(state.parts))
@@ -2105,8 +2105,8 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
     # A CAD MPN that is a project part with an other MPN (different): its purchase source.
     renamed = {d["cad"].lower(): d["mpn"] for d in out["different"] if not d["ambiguous"]}
     missing = {m["mpn"].lower() for m in out["missing"]}
-    out["lcsc"], out["lcsc_ok"] = _lcsc_findings(project, lcsc_symbols, any(s.lcsc is not None for s in symbols),
-                                                 renamed, missing)
+    out["lcsc"], out["lcsc_ok"] = _lcsc_findings(project, store, lcsc_symbols,
+                                                 any(s.lcsc is not None for s in symbols), renamed, missing)
     # A symbol whose part no variant fits (dnp_ids): the assembly does not place it,
     # thus its JLCPCB number is information for the user, not a step (decision of
     # the user, 2026-11-07). A symbol of a group (R1,R2) with a fitted symbol is fitted.
@@ -2116,6 +2116,34 @@ def check_parts(project: Project, store: Store, cad: list[CadSymbol | dict]) -> 
     for finding in out["fields"]:  # as the JLCPCB numbers: information only for a symbol that is not fitted
         finding["dnp"] = finding.pop("symbol") in dnp_ids
     return out
+
+
+def symbol_parts(project: Project, store: Store, symbol: CadSymbol, mpns: list[str],
+                 renamed: dict[str, str]) -> tuple[list[dict | None], list[str]]:
+    """The project part of each MPN of the field MPN of a symbol, and the MPNs
+    that the project has more times (from different manufacturers, a second
+    source or a copy) with no item of the field Manufacturer that selects one
+    of them (the same manufacturer in the registry). The item of the field
+    Manufacturer of an MPN: the field itself for one MPN, else the item at the
+    place of the MPN. None for an MPN that the project does not have, or that
+    it has more times. renamed: see _lcsc_findings."""
+    bom = _filled(symbol.manufacturer or "")
+    items, problem = ([bom], "") if len(mpns) == 1 else field_list(bom)
+    if problem or len(items) != len(mpns):
+        items = []
+    parts: list[dict | None] = []
+    ambiguous: list[str] = []
+    for i, mpn in enumerate(mpns):
+        key = mpn.lower()
+        target = renamed.get(key, mpn).lower() if not any(p["mpn"].lower() == key for p in project.parts) else key
+        found = [p for p in project.parts if p["mpn"].lower() == target]
+        if len(found) > 1:
+            name = items[i] if items else ""
+            found = [p for p in found if name and store.same_maker(p["manufacturer"], name)]
+            if len(found) != 1:
+                ambiguous.append(mpn)
+        parts.append(found[0] if len(found) == 1 else None)
+    return parts, ambiguous
 
 
 def _field_findings(project: Project, store: Store, symbols: list[tuple[str, CadSymbol, list[str]]],
@@ -2133,16 +2161,24 @@ def _field_findings(project: Project, store: Store, symbols: list[tuple[str, Cad
     "mpn", "bom", "expected", "fields", "choices", "symbol"}) and the number of
     the fields that agree. The kinds: maker_write (no field, or an empty one),
     maker_names (the same manufacturers with other names), maker_different,
-    maker_unknown (a project part has no manufacturer), distributor_write,
+    maker_unknown (a project part has no manufacturer), maker_select (the
+    project has an MPN of the symbol from more manufacturers, and the field
+    does not select one: symbol_parts; choices: the manufacturers), distributor_write,
     distributor_different, distributor_save (the field gives a distributor, the
     project has none: the BOM is the master), distributor_select (the user
     selects one of more channels), distributor_ask (a part with no channel)."""
     findings, ok = [], 0
     known = project_distributors(project)
     for label, symbol, mpns in symbols:
-        parts = [project.find(m) or (project.find(renamed[m.lower()]) if m.lower() in renamed else None)
-                 for m in mpns]
+        parts, ambiguous = symbol_parts(project, store, symbol, mpns, renamed)
         item = {"reference": label, "mpn": mpns[0], "symbol": id(symbol), "choices": []}
+        if ambiguous:  # the user selects the part first: the other fields depend on it
+            mpn = ambiguous[0]
+            findings.append({**item, "kind": "maker_select", "mpn": mpn, "bom": _filled(symbol.manufacturer or ""),
+                             "expected": "", "fields": symbol.manufacturer_fields,
+                             "choices": [p["manufacturer"] or "no manufacturer" for p in project.parts
+                                         if p["mpn"].lower() == mpn.lower()]})
+            continue
         if all(p is not None for p in parts):
             names = [checked_name(store, p) for p in parts]  # the names after the next sync
             # One name: the text of the field as it is (a name can have a comma: "Co., Ltd.").
@@ -2183,8 +2219,9 @@ def _field_findings(project: Project, store: Store, symbols: list[tuple[str, Cad
     return findings, ok
 
 
-def _lcsc_findings(project: Project, symbols: list[tuple[str, CadSymbol, str]], bom_column: bool,
-                   renamed: dict[str, str] | None = None, missing: set[str] | None = None) -> tuple[list, int]:
+def _lcsc_findings(project: Project, store: Store, symbols: list[tuple[str, CadSymbol, list[str]]],
+                   bom_column: bool, renamed: dict[str, str] | None = None,
+                   missing: set[str] | None = None) -> tuple[list, int]:
     """The JLCPCB (LCSC) numbers of the CAD symbols, compared with the JLCPCB
     purchase sources of the project parts and with the JLCPCB parts library. Only
     in a project that uses JLCPCB: a part has a JLCPCB purchase source, or the CAD
@@ -2197,7 +2234,10 @@ def _lcsc_findings(project: Project, symbols: list[tuple[str, CadSymbol, str]], 
     and the number of symbols whose number agrees with the purchase source. The
     kinds: write (the purchase source is not in the field), no_source,
     different, not_number, not_in_library, other_mpn (the number is a different
-    MPN in the library), none (no number at all)."""
+    MPN in the library), none (no number at all). The part of a symbol comes
+    from symbol_parts: a symbol whose fitted MPN the project has from more
+    manufacturers gets no finding until the field Manufacturer selects one
+    (_field_findings asks the user)."""
     from . import jlcpcb
     from .distributors import fits, jlcpcb_ready, source_numbers
 
@@ -2218,8 +2258,12 @@ def _lcsc_findings(project: Project, symbols: list[tuple[str, CadSymbol, str]], 
             db = jlcpcb.connect()
     findings, ok = [], 0
     try:
-        for label, symbol, mpn in symbols:
-            part = project.find(mpn) or (project.find(renamed[mpn.lower()]) if mpn.lower() in renamed else None)
+        for label, symbol, mpns in symbols:
+            mpn = mpns[0]
+            chosen, ambiguous = symbol_parts(project, store, symbol, mpns, renamed)
+            if mpn in ambiguous:
+                continue
+            part = chosen[0]
             sources = source_numbers(part, "jlcpcb") if part is not None else []
             normal_sources = [normal(s) or s for s in sources]
             text = (symbol.lcsc or "").strip()
@@ -3150,6 +3194,12 @@ def _field_lines(result: dict, cli: bool) -> list[str]:
             text = (f"Manufacturer: {ref}: the field gives '{bom}', the project gives '{expected}' (the manufacturers "
                     "of the datasheets). The CAD BOM is the master, but the manufacturer of a part comes from its "
                     "datasheet: ask the user which is correct (the field, or the MPN or its datasheet).")
+        elif kind == "maker_select":
+            text = (f"Manufacturer: {ref}: the project has {mpn} from {' and '.join(f['choices'])}, and the field "
+                    + (f"gives '{bom}', which selects none of them" if bom else "does not select one")
+                    + ". Ask the user which part the symbol uses, then write its manufacturer into "
+                    f"{' and '.join(f['fields'])} of the symbol (with more MPNs: the manufacturer of each MPN, in "
+                    "their order). Then run project_check again: the other fields of the symbol depend on it.")
         elif kind == "maker_unknown":
             check = "datasheet-lens maker check" if cli else "manufacturer_check"
             text = (f"Manufacturer: {ref}: the project has no manufacturer for {mpn}: {check} reads it from the "
