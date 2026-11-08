@@ -753,9 +753,17 @@ def cmd_stock(args: argparse.Namespace) -> int:
 def cmd_maker(args: argparse.Namespace) -> int:
     """The command maker: show the manufacturer registry, or record a relation
     of two manufacturer names."""
+    from . import makercheck
+
     with Store() as store:
         if not args.relation:
             print("\n".join(store.maker_listing()))
+            return 0
+        if args.relation == "check":
+            if args.apply is None:
+                print("\n".join(makercheck.lines(makercheck.check(store))))
+            else:
+                print("\n".join(makercheck.apply(store, args.apply)[0] or ["no part to change"]))
             return 0
         for line in store.maker_relation(args.relation, args.name, args.other):
             print(f"merged: {line}")
@@ -985,6 +993,9 @@ def build_parser() -> argparse.ArgumentParser:
         rel = mk_sub.add_parser(relation, help=text)
         rel.add_argument("name", metavar=name)
         rel.add_argument("other", metavar=other)
+    mc = mk_sub.add_parser("check", help="check the manufacturer of each part of the store against its datasheet")
+    mc.add_argument("-a", "--apply", nargs="*", metavar="MPN",
+                    help="do the renames of the check: all, or only the parts MPN (after the user agrees)")
     mk.set_defaults(func=cmd_maker)
     sk = sub.add_parser("stock", help="show the lifecycle state and the stock of each project part")
     sk.add_argument("--dnp", nargs="+", metavar="MPN", help="the parts that no symbol fits (check gives them): "

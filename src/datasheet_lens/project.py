@@ -30,7 +30,7 @@ import tomlkit.exceptions
 from tomlkit.container import Container
 from tomlkit.items import AoT, Comment, Null, Table, Whitespace
 
-from . import PROJECT_URL, makers
+from . import PROJECT_URL, makercheck, makers
 from .errors import LensError
 from .fileutil import temp_path, write_atomic
 from .lock import folder_lock, locked
@@ -3153,7 +3153,7 @@ def _sync(project: Project, store: Store, apply: bool, restore: bool, details: b
     report = {k: [] for k in ("ok", "copied", "restored", "changed", "missing", "imported", "added", "moved",
                               "suggested", "unassigned", "unknown_parts", "problems", "misplaced", "documents",
                               "inbox_assigned", "inbox_known", "inbox_waiting", "inbox_new", "inbox_maker",
-                              "inbox_ask", "found")}
+                              "inbox_ask", "renamed", "found")}
     # 0. The inbox: its documents go into the store, linked to their parts.
     from_inbox = _inbox(project, store, apply, report)
     files = _folder_files(project)
@@ -3207,7 +3207,18 @@ def _sync(project: Project, store: Store, apply: bool, restore: bool, details: b
                 f"part {part['mpn']}: more parts in the store have this MPN; give the manufacturer in "
                 f"{PROJECT_FILE} (" + ", ".join(r["manufacturer"] or "unknown" for r in rows) + ")")
         else:
-            _fill(part, store.part(rows[0]["id"]))  # first: the base part search needs the manufacturer
+            row = store.part(rows[0]["id"])
+            _fill(part, row)  # first: the base part search needs the manufacturer
+            if (part["manufacturer"] and row["manufacturer"] and part["manufacturer"] != row["manufacturer"]
+                    and makercheck.datasheet_name(store, row["id"]) == row["manufacturer"]):
+                # match_parts found the part through the registry: one manufacturer with two names. The
+                # project file gets the name of the store when it is the name of the datasheet
+                # (manufacturer_check; decision of the user, 2026-11-08). Else the project file keeps its
+                # name: the store can have a short name (TI) or the name of a distributor. save finds the
+                # table by the old name ("was").
+                report["renamed"].append(f"{part['mpn']}: {part['manufacturer']} -> {row['manufacturer']}")
+                part.setdefault("was", (part["mpn"], part["manufacturer"]))
+                part["manufacturer"] = row["manufacturer"]
             if apply:
                 _store_base(store, part, rows[0]["id"], report)
             # A concrete part with no manufacturer (an older version) gets the one of its base part.
@@ -3318,6 +3329,8 @@ def _sync(project: Project, store: Store, apply: bool, restore: bool, details: b
     if apply:  # the index comes after (sync, build_indexes): it does not change the folder
         save(project)
         _remove_from_inbox(project, from_inbox, report)
+    for part in project.parts:
+        part.pop("was", None)
     report["outside"], report["outside_complete"] = [], True
     if details:
         add_details(report, project, store)
@@ -3421,6 +3434,8 @@ def format_report(report: dict, apply: bool, add_hint: tuple[str, str], cli: boo
     for item in report["inbox_assigned"]:
         lines.append(f"inbox: {item['file']}: the datasheet of {', '.join(item['parts'])}; its copy is in the "
                      "subfolder of the part, and the file is not in the inbox now")
+    lines += [f"manufacturer: {text} (the name of the store: the name of the datasheet)"
+              + ("" if apply else "; the next sync writes it into the project file") for text in report["renamed"]]
     lines += [f"inbox: {item['part']}: manufacturer {item['manufacturer']} from its datasheet {item['file']}"
               for item in report["inbox_maker"]]
     lines += [f"ASK THE USER: the manufacturer of {item['part']}. Its datasheet {item['file']} "

@@ -535,7 +535,7 @@ def test_the_add_hints_of_the_cli_and_the_server():
     report = {k: [] for k in ("ok", "copied", "restored", "changed", "missing", "imported", "added", "moved",
                               "unknown_parts", "problems", "misplaced", "suggested", "unassigned",
                               "inbox_assigned", "inbox_known", "inbox_waiting", "inbox_new", "inbox_maker",
-                              "inbox_ask")}
+                              "inbox_ask", "renamed")}
     report["inbox_waiting"] = [{"file": "_inbox/d.pdf", "sha256": "d" * 64, "proposal": "", "other": []}]
     report["misplaced"] = [{"file": "a.pdf", "mpn": "TLV755P", "part": "TLV75533PDBVR", "base": "TLV755P",
                             "sha256": "a" * 64, "linked": ["X"]},

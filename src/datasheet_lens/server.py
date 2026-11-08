@@ -890,6 +890,30 @@ def manufacturer_relation(
 
 
 @tool
+def manufacturer_check(
+        apply: Annotated[bool, Field(description=(
+            "False: only the check. True: do the renames of the check, after the user agrees."))] = False,
+        mpns: Annotated[list[str] | None, Field(description=(
+            "With apply: only the parts with these MPNs (the renames that the user selects). Empty: all "
+            "renames."))] = None) -> str:
+    """Check the manufacturer of each part of the store against its
+    datasheet: the manufacturer of a part is the manufacturer of its
+    datasheet, not the name of a distributor (older versions of adopt_part
+    gave the name of the distributor). Gives the renames (the same
+    manufacturer with the name of the datasheet), the parts whose datasheet
+    gives a different manufacturer, and the parts whose datasheet names no
+    manufacturer that the tool knows. Show the renames to the user, and apply
+    them only when the user agrees. The changes go to the team server with the
+    other changes of the store."""
+    from . import makercheck
+
+    with Store() as store:
+        if not apply:
+            return "\n".join(makercheck.lines(makercheck.check(store)))
+        return "\n".join(makercheck.apply(store, mpns)[0] or ["no part to change"])
+
+
+@tool
 def part_links(
         mpn: Annotated[str, Field(description="The MPN, best the concrete orderable one, for example TPS7A0233PYCHR.")]
 ) -> str:
