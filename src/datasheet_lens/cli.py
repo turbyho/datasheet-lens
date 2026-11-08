@@ -2,6 +2,7 @@
 
 import argparse
 import contextlib
+import copy
 import math
 import sys
 from pathlib import Path
@@ -855,9 +856,80 @@ CONFIRMED_HELP = ("the user read page 1 and confirms the given manufacturer (for
                   "datasheet names the maker of its chip more often)")
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    """An argument parser that reads the options and the positionals of a subcommand in
+    each sequence, with the same result on each Python version.
+
+    Python 3.11, 3.12.0 to 3.12.6 and 3.13.0 have two defects that CPython repaired in
+    3.12.7 and 3.13.1:
+
+    - gh-59317: they do not read an optional positional (nargs "?" or "*") after an
+      option and an other positional, for example ``pick digikey 100 -a "vdss >= 20 V"``
+      ("unrecognized arguments").
+    - gh-72795: the error message of a missing argument names a positional with nargs
+      "*" as required.
+
+    When the usual parse leaves arguments that it did not read, parse_known_args reads
+    all arguments again with parse_known_intermixed_args. Thus on each Python version,
+    a command line that the usual parse of Python 3.14 reads gives the result and the
+    error message of Python 3.14. A parse with only the intermixed parse is not
+    sufficient: on Python 3.11 it gives the error of a missing option before the error
+    of a missing positional. The intermixed parse also reads the positionals that an
+    option divides (``check a.csv --column MPN b.csv``), which the usual parse of each
+    version refuses.
+
+    Limits:
+
+    - A parser with subcommands, or with a positional with nargs REMAINDER, keeps the
+      usual parse, because the intermixed parse refuses them.
+    - The second parse runs the type converters again. The converters of the CLI are
+      int and float, with no side effect.
+    - A parser does one parse at a time: build_parser makes a new parser for each call
+      of main.
+    - The positionals come from add_argument of the parser. A group (argument group,
+      mutually exclusive group) does not call it: give a group only options.
+
+    The subparsers get this class from add_subparsers.
+    """
+
+    _intermixed = False
+    _usual_parse_only = False  # subcommands or a positional with nargs REMAINDER
+
+    def add_argument(self, *args, **kwargs):
+        action = super().add_argument(*args, **kwargs)
+        if not action.option_strings:
+            # The rule of _get_positional_kwargs of Python 3.14 (gh-72795).
+            if action.nargs in (argparse.OPTIONAL, argparse.ZERO_OR_MORE, argparse.REMAINDER,
+                                argparse.SUPPRESS):
+                action.required = False
+            if action.nargs == argparse.REMAINDER:
+                self._usual_parse_only = True
+        return action
+
+    def add_subparsers(self, **kwargs):
+        self._usual_parse_only = True
+        return super().add_subparsers(**kwargs)
+
+    def parse_known_args(self, args=None, namespace=None):
+        # Python 3.11, 3.12.0 to 3.12.6 and 3.13.0 call parse_known_args from
+        # parse_known_intermixed_args: that call is the usual parse.
+        if self._usual_parse_only or self._intermixed:
+            return super().parse_known_args(args, namespace)
+        args = sys.argv[1:] if args is None else list(args)
+        start = copy.copy(namespace)
+        result, extras = super().parse_known_args(args, namespace)
+        if not extras:
+            return result, extras
+        self._intermixed = True
+        try:
+            return self.parse_known_intermixed_args(args, start)
+        finally:
+            self._intermixed = False
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The argument parser of the CLI: one subcommand for each task."""
-    parser = argparse.ArgumentParser(
+    parser = _ArgumentParser(
         prog="datasheet-lens",
         description="Index of component datasheets, and pages of the original on demand.",
     )
