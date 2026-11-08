@@ -1072,6 +1072,9 @@ def adopt_part(
         base: Annotated[str, Field(description=(
             "The base part of the datasheet, for example TLV755P for TLV75533PDBVR. Empty: the MPN."))] = "",
         category: Annotated[str, Field(description="The function of the part, for example MOSFET or LDO.")] = "",
+        manufacturer: Annotated[str, Field(description=(
+            "The manufacturer as the datasheet names it, from the user. Give it only when a result of adopt_part "
+            "asks for it (ASK THE USER)."))] = "",
         path: ProjectPath = "") -> str:
     """Take a part that find_parts or search_distributors found: add its
     datasheet (one in the store, else a download: the site of the manufacturer
@@ -1088,7 +1091,10 @@ def adopt_part(
     folder of the project: give them to the user. A part with a new MPN becomes
     a new project part: to replace a project part (a replacement of
     project_availability), first the user agrees and the CAD project changes,
-    then project_update_part(mpn, new_mpn), then adopt_part. A purchase source
+    then project_update_part(mpn, new_mpn), then adopt_part. The manufacturer
+    of the part comes from its datasheet, not from the distributor: when the
+    tool cannot read it, or the two names differ, the result asks (ASK THE
+    USER) and adds nothing. A purchase source
     is added, not replaced: project_remove_source removes a wrong one. The CAD BOM is the master: write the change that the user confirmed
     into the CAD project too (MPN, MPN_Confirmed, Value_Confirmed, LCSC;
     kicad-workbench: set_symbol_fields), then
@@ -1097,8 +1103,9 @@ def adopt_part(
     from .project import load_optional
 
     project = load_optional(path or None)
-    result = adopt(source, number, mpn, base, category, project, lock=_add_lock)
-    if project is not None and not any(line.startswith("datasheet: NOT ADDED") for line in result["lines"]):
+    result = adopt(source, number, mpn, base, category, project, lock=_add_lock, manufacturer=manufacturer)
+    if (project is not None and not result["ask"]
+            and not any(line.startswith("datasheet: NOT ADDED") for line in result["lines"])):
         result["lines"].append("Run project_sync: it copies the datasheet into the project folder.")
     with _add_lock:
         job = _build_elements(result["document"]) if result["document"] is not None else None

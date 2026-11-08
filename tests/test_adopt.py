@@ -34,7 +34,9 @@ def downloads(monkeypatch, text_pdf):
 
 def test_adopt_by_number(jlc, downloads, tmp_path):  # noqa: F811
     project = prj.init_project(tmp_path / "board")
-    result = adopt_module.adopt("jlcpcb", "c1001", category="MOSFET", project=prj.load(project.root))
+    # The made-up manufacturers are not in the registry: the user gives the name of the datasheet.
+    result = adopt_module.adopt("jlcpcb", "c1001", category="MOSFET", project=prj.load(project.root),
+                                manufacturer="Maker A")
     text = "\n".join(result["lines"])
     assert text.startswith("FET-A (Maker A) from jlcpcb: C1001, library Extended, package DFN3x3-8")
     assert "datasheet: https://x/FET-A.pdf" in text and downloads == ["https://x/FET-A.pdf"]
@@ -49,7 +51,7 @@ def test_adopt_by_number(jlc, downloads, tmp_path):  # noqa: F811
     assert result["lines"][1] == ("lifecycle: not checked (the JLCPCB library has no lifecycle state): no enabled "
                                   "distributor with a key")
     # A second take: the datasheet of the store, no second download.
-    result = adopt_module.adopt("jlcpcb", "C1001", project=prj.load(project.root))
+    result = adopt_module.adopt("jlcpcb", "C1001", project=prj.load(project.root), manufacturer="Maker A")
     assert "datasheet: in the store already" in "\n".join(result["lines"]) and len(downloads) == 1
 
 
@@ -100,7 +102,7 @@ def test_number_or_mpn(jlc, downloads):  # noqa: F811
 
 def test_base_part_with_no_project(jlc, downloads):  # noqa: F811
     """With no project, the concrete part gets the base part and its datasheet."""
-    adopt_module.adopt("jlcpcb", "C1003", base="FET")
+    adopt_module.adopt("jlcpcb", "C1003", base="FET", manufacturer="Maker C")
     with Store() as store:
         assert [r["mpn"] for r in store.part_documents("FET-C")] == ["FET"]  # the datasheet of the base part
         part_id = store.find_part("FET-C", "Maker C", create=False)
@@ -125,7 +127,7 @@ def test_datasheet_url_order(jlc, downloads, monkeypatch):  # noqa: F811
     assert list(urls) == ["https://www.ti.com/a.pdf", "https://jlcpcb.com/x.pdf", "https://www.lcsc.com/b.pdf"]
     monkeypatch.setattr(adopt_module, "datasheet_urls",
                         lambda c, s, p=None, n=None: iter(["https://ti.com/missing.pdf", "https://www.lcsc.com/ds.pdf"]))
-    text = "\n".join(adopt_module.adopt("jlcpcb", "C1002")["lines"])
+    text = "\n".join(adopt_module.adopt("jlcpcb", "C1002", manufacturer="Maker B")["lines"])
     assert "datasheet: https://www.lcsc.com/ds.pdf" in text and "failed before: https://ti.com/missing.pdf" in text
     assert "project: none (not in a project folder)" in text
     monkeypatch.setattr(adopt_module, "datasheet_urls", lambda c, s, p=None, n=None: iter([]))
@@ -136,7 +138,7 @@ def test_datasheet_url_order(jlc, downloads, monkeypatch):  # noqa: F811
 
 def test_a_new_mpn_removes_the_sources(jlc, downloads, tmp_path):  # noqa: F811
     project = prj.init_project(tmp_path / "board")
-    adopt_module.adopt("jlcpcb", "C1001", project=prj.load(project.root))
+    adopt_module.adopt("jlcpcb", "C1001", project=prj.load(project.root), manufacturer="Maker A")
     with Store() as store:
         part = prj.update_part(prj.load(project.root), store, "FET-A", new_mpn="FET-A2")
     assert "removed the purchase sources of FET-A: jlcpcb C1001" in part["notes"][0]
@@ -145,7 +147,11 @@ def test_a_new_mpn_removes_the_sources(jlc, downloads, tmp_path):  # noqa: F811
 
 def test_cli(jlc, downloads, tmp_path, capsys):  # noqa: F811
     project = prj.init_project(tmp_path / "board")
-    assert main(["adopt", "jlcpcb", "--mpn", "FET-B", "-p", str(project.root)]) == 0
+    # No terminal: the question of the manufacturer stops the command, with no change.
+    assert main(["adopt", "jlcpcb", "--mpn", "FET-B", "-p", str(project.root)]) == 1
+    assert "ASK THE USER: the manufacturer of FET-B" in capsys.readouterr().out
+    assert prj.load(project.root).parts == []
+    assert main(["adopt", "jlcpcb", "--mpn", "FET-B", "-M", "Maker B", "-p", str(project.root)]) == 0
     out = capsys.readouterr().out
     assert "FET-B (Maker B) from jlcpcb: C1002, library Basic" in out
     loaded = prj.load(project.root).parts[0]
@@ -166,7 +172,7 @@ def test_review_fixes(jlc, downloads, tmp_path, monkeypatch):  # noqa: F811
     loaded = prj.load(project.root)
     with Store() as store:  # a different tool changes the project file after adopt read it
         prj.add_part(prj.load(project.root), store, "OTHER-PART")
-    result = adopt_module.adopt("jlcpcb", "C1001", project=loaded)
+    result = adopt_module.adopt("jlcpcb", "C1001", project=loaded, manufacturer="Maker A")
     assert "datasheet: https://x/FET-A.pdf" in "\n".join(result["lines"])  # not the datasheet of Other Maker
     assert sorted(p["mpn"] for p in prj.load(project.root).parts) == ["FET-A", "OTHER-PART"]
     assert result["project"].parts is not loaded.parts
@@ -183,7 +189,7 @@ def test_review_fixes(jlc, downloads, tmp_path, monkeypatch):  # noqa: F811
     monkeypatch.setattr(fetch, "downloaded", broken_then_good)
     monkeypatch.setattr(adopt_module, "datasheet_urls",
                         lambda c, s, p=None, n=None: iter(["https://ti.com/broken.pdf", "https://www.lcsc.com/good.pdf"]))
-    text = "\n".join(adopt_module.adopt("jlcpcb", "C1004")["lines"])
+    text = "\n".join(adopt_module.adopt("jlcpcb", "C1004", manufacturer="Maker D")["lines"])
     assert "datasheet: https://www.lcsc.com/good.pdf" in text and "failed before: https://ti.com/broken.pdf" in text
 
 
@@ -267,3 +273,102 @@ def test_a_datasheet_for_the_inbox(jlc, downloads, monkeypatch, tmp_path):  # no
             f"the PDF file into the inbox of the project: {project.inbox_path}. Then run project_sync (CLI: "
             "datasheet-lens sync): it gives the file to FET-D.") in text
     assert project.inbox_path.is_dir()
+
+
+def _source(monkeypatch, text_pdf, mpn, maker, datasheet_text):
+    """adopt_part of a made-up Mouser part mpn of the distributor name maker.
+    datasheet_text: the text of the bottom line of page 1 (the name of the
+    manufacturer in a datasheet), or None for no datasheet."""
+    monkeypatch.setattr(adopt_module, "_part", lambda source, number, m: {
+        "mpn": mpn, "manufacturer": maker, "package": "", "number": f"1-{mpn}", "library": "",
+        "url": f"https://www.mouser.com/p/{mpn}", "datasheet": f"https://www.mouser.com/ds/{mpn}.pdf"})
+    seen = []
+
+    @contextlib.contextmanager
+    def downloaded(url, home):
+        seen.append(url)
+        yield text_pdf(f"{mpn}-{len(seen)}.pdf", [[(50, 60, 12, f"{mpn} Regulator"), (50, 760, 8, datasheet_text)]])
+
+    monkeypatch.setattr(fetch, "downloaded", downloaded)
+    urls = [] if datasheet_text is None else [f"https://www.mouser.com/ds/{mpn}.pdf"]
+    monkeypatch.setattr(adopt_module, "datasheet_urls", lambda c, s, p=None, n=None: iter(urls))
+    return seen
+
+
+@pytest.mark.parametrize("offered, text, stored", [
+    ("UNI ROYAL Uniroyal Elec", "Uniroyal Electronics Global Co., Ltd.", "UNI-ROYAL"),  # the name of JLCPCB
+    ("TI", "TEXAS INSTRUMENTS", "Texas Instruments"),
+    ("", "TEXAS INSTRUMENTS", "Texas Instruments"),  # the distributor gives no name
+])
+def test_the_manufacturer_comes_from_the_datasheet(downloads, monkeypatch, text_pdf, tmp_path, offered, text,
+                                                   stored):
+    """The part gets the manufacturer of its datasheet, not the name of the
+    distributor (decision of the user, 2026-11-07): the 0603WAF resistors got
+    "UNI ROYAL Uniroyal Elec" of JLCPCB before."""
+    _source(monkeypatch, text_pdf, "X-1", offered, text)
+    project = prj.init_project(tmp_path / "board")
+    result = adopt_module.adopt("mouser", "1-X-1", project=prj.load(project.root))
+    assert not result["ask"] and f"manufacturer: {stored} (from the datasheet)" in result["lines"]
+    assert prj.load(project.root).parts[0]["manufacturer"] == stored
+    with Store() as store:
+        [row] = store.match_parts("X-1")
+        assert row["manufacturer"] == stored and store.part_sources(row["id"])[0]["number"] == "1-X-1"
+
+
+@pytest.mark.parametrize("text, found", [
+    ("TEXAS INSTRUMENTS", "Texas Instruments"),  # a different name than the distributor name
+    ("Made by a small company", "no manufacturer name that the tool knows"),
+])
+def test_adopt_asks_for_the_manufacturer(downloads, monkeypatch, text_pdf, tmp_path, text, found):
+    """When the datasheet names no manufacturer that the registry knows, or a
+    manufacturer that the registry does not relate to the distributor name,
+    the tool asks the user and changes nothing. The answer of the user then
+    adds the part, and a line asks for the relation of the two names."""
+    seen = _source(monkeypatch, text_pdf, "X-2", "Maker Q", text)
+    project = prj.init_project(tmp_path / "board")
+    result = adopt_module.adopt("mouser", "1-X-2", project=prj.load(project.root))
+    assert result["ask"] and result["part"] is None and result["document"] is not None
+    sha = result["lines"][-1].split("(document ")[1][:12]
+    assert result["lines"][-1] == (
+        f"ASK THE USER: the manufacturer of X-2. The datasheet (document {sha}) gives {found}, and mouser gives "
+        "Maker Q. The manufacturer of a part comes from its datasheet. Read page 1 of the datasheet "
+        "(get_page_image), ask the user, then call adopt_part again with manufacturer=<the name in the "
+        "datasheet> (CLI: --manufacturer). The tool added no part and no purchase source.")
+    assert prj.load(project.root).parts == []
+    with Store() as store:
+        assert store.match_parts("X-2") == [] and store.document(sha) is not None
+    result = adopt_module.adopt("mouser", "1-X-2", project=prj.load(project.root), manufacturer="Small Co")
+    assert not result["ask"] and "manufacturer: Small Co (given)" in result["lines"]
+    assert ("manufacturer names: mouser gives Maker Q, the datasheet gives Small Co, and the manufacturer registry "
+            "does not know if they are one manufacturer.") in "\n".join(result["lines"])
+    assert prj.load(project.root).parts[0]["manufacturer"] == "Small Co" and len(seen) == 2
+    with Store() as store:
+        [row] = store.match_parts("X-2")
+        assert row["manufacturer"] == "Small Co" and store.part_sources(row["id"])[0]["number"] == "1-X-2"
+        store.maker_relation("alias", "Small Co", "Maker Q")
+    # A relation that the registry has: no line about it.
+    lines = adopt_module.adopt("mouser", "1-X-2", project=prj.load(project.root), manufacturer="Small Co")["lines"]
+    assert not any(line.startswith("manufacturer names:") for line in lines)
+
+
+def test_adopt_with_no_datasheet_gives_no_manufacturer(downloads, monkeypatch, text_pdf, tmp_path):
+    """No datasheet: the part has no manufacturer until the datasheet is in the
+    store; the purchase source is saved."""
+    _source(monkeypatch, text_pdf, "XC6206P332MR", "Maker Q", None)
+    project = prj.init_project(tmp_path / "board")
+    result = adopt_module.adopt("mouser", "1-XC6206P332MR", project=prj.load(project.root))
+    assert not result["ask"]
+    assert ("manufacturer: none until the datasheet is in the store (mouser gives Maker Q, but the manufacturer of "
+            "a part comes from its datasheet). project_sync gives the part the manufacturer of the datasheet."
+            ) in result["lines"]
+    part = prj.load(project.root).parts[0]
+    assert part["manufacturer"] == "" and part["sources"][0]["number"] == "1-XC6206P332MR"
+    # The user saves the datasheet into the inbox: sync gives the part its manufacturer.
+    text_pdf("x3.pdf", [[(50, 60, 12, "XC6206P332MR Regulator"), (50, 760, 8, "TEXAS INSTRUMENTS")]]).rename(
+        project.inbox_path / "x3.pdf")
+    with Store() as store:
+        report = prj.sync(prj.load(project.root), store)
+        assert [a["manufacturer"] for a in report["inbox_maker"]] == ["Texas Instruments"]
+        assert store.match_parts("XC6206P332MR")[0]["manufacturer"] == "Texas Instruments"
+    part = prj.load(project.root).parts[0]
+    assert part["manufacturer"] == "Texas Instruments" and part["sources"][0]["number"] == "1-XC6206P332MR"

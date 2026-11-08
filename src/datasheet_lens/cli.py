@@ -675,8 +675,18 @@ def cmd_adopt(args: argparse.Namespace) -> int:
     from .setup import element_backend
 
     project = load_optional(args.path)
-    result = adopt(args.source, args.number, args.mpn, args.base, args.category, project)
+    result = adopt(args.source, args.number, args.mpn, args.base, args.category, project,
+                   manufacturer=args.manufacturer or "")
     print("\n".join(result["lines"]))
+    if result["ask"] and sys.stdin.isatty():
+        # The question of the result: the user reads the datasheet and types its manufacturer.
+        answer = _input("  Type the manufacturer as the datasheet names it (empty = stop): ")
+        if not answer:
+            return 1
+        result = adopt(args.source, args.number, args.mpn, args.base, args.category, project, manufacturer=answer)
+        print("\n".join(result["lines"]))
+    if result["ask"]:
+        return 1
     if result["project"] is not None:  # as the command add: the copy in the document folder
         with Store() as store:
             report, _ = sync_project(store, result["project"].root)
@@ -931,6 +941,8 @@ def build_parser() -> argparse.ArgumentParser:
     ad.add_argument("-m", "--mpn", default="", help="the MPN, in place of NUMBER")
     ad.add_argument("-b", "--base", default="", help="the base part of the datasheet (for example TLV755P)")
     ad.add_argument("-c", "--category", default="", help="the function of the part, for example MOSFET")
+    ad.add_argument("-M", "--manufacturer", default="",
+                    help="the manufacturer as the datasheet names it, when adopt asks for it")
     ad.add_argument("-p", "--path", "--project", dest="path",
                     help="the project folder (default: the current folder or a parent folder)")
     ad.set_defaults(func=cmd_adopt)

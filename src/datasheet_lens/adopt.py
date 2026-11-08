@@ -245,13 +245,15 @@ def _known_datasheet(store, mpn: str, base: str, manufacturer: str):
 
 
 def adopt(source: str, number: str = "", mpn: str = "", base: str = "", category: str = "", project=None,
-          lock=None) -> dict:
+          lock=None, manufacturer: str = "") -> dict:
     """Take a part of a source: the datasheet, the part, the purchase source.
     lock: held only while the store and the project file change (the MCP server
-    gives its lock); the API calls and the downloads run before it. Gives a
-    dict: lines (the result for the user), document (the ID of a new document,
-    or None), part (the project part or None), project (the project as it is
-    now, or None)."""
+    gives its lock); the API calls and the downloads run before it.
+    manufacturer: the manufacturer of the datasheet that the user gives (see
+    _maker). Gives a dict: lines (the result for the user), document (the ID of
+    a new document, or None), part (the project part or None), project (the
+    project as it is now, or None), ask (True: the tool must have the
+    manufacturer from the user, and it added no part)."""
     from .store import Store
 
     source = source.strip().lower()
@@ -263,11 +265,12 @@ def adopt(source: str, number: str = "", mpn: str = "", base: str = "", category
              + (f", package {c['package']}" if c["package"] else "")]
     lines += _lifecycle_lines(c, source, project)
     lock = lock or contextlib.nullcontext()
+    given = manufacturer.strip()
     with Store() as store:
-        known = _known_datasheet(store, c["mpn"], base.strip(), c["manufacturer"])
+        known = _known_datasheet(store, c["mpn"], base.strip(), given or c["manufacturer"])
     if known is not None:
         lines.append(f"datasheet: in the store already (document {known.sha256[:12]}, {known.filename})")
-        return _commit(c, source, base, category, project, lock, lines, known, new=False)
+        return _finish(c, source, base, category, project, lock, lines, known, False, given)
     failed: list[str] = []
     tried: list[str] = []
     not_used: list[str] = []
@@ -278,7 +281,7 @@ def adopt(source: str, number: str = "", mpn: str = "", base: str = "", category
             lines.append(f"datasheet: {url} (document {doc.sha256[:12]}, {doc.pages} pages)"
                          + (f"; failed before: {'; '.join(failed)}" if failed else ""))
             lines += _not_used_line(c, not_used)
-            return _commit(c, source, base, category, project, lock, lines, doc, new=True)
+            return _finish(c, source, base, category, project, lock, lines, doc, True, given)
     lines.append("datasheet: NOT ADDED. " + ("The URLs that failed: " + "; ".join(failed) + "." if failed
                                              else "No source gives a datasheet URL."))
     if project is not None:  # the folder for the file of the user; an error only leaves it out
@@ -286,7 +289,66 @@ def adopt(source: str, number: str = "", mpn: str = "", base: str = "", category
             project.inbox_path.mkdir(parents=True, exist_ok=True)
     lines.append(_manual_line(c, project, tried))
     lines += _not_used_line(c, not_used)
-    return _commit(c, source, base, category, project, lock, lines, None, new=False)
+    return _finish(c, source, base, category, project, lock, lines, None, False, given)
+
+
+def _finish(c: dict, source: str, base: str, category: str, project, lock, lines: list[str], doc, new: bool,
+            given: str) -> dict:
+    """The manufacturer of the part (_maker), then the changes (_commit). When
+    the tool must ask the user for the manufacturer, it changes nothing: the
+    result gives the question and the new document (its element map can build)."""
+    maker, ask = _maker(c, source, doc, given, lines)
+    if ask:
+        return {"lines": lines, "document": doc.id if doc is not None and new else None, "part": None,
+                "project": project, "ask": True}
+    return _commit(c, source, base, category, project, lock, lines, doc, new, maker)
+
+
+def _maker(c: dict, source: str, doc, given: str, lines: list[str]) -> tuple[str, bool]:
+    """The manufacturer of the part: the manufacturer of its datasheet, never
+    the name of the distributor (decision of the user, 2026-11-07). Gives (the
+    name, ask) and adds a line to lines:
+    - given (the answer of the user): this name. When the registry does not
+      relate it to the name of the distributor, a line tells the user to
+      record the relation: the offers of the distributors use it.
+    - no datasheet: no manufacturer. project_sync gives the part the
+      manufacturer of the datasheet when the user puts the file into the inbox.
+    - the datasheet names a manufacturer that the registry knows
+      (identify.propose), and the distributor gives no name or a name of the
+      same manufacturer: the name of the datasheet.
+    - else ask: the agent reads page 1 and asks the user."""
+    from .identify import propose
+    from .store import Store
+
+    offered = c["manufacturer"].strip()
+    if given:
+        lines.append(f"manufacturer: {given} (given)")
+        with Store() as store:
+            unrelated = offered and not store.same_maker(given, offered) and not store.distinct_makers(given,
+                                                                                                         offered)
+        if unrelated:
+            lines.append(f"manufacturer names: {source} gives {offered}, the datasheet gives {given}, and the "
+                         "manufacturer registry does not know if they are one manufacturer. Ask the user, then "
+                         "record it with manufacturer_relation (CLI: datasheet-lens maker RELATION NAME OTHER): "
+                         f"alias \"{given}\" \"{offered}\" (one manufacturer) or distinct (two manufacturers). The "
+                         f"offers of the distributors for {c['mpn']} use this relation.")
+        return given, False
+    if doc is None:
+        lines.append(f"manufacturer: none until the datasheet is in the store ({source} gives "
+                     f"{offered or 'no name'}, but the manufacturer of a part comes from its datasheet). project_sync "
+                     "gives the part the manufacturer of the datasheet.")
+        return "", False
+    found = propose(doc).manufacturer
+    with Store() as store:
+        if found and (not offered or store.same_maker(found, offered)):
+            lines.append(f"manufacturer: {found} (from the datasheet)")
+            return found, False
+    lines.append(f"ASK THE USER: the manufacturer of {c['mpn']}. The datasheet (document {doc.sha256[:12]}) gives "
+                 f"{found or 'no manufacturer name that the tool knows'}, and {source} gives "
+                 f"{offered or 'no name'}. The manufacturer of a part comes from its datasheet. Read page 1 of the "
+                 "datasheet (get_page_image), ask the user, then call adopt_part again with manufacturer=<the name "
+                 "in the datasheet> (CLI: --manufacturer). The tool added no part and no purchase source.")
+    return "", True
 
 
 def _manual_line(c: dict, project, urls: list[str]) -> str:
@@ -342,7 +404,7 @@ def _download(url: str, lock, failed: list[str]):
 
 
 def _commit(c: dict, source: str, base: str, category: str, project, lock, lines: list[str], doc,
-            new: bool) -> dict:
+            new: bool, maker: str) -> dict:
     """The changes of the store and of the project, under the locks: the lock of
     the project folder first, then lock (the MCP server), then the store (the
     order of lock.py). The project file is read again under the lock of the
@@ -358,12 +420,12 @@ def _commit(c: dict, source: str, base: str, category: str, project, lock, lines
         if project is not None:
             project = load(project.root)
             source_entry = {"source": source, "number": c["number"], "library": c["library"]}
-            part, part_id = add_part_with_id(project, store, c["mpn"], c["manufacturer"], document, "datasheet",
+            part, part_id = add_part_with_id(project, store, c["mpn"], maker, document, "datasheet",
                                              category, base=owner, source=source_entry)
             lines.append(f"project: {part['mpn']}" + (f" (base part {part['base']})" if part.get("base") else "")
                          + f", source {source} {c['number']}")
         else:
-            part_id, _ = store_part(store, c["mpn"], c["manufacturer"], document, "datasheet", category, owner)
+            part_id, _ = store_part(store, c["mpn"], maker, document, "datasheet", category, owner)
             lines.append("project: none (not in a project folder): the part is in the store only")
         store.set_part_source(part_id, source, c["number"], url=c["url"], library=c["library"])
     lines.append("Next: read each value that the design needs in the datasheet (get_page_image) and save it with "
@@ -371,4 +433,4 @@ def _commit(c: dict, source: str, base: str, category: str, project, lock, lines
     # document: a new document only (the caller builds its element map). project:
     # the project as it is now (read again under the lock).
     return {"lines": lines, "document": doc.id if doc is not None and new else None, "part": part,
-            "project": project}
+            "project": project, "ask": False}

@@ -534,7 +534,8 @@ def test_the_add_hints_of_the_cli_and_the_server():
 
     report = {k: [] for k in ("ok", "copied", "restored", "changed", "missing", "imported", "added", "moved",
                               "unknown_parts", "problems", "misplaced", "suggested", "unassigned",
-                              "inbox_assigned", "inbox_known", "inbox_waiting", "inbox_new")}
+                              "inbox_assigned", "inbox_known", "inbox_waiting", "inbox_new", "inbox_maker",
+                              "inbox_ask")}
     report["inbox_waiting"] = [{"file": "_inbox/d.pdf", "sha256": "d" * 64, "proposal": "", "other": []}]
     report["misplaced"] = [{"file": "a.pdf", "mpn": "TLV755P", "part": "TLV75533PDBVR", "base": "TLV755P",
                             "sha256": "a" * 64, "linked": ["X"]},
@@ -1516,6 +1517,35 @@ def test_the_inbox(store_home, text_pdf, tmp_path):
         assert report["inbox_known"] == ["_inbox/more/widget.pdf"]
         assert not (inbox / "more").exists() and inbox.is_dir()
         assert (project.folder_path / "_unknown/widget.pdf").is_file()  # XYZ123 has no manufacturer
+
+
+def test_the_inbox_gives_the_manufacturer_of_the_datasheet(store_home, text_pdf, tmp_path):
+    """A part with no manufacturer (adopt_part with no datasheet) gets the
+    manufacturer of the datasheet from the inbox. When the tool cannot read
+    it, the part gets the datasheet, and the report asks the user."""
+    with Store() as store:
+        project = prj.init_project(tmp_path / "board")
+        prj.add_part(project, store, "0603WAF1002T5E")
+        prj.add_part(prj.load(project.root), store, "XYZ124")
+        inbox = project.inbox_path
+        shutil.copyfile(text_pdf("r.pdf", [[(50, 60, 14, "0603WAF1002T5E Thick Film Chip Resistor"),
+                                            (50, 760, 8, "Uniroyal Electronics Global Co., Ltd.")]]), inbox / "r.pdf")
+        shutil.copyfile(text_pdf("w.pdf", [[(50, 60, 14, "XYZ124 Widget"), (50, 760, 8, "Small Co")]]),
+                        inbox / "w.pdf")
+        report = prj.sync(prj.load(project.root), store)
+        assert [(a["part"], a["manufacturer"]) for a in report["inbox_maker"]] == [("0603WAF1002T5E", "UNI-ROYAL")]
+        [ask] = report["inbox_ask"]
+        assert (ask["part"], ask["file"]) == ("XYZ124", "_inbox/w.pdf")
+        parts = {p["mpn"]: p for p in prj.load(project.root).parts}
+        assert parts["0603WAF1002T5E"]["manufacturer"] == "UNI-ROYAL"
+        assert store.match_parts("0603WAF1002T5E")[0]["manufacturer"] == "UNI-ROYAL"
+        assert parts["XYZ124"]["manufacturer"] == "" and len(parts["XYZ124"]["documents"]) == 1
+        lines = prj.format_report(report, True, ("add {part}{base} {sha}", " -b {base}"))
+        assert "inbox: 0603WAF1002T5E: manufacturer UNI-ROYAL from its datasheet _inbox/r.pdf" in lines
+        assert (f"ASK THE USER: the manufacturer of XYZ124. Its datasheet _inbox/w.pdf ({ask['sha256'][:12]}) names "
+                "no manufacturer that the tool knows. Read page 1 of the datasheet (get_page_image), ask the user, "
+                "then give it with project_update_part(mpn='XYZ124', new_manufacturer=<the name in the datasheet>) "
+                "(CLI: datasheet-lens set XYZ124 -M NAME).") in lines
 
 
 INBOX_CODES = [[(50, 60, 14, "OPA2134 High Performance Audio Operational Amplifier"),

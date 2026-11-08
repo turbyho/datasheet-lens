@@ -963,6 +963,10 @@ class Store:
         """True if the two names are the same manufacturer (makers.same)."""
         return makers.same(self.db, a, b)
 
+    def distinct_makers(self, a: str, b: str) -> bool:
+        """True if the registry records the two names as two manufacturers (makers.distinct)."""
+        return makers.distinct(self.db, a, b)
+
     def known_maker(self, mpn: str, proposed: str) -> str:
         """The manufacturer of the part with this MPN (when the store has one
         part with a manufacturer, and the registry does not record the two names

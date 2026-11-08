@@ -755,10 +755,11 @@ def _has_datasheet(project_part: dict, store: Store) -> bool:
     return len(rows) == 1 and any(r["role"] == "datasheet" for r in store.documents_of_part(rows[0]["id"]))
 
 
-def _inbox_parts(project: Project, store: Store, doc: Document) -> tuple[list[dict], str, list[str]]:
+def _inbox_parts(project: Project, store: Store, doc: Document) -> tuple[list[dict], str, list[str], str]:
     """The project parts that a document of the inbox goes to, the part that
-    the PDF proposes ("MPN (manufacturer)" or ""), and the reasons why a part
-    that agrees does not get it.
+    the PDF proposes ("MPN (manufacturer)" or ""), the reasons why a part
+    that agrees does not get it, and the manufacturer of the datasheet that the
+    registry knows (identify.propose), or "".
 
     A part agrees when its MPN is an ordering code of the document, or when its
     MPN or its base part is the part of the PDF or one of its variants. A live
@@ -797,7 +798,7 @@ def _inbox_parts(project: Project, store: Store, doc: Document) -> tuple[list[di
         else:
             agree.append(part)
     text = f"{proposal.mpn} ({proposal.manufacturer or 'manufacturer unknown'})" if proposal.mpn else ""
-    return agree, text, reasons
+    return agree, text, reasons, proposal.manufacturer
 
 
 def _inbox(project: Project, store: Store, apply: bool, report: dict) -> list[dict]:
@@ -807,7 +808,11 @@ def _inbox(project: Project, store: Store, apply: bool, report: dict) -> list[di
     copies. A file with no part stays for the user. A file that the project has
     already goes from the inbox. Gives the files that can go from the inbox
     ({"path", "sha256"}): sync removes each one at its end, when the project has
-    its document then. A dry run (apply false) only tells the files."""
+    its document then. A dry run (apply false) only tells the files.
+
+    A part with no manufacturer (adopt_part with no datasheet) gets the
+    manufacturer of the datasheet (decision of the user, 2026-11-08). When the
+    tool cannot read it, the report asks the user (inbox_ask)."""
     from .indexer import build_index
 
     if apply:
@@ -829,10 +834,13 @@ def _inbox(project: Project, store: Store, apply: bool, report: dict) -> list[di
                 continue
             if store.build(doc.id, "index") is None:
                 build_index(store, doc.id)  # the ordering codes come from the index
-            parts, proposal, reasons = _inbox_parts(project, store, doc)
+            parts, proposal, reasons, maker = _inbox_parts(project, store, doc)
             for part in parts:
-                store_part(store, part["mpn"], part["manufacturer"], doc.sha256, "datasheet", "",
+                store_part(store, part["mpn"], part["manufacturer"] or maker, doc.sha256, "datasheet", "",
                            part.get("base", ""))
+                if not part["manufacturer"]:  # step 1 of _sync fills the project part from the store
+                    report["inbox_maker" if maker else "inbox_ask"].append(
+                        {"part": part["mpn"], "file": rel, "sha256": doc.sha256, "manufacturer": maker})
         except (LensError, OSError, pdfium.PdfiumError) as e:
             report["problems"].append(f"{rel}: not taken from the inbox: {e}")
             continue
@@ -3144,7 +3152,8 @@ def _sync(project: Project, store: Store, apply: bool, restore: bool, details: b
     details: see dry_run (only with apply false)."""
     report = {k: [] for k in ("ok", "copied", "restored", "changed", "missing", "imported", "added", "moved",
                               "suggested", "unassigned", "unknown_parts", "problems", "misplaced", "documents",
-                              "inbox_assigned", "inbox_known", "inbox_waiting", "inbox_new", "found")}
+                              "inbox_assigned", "inbox_known", "inbox_waiting", "inbox_new", "inbox_maker",
+                              "inbox_ask", "found")}
     # 0. The inbox: its documents go into the store, linked to their parts.
     from_inbox = _inbox(project, store, apply, report)
     files = _folder_files(project)
@@ -3412,6 +3421,13 @@ def format_report(report: dict, apply: bool, add_hint: tuple[str, str], cli: boo
     for item in report["inbox_assigned"]:
         lines.append(f"inbox: {item['file']}: the datasheet of {', '.join(item['parts'])}; its copy is in the "
                      "subfolder of the part, and the file is not in the inbox now")
+    lines += [f"inbox: {item['part']}: manufacturer {item['manufacturer']} from its datasheet {item['file']}"
+              for item in report["inbox_maker"]]
+    lines += [f"ASK THE USER: the manufacturer of {item['part']}. Its datasheet {item['file']} "
+              f"({item['sha256'][:12]}) names no manufacturer that the tool knows. Read page 1 of the datasheet "
+              f"(get_page_image), ask the user, then give it with project_update_part(mpn='{item['part']}', "
+              f"new_manufacturer=<the name in the datasheet>) (CLI: datasheet-lens set {item['part']} -M NAME)."
+              for item in report["inbox_ask"]]
     lines += [f"inbox: {rel}: the project has this document; "
               + ("the file is not in the inbox now" if apply else "the next sync takes the file from the inbox")
               for rel in report["inbox_known"]]
