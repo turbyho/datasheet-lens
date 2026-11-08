@@ -963,6 +963,10 @@ class Store:
         """True if the two names are the same manufacturer (makers.same)."""
         return makers.same(self.db, a, b)
 
+    def text_names(self) -> dict[str, str]:
+        """The names of the registry for the search of the manufacturer in a PDF (makers.text_names)."""
+        return makers.text_names(self.db)
+
     def distinct_makers(self, a: str, b: str) -> bool:
         """True if the registry records the two names as two manufacturers (makers.distinct)."""
         return makers.distinct(self.db, a, b)

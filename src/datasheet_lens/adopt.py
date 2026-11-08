@@ -338,8 +338,8 @@ def _maker(c: dict, source: str, doc, given: str, lines: list[str]) -> tuple[str
                      f"{offered or 'no name'}, but the manufacturer of a part comes from its datasheet). project_sync "
                      "gives the part the manufacturer of the datasheet.")
         return "", False
-    found = propose(doc).manufacturer
     with Store() as store:
+        found = propose(doc, store.text_names()).manufacturer
         if found and (not offered or store.same_maker(found, offered)):
             lines.append(f"manufacturer: {found} (from the datasheet)")
             return found, False

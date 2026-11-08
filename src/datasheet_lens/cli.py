@@ -76,7 +76,7 @@ def _ask_part(store: Store, doc, args: argparse.Namespace) -> tuple[str, str, li
                 print(f"  {answer} is not one of them: give it with --part")
             return "", "", []
         return row["mpn"], row["manufacturer"], []
-    p = propose(doc)
+    p = propose(doc, store.text_names())
     if not p.mpn:
         print("part: no MPN found in the PDF; give it with --part")
         return "", "", []

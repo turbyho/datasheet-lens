@@ -392,7 +392,7 @@ def _proposal(store: Store, doc) -> str:
     """The part that the PDF proposes, for a document with no part."""
     from .identify import propose
 
-    p = propose(doc)
+    p = propose(doc, store.text_names())
     if not p.mpn:
         return "\nno part: the PDF gives no MPN; find it (title, ordering information) and link it"
     covers = (f" The datasheet covers the variants {', '.join(p.variants)}: give one as part and the "

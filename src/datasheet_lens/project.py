@@ -777,7 +777,7 @@ def _inbox_parts(project: Project, store: Store, doc: Document) -> tuple[list[di
       with no datasheet, and the user decides for the other parts."""
     from .identify import ordering_codes, propose
 
-    proposal = propose(doc)
+    proposal = propose(doc, store.text_names())
     codes = {code.upper() for code, *_ in ordering_codes(store, doc.id, proposal)}
     names = {n.upper() for n in (proposal.mpn, *proposal.variants) if n}
     agree, reasons = [], []

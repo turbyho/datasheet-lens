@@ -1589,7 +1589,7 @@ def test_the_inbox_rules(store_home, text_pdf, tmp_path, monkeypatch):
         from datasheet_lens import identify
 
         real = identify.propose
-        monkeypatch.setattr(identify, "propose", lambda doc: (_ for _ in ()).throw(LensError("broken text"))
+        monkeypatch.setattr(identify, "propose", lambda doc, names=None: (_ for _ in ()).throw(LensError("broken text"))
                             if doc.filename == "pa.pdf" else real(doc))
         shutil.copyfile(text_pdf("widget.pdf", [[(50, 60, 14, "XYZ123 Widget")]]), inbox / "widget.pdf")
         report = prj.sync(prj.load(project.root), store)

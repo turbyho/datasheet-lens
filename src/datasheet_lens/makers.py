@@ -287,6 +287,24 @@ def seed(db: sqlite3.Connection) -> None:
                (SEED_KEY, SEED_VERSION))
 
 
+# A name of the registry with a shorter key (TI, ST, ADI) is not a name to find
+# in the text of a PDF: it matches words that are not the manufacturer.
+MIN_TEXT_KEY = 4
+
+
+def text_names(db: sqlite3.Connection) -> dict[str, str]:
+    """The names of the registry that are not built-in names, for the search of
+    the manufacturer in the text of a PDF (identify.propose finds the built-in
+    names itself): the name in upper case, with the name to give. A name of a
+    manufacturer that has a built-in name gives that name (as builtin_name). An
+    other name gives itself: a name that the user recorded is a name of a
+    datasheet. Not a name with a key of less than MIN_TEXT_KEY characters."""
+    rows = db.execute("SELECT key, manufacturer_id, name FROM manufacturer_aliases").fetchall()
+    builtin = {mid: _BUILTIN[k] for k, mid, _ in rows if k in _BUILTIN}
+    return {name.strip().upper(): builtin.get(mid, name.strip()) for k, mid, name in rows
+            if k not in _BUILTIN and len(k) >= MIN_TEXT_KEY}
+
+
 # The key of each built-in name, with the name of its manufacturer (builtin_name).
 _BUILTIN: dict[str, str] = {}
 for _name, _long in MANUFACTURERS.items():

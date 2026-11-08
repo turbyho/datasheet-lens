@@ -16,6 +16,7 @@ and page 1.
 
 from __future__ import annotations
 
+import functools
 import os
 import re
 from dataclasses import dataclass, field
@@ -93,23 +94,38 @@ def _is_mpn(token: str) -> bool:
             and not NOT_MPN_RE.match(token) and not DOC_WORD_RE.search(token))
 
 
-def _manufacturer(texts: list[str], mpn: str = "") -> str:
+@functools.lru_cache(maxsize=8)
+def _names_re(names: tuple[str, ...]) -> re.Pattern:
+    """The pattern of the names of the registry (makers.text_names), as ALIAS_RE."""
+    return re.compile(r"(?<![A-Z0-9])(" + "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+                      + r")(?![A-Z0-9])")
+
+
+def _manufacturer(texts: list[str], mpn: str = "", names: dict[str, str] | None = None) -> str:
     """The manufacturer that the texts name most often, else the manufacturer of
-    the prefix of mpn. Any spelling is good for the store: its manufacturer
+    the prefix of mpn. The names: the built-in names (MANUFACTURERS), and the
+    names of the registry of the store (makers.text_names: name in upper case,
+    the name to give). Any spelling is good for the store: its manufacturer
     registry knows the names of one manufacturer (makers.py)."""
     counts: dict[str, int] = {}
+    pattern = _names_re(tuple(sorted(names))) if names else None
     for text in texts:
-        for alias in ALIAS_RE.findall(text.upper().replace("_", " ")):
+        upper = text.upper().replace("_", " ")
+        for alias in ALIAS_RE.findall(upper):
             counts[OWNER[alias]] = counts.get(OWNER[alias], 0) + 1
+        for alias in pattern.findall(upper) if pattern else []:
+            counts[names[alias]] = counts.get(names[alias], 0) + 1
     if counts:
         return max(counts, key=counts.get)
     return next((m for p, m in MPN_PREFIXES.items() if mpn.upper().startswith(p)), "")
 
 
 @pdfium_locked
-def propose(doc: Document) -> Proposal:
+def propose(doc: Document, names: dict[str, str] | None = None) -> Proposal:
     """Propose the part of a document from its PDF (see the module docstring). It is
-    only a proposal: the user or the model confirms it."""
+    only a proposal: the user or the model confirms it. names: the names of the
+    registry of the store for the manufacturer (Store.text_names); None: only
+    the built-in names."""
     pdf = pdfium.PdfDocument(str(doc.path))
     try:
         meta = pdf.get_metadata_dict()
@@ -172,7 +188,7 @@ def propose(doc: Document) -> Proposal:
         k for k in order if k == best or (best and _variant(spelling[best], spelling[k], found[k], k == stem_norm)))]
     return Proposal(mpn=spelling.get(best, ""),
                     manufacturer=_manufacturer([title, page1[:3000], stem, meta.get("Author", ""),
-                                                meta.get("Creator", "")], spelling.get(best, "")),
+                                                meta.get("Creator", "")], spelling.get(best, ""), names),
                     sources=found.get(best, []), candidates=[spelling[k] for k in ranked[1:5]],
                     variants=variants if len(variants) > 1 else [])
 

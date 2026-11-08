@@ -372,3 +372,27 @@ def test_adopt_with_no_datasheet_gives_no_manufacturer(downloads, monkeypatch, t
         assert store.match_parts("XC6206P332MR")[0]["manufacturer"] == "Texas Instruments"
     part = prj.load(project.root).parts[0]
     assert part["manufacturer"] == "Texas Instruments" and part["sources"][0]["number"] == "1-XC6206P332MR"
+
+
+def test_the_registry_names_of_the_store_in_the_datasheet(downloads, monkeypatch, text_pdf, tmp_path):
+    """A name that the user recorded in the registry is a name to find in a
+    datasheet: after the first answer and the relation of the two names, the
+    tool does not ask again for the next part of the manufacturer. A short name
+    is not a name to find in a text."""
+    from datasheet_lens import makers
+
+    with Store() as store:
+        store.maker_relation("alias", "Small Co", "Maker Q")
+        store.maker_relation("alias", "SCO", "Maker Q")
+        store.maker_relation("alias", "Uniroyal Global", "UNI-ROYAL")  # a new name of a built-in manufacturer
+        names = store.text_names()
+    assert names["SMALL CO"] == "Small Co" and names["MAKER Q"] == "Maker Q"
+    assert "SCO" not in names and len(makers.key("SCO")) < makers.MIN_TEXT_KEY
+    assert names["UNIROYAL GLOBAL"] == "UNI-ROYAL" and "TEXAS INSTRUMENTS" not in names  # built-in: identify
+    _source(monkeypatch, text_pdf, "X-4", "Maker Q", "Small Co Ltd")
+    result = adopt_module.adopt("mouser", "1-X-4")
+    assert not result["ask"] and "manufacturer: Small Co (from the datasheet)" in result["lines"]
+    _source(monkeypatch, text_pdf, "X-5", "", "Uniroyal Global")
+    assert "manufacturer: UNI-ROYAL (from the datasheet)" in adopt_module.adopt("mouser", "1-X-5")["lines"]
+    _source(monkeypatch, text_pdf, "X-6", "Maker Q", "SCO")  # too short: no name
+    assert adopt_module.adopt("mouser", "1-X-6")["ask"]
