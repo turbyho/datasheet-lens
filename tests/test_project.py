@@ -1249,7 +1249,7 @@ def test_bom_formats(tmp_path):
 
     def mpns(name, text, delimiter="", quote=""):
         bom = tmp_path / name
-        bom.write_text(text, encoding="utf-8")
+        bom.write_bytes(text.encode("utf-8"))  # the same bytes on each system
         return [parts for p in bom_parts(str(bom), "", delimiter, quote).cad if (parts := symbol_state(p).parts)]
 
     def error(name, text, delimiter="", quote=""):
@@ -1265,6 +1265,9 @@ def test_bom_formats(tmp_path):
     # Each text of a field MPN is an MPN, also "A\nB" and "'t Hooft" (the user writes the field).
     assert mpns("excel.csv", '"Qty, pcs",Reference,MPN,Note\n1,C1,"GRM188, XQ1001",n\n2,C2,"A\nB"\n3,U1,XQ1001\n'
                 "4,U2,'t Hooft,a'\n") == [["GRM188", "XQ1001"], ["A\nB"], ["XQ1001"], ["'t Hooft"]]
+    # Excel on Windows: CRLF line ends, and a LF in a value over two lines.
+    assert mpns("crlf.csv", 'Reference,MPN\r\nC1,"GRM188, XQ1001"\r\nC2,"A\nB"\r\n') == [
+        ["GRM188", "XQ1001"], ["A\nB"]]
     assert mpns("names.csv", 'Reference;"Value, a, b, c";MPN\nR1;10k;XQ1001\n') == [["XQ1001"]]
     assert mpns("trail.csv", "\nReference,Value,MPN,\nR1,10k,XQ1001\nR2,1k,YQ2002,\n") == [["XQ1001"], ["YQ2002"]]
     assert mpns("one.csv", "MPN\nGRM188, XQ1001\n") == [["GRM188", "XQ1001"]]

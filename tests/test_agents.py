@@ -179,12 +179,17 @@ def test_review_cases(tmp_path, capsys):
         os.symlink("CLAUDE.md", root / "AGENTS.md")
     except OSError:  # Windows with no right to make symbolic links
         pytest.skip("no symbolic links")
-    os.chmod(root / "CLAUDE.md", 0o644)
+    os.chmod(root / "CLAUDE.md", 0o644)  # on Windows: only "not read-only"
+    mode = stat.S_IMODE((root / "CLAUDE.md").stat().st_mode)
+    # The mode of a new file in this folder (umask on Linux and macOS), not the
+    # 0o600 of a temporary file.
+    (tmp_path / "new.txt").write_text("", encoding="utf-8")
+    new_file = stat.S_IMODE((tmp_path / "new.txt").stat().st_mode)
     assert main(["project", "init", "-p", str(root)]) == 0
     assert (root / "AGENTS.md").is_symlink()
     assert (root / "CLAUDE.md").read_text(encoding="utf-8").count(agents.BEGIN) == 1
-    assert stat.S_IMODE((root / "CLAUDE.md").stat().st_mode) == 0o644  # the permissions stay
-    assert stat.S_IMODE((root / "datasheet-lens.toml").stat().st_mode) == 0o644
+    assert stat.S_IMODE((root / "CLAUDE.md").stat().st_mode) == mode  # the permissions stay
+    assert stat.S_IMODE((root / "datasheet-lens.toml").stat().st_mode) == new_file
     capsys.readouterr()
 
     # From a subfolder: the existing project, not a new one; an option with no effect is told.
