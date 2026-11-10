@@ -162,7 +162,6 @@ def publish(store: Store, doc: Document, kind: str, client) -> str:
     raw = export(store, doc, kind)
     sha = hashlib.sha256(raw).hexdigest()
     path = temp_path(store.home / "tmp" / f"bundle-{sha}.json.gz")
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
         path.write_bytes(raw)
         client.upload(store, path, sha, "application/gzip")

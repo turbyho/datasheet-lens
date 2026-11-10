@@ -25,6 +25,7 @@ from pathlib import Path
 
 from .config import store_home
 from .errors import LensError
+from .fileutil import new_temp
 
 SERVICE = "datasheet-lens"
 # The name of a key -> its environment variable.
@@ -106,12 +107,12 @@ def _read_file(strict: bool = True) -> dict[str, str]:
 def _write_file(keys: dict[str, str]) -> None:
     """Write the file of the keys, readable and writable only by the user."""
     path = _file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{FILE}.{os.getpid()}.tmp")
     # Only the known names with a valid key: no text that makes the file invalid.
     text = "# API keys of datasheet-lens. Keep this file private.\n" + "".join(
         f'{k} = "{v}"\n' for k, v in sorted(keys.items()) if k in KEYS and KEY_RE.fullmatch(v))
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # A new file with a unique name: an old temporary file or a symbolic link with the
+    # same name cannot get the keys.
+    fd, tmp = new_temp(path, 0o600)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)

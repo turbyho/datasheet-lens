@@ -235,7 +235,6 @@ class Remote:
         """Get the file of a document from the server into the store. The SHA-256
         must agree; else no file."""
         answer = self.call("GET", f"/v1/blobs/{doc.sha256}")
-        doc.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = temp_path(doc.path)
         digest = hashlib.sha256()
         try:
