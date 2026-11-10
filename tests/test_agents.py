@@ -386,7 +386,8 @@ def test_two_claude_md_files_that_are_one_file(tmp_path):
     (tmp_path / ".claude").mkdir()
     (tmp_path / "CLAUDE.md").write_text("# Claude\n", encoding="utf-8")
     try:
-        os.symlink("../CLAUDE.md", tmp_path / ".claude" / "CLAUDE.md")
+        # The separator of the system: Windows does not follow a relative link with "/".
+        os.symlink(os.path.join("..", "CLAUDE.md"), tmp_path / ".claude" / "CLAUDE.md")
     except OSError:  # Windows with no right to make symbolic links
         pytest.skip("no symbolic links")
     assert agents.update(tmp_path, "datasheets") == [
