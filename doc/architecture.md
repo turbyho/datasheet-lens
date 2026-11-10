@@ -289,7 +289,7 @@ or the database.
 | `adopt.py` | Take a found part: the datasheet, the part and the purchase source. |
 | `bundles.py` | The bundles of derived data (index and element map) on the team server. |
 | `version_check.py` | The update check: a newer release on PyPI, and a server that runs an older version than the installed one. |
-| `agents.py` | The datasheet-lens block in `AGENTS.md` and `CLAUDE.md`. |
+| `agents.py` | The datasheet-lens block in `AGENTS.md`, and in `CLAUDE.md` or `.claude/CLAUDE.md`. |
 | `cli.py` | The command line interface. |
 | `config.py` | The location of the central store (`DATASHEET_LENS_HOME`), `config.json`, and the data folder (key `data`). |
 | `distributors.py` | The part data from the distributor APIs: search, availability, distributor list, services. |

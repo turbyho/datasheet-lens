@@ -1,9 +1,11 @@
 """The datasheet-lens block in the instruction files of agents in a project.
 
-An LLM agent reads AGENTS.md or CLAUDE.md of a project. project init puts a block
-between the markers BEGIN and END into each of these files that exists. A second
-run changes the block only when its text is different (for example from an older
-version of datasheet-lens). The text outside the markers does not change. The
+An LLM agent reads AGENTS.md of a project. Claude Code reads CLAUDE.md and
+.claude/CLAUDE.md of the project root, and the files that they import
+(https://code.claude.com/docs/en/memory). project init puts a block between the
+markers BEGIN and END into AGENTS.md, and into one of the two CLAUDE.md files. A
+second run changes the block only when its text is different (for example from an
+older version of datasheet-lens). The text outside the markers does not change. The
 tool makes no new instruction file: the files belong to the user.
 """
 
@@ -18,7 +20,11 @@ from .fileutil import write_atomic
 
 BEGIN = "<!-- datasheet-lens -->"
 END = "<!-- /datasheet-lens -->"
-FILES = ("AGENTS.md", "CLAUDE.md")
+AGENTS_FILE = "AGENTS.md"
+# The project instructions of Claude Code, in the sequence in which a file gets a new
+# block. Claude Code reads the two files together, thus only one of them gets the block.
+CLAUDE_FILES = ("CLAUDE.md", ".claude/CLAUDE.md")
+FILES = (AGENTS_FILE, *CLAUDE_FILES)
 
 TEXT = """\
 ## datasheet-lens — component datasheets
@@ -106,8 +112,11 @@ def block(folder: str) -> str:
 # A line and its line end (CRLF, LF or CR). markdown-it counts the lines with the
 # same line ends, thus the line numbers of its tokens are the numbers of these lines.
 LINE_RE = re.compile(r"([^\r\n]*)(\r\n|\r|\n|\Z)")
-# CLAUDE.md that imports AGENTS.md ("@AGENTS.md", "@./AGENTS.md").
-INCLUDE_RE = re.compile(r"(^|\s)@(\./)?AGENTS\.md\b")
+# An import of Claude Code: "@path" after a space or at the start ("\ " is a space in
+# the path). See _imports for the rules of the path.
+IMPORT_RE = re.compile(r"(?:^|\s)@((?:[^\s\\]|\\ )+)")
+IMPORT_START_RE = re.compile(r"[a-zA-Z0-9._-]")
+HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 BOM = "\ufeff"
 _COMMONMARK = MarkdownIt("commonmark")
 
@@ -139,15 +148,18 @@ class _Lines:
             pos = m.end()
         code: set[int] = set()  # the line numbers of the code blocks
         html_starts: set[int] = set()  # the first lines of the HTML blocks at the top level
-        # The text of the paragraphs and headings, with no code span and no HTML: Claude
-        # Code reads an import only there (it removes the HTML comments, and an import
-        # in code is not an import).
+        # The text in which Claude Code reads an import: the paragraphs and headings with
+        # no code span and no HTML, and an HTML block that starts with a comment, with
+        # no comment. An import in code or in an other HTML block is not an import.
         prose: list[str] = []
         for token in _COMMONMARK.parse(text):
             if token.type in ("fence", "code_block") and token.map:
                 code.update(range(*token.map))
-            elif token.type == "html_block" and token.level == 0 and token.map:
-                html_starts.add(token.map[0])
+            elif token.type == "html_block":
+                if token.level == 0 and token.map:
+                    html_starts.add(token.map[0])
+                if token.content.lstrip().startswith("<!--") and "-->" in token.content:
+                    prose.append(HTML_COMMENT_RE.sub("", token.content))
             elif token.type == "inline":
                 prose.append("".join(child.content if child.type == "text" else
                                      "\n" if child.type in ("softbreak", "hardbreak") else " "
@@ -195,28 +207,130 @@ def _line_end(text: str) -> str:
     return max(counts, key=lambda end: counts[end])  # max keeps the first of equal counts
 
 
+def _read(path: Path) -> tuple[str, str, _Lines]:
+    """The byte order mark (or ""), the text with no byte order mark, and its lines.
+
+    Raises:
+        OSError, UnicodeDecodeError: the tool cannot read the file as UTF-8.
+    """
+    text = path.read_bytes().decode("utf-8")  # keep the line ends of the file (CRLF, LF or CR)
+    bom = BOM if text.startswith(BOM) else ""  # an editor of Windows can write one
+    body = text[len(bom):]
+    return bom, body, _Lines(body)
+
+
+def _imports(path: Path, prose: str) -> list[Path]:
+    """The files that this file imports, with the rules of Claude Code: the text
+    after "#" is not part of the path, "~/" is the home folder, and a relative path
+    starts in the folder of the file (not in the project root)."""
+    paths = []
+    for m in IMPORT_RE.finditer(prose):
+        name = m.group(1).split("#", 1)[0].replace("\\ ", " ")
+        if name.startswith("~/"):
+            paths.append(Path.home() / name[2:])
+        elif (name.startswith("/") and name != "/") or IMPORT_START_RE.match(name):
+            paths.append(path.parent / name)
+    return paths
+
+
 def update(root: Path, folder: str) -> list[tuple[str, str]]:
-    """Put the current block into AGENTS.md and CLAUDE.md of the project root, if
-    the file exists. Give (file name, what happened) for each file: added,
-    updated, current, or a reason why the file did not change. A file that is a
-    symbolic link to the other one is done one time."""
-    results: list[tuple[str, str]] = []
-    done: dict[Path, str] = {}  # real path -> the action
-    for name in FILES:
+    """Put the current block into AGENTS.md and into one file of CLAUDE_FILES. Give
+    (file name, what happened) for each file of FILES that exists: added, updated,
+    current, or a reason why the file did not change.
+
+    Claude Code reads CLAUDE.md and .claude/CLAUDE.md together, thus one of them gets
+    the block, not the two:
+
+    - A file that has a block (also through a symbolic link to AGENTS.md) keeps it:
+      the tool updates it. Two files with a block: the result tells it.
+    - When one of the two files imports AGENTS.md, and AGENTS.md has a block (also
+      one that the tool cannot change), the two files get no block.
+    - Else the first file of CLAUDE_FILES that exists gets the block.
+    """
+    actions: dict[str, str] = {}
+    names: dict[Path, str] = {}  # real path -> the name of the file that the tool did
+    with_block: set[Path] = set()  # real paths of the files that have the current block
+    broken: set[Path] = set()  # real paths of the files with a block that the tool cannot change
+    read: dict[Path, tuple[str, str, _Lines] | str] = {}  # real path -> _read, or the error
+
+    def lines_of(real: Path) -> tuple[str, str, _Lines] | str:
+        if real not in read:
+            try:
+                read[real] = _read(real)
+            except (OSError, UnicodeDecodeError) as e:
+                read[real] = f"not changed: {e}"
+        return read[real]
+
+    def has_markers(real: Path) -> bool:
+        doc = lines_of(real)
+        return not isinstance(doc, str) and bool(doc[2].markers or doc[2].other_markers)
+
+    def put(name: str) -> None:
         path = root / name
-        if not path.is_file():
-            continue
         real = path.resolve()
-        if real in done:
-            results.append((name, f"{done[real]} (the same file as {FILES[0]})"))
+        if real in names:
+            first = names[real]
+            actions[name] = f"{actions[first]} (the same file as {first})"
+            return
+        names[real] = name
+        doc = lines_of(real)
+        if isinstance(doc, str):
+            action = doc
+        else:
+            try:
+                action = _update_file(path, *doc, folder)
+            except OSError as e:
+                action = f"not changed: {e}"
+        actions[name] = action
+        if action in ("added", "updated", "current"):
+            with_block.add(real)
+        elif has_markers(real):
+            broken.add(real)
+
+    if (root / AGENTS_FILE).is_file():
+        put(AGENTS_FILE)
+    claude = [(name, (root / name).resolve()) for name in CLAUDE_FILES if (root / name).is_file()]
+    for name, real in claude:
+        if real in names or has_markers(real):
+            put(name)
+    # The files with a block (also one that the tool cannot change) that Claude Code
+    # reads: real path -> how the result names it. AGENTS.md is one when a file of
+    # CLAUDE_FILES imports it.
+    holders: dict[Path, str] = {}
+    for name, real in claude:
+        if real in with_block or real in broken:
+            holders.setdefault(real, name)
+    agents = (root / AGENTS_FILE).resolve()
+    if agents in with_block or agents in broken:
+        importer = next((name for name, real in claude if agents in _imports_of(root / name, lines_of(real))), None)
+        if importer is not None:
+            holders.setdefault(agents, f"AGENTS.md through the import in {importer}")
+    for name, real in claude:
+        if name in actions:
             continue
-        try:
-            action = _update_file(path, folder, results)
-        except (OSError, UnicodeDecodeError) as e:
-            action = f"not changed: {e}"
-        done[real] = action
-        results.append((name, action))
-    return results
+        if real in names:  # a symbolic link to the other file
+            put(name)
+        elif holders:
+            first, label = next(iter(holders.items()))
+            which = "the block" if first in with_block else "a block that the tool cannot change"
+            actions[name] = f"not changed: Claude Code also reads {label}, which has {which}"
+        else:
+            put(name)
+            if real in with_block or real in broken:
+                holders[real] = name
+    # Two blocks in the context of Claude Code: tell it on each file of CLAUDE_FILES that
+    # has a second block. AGENTS.md keeps its block: the other agents read it.
+    order = sorted(holders, key=lambda r: r != agents)
+    for real in order[1:]:
+        actions[holders[real]] += (f" (Claude Code also reads the block in {holders[order[0]]}: keep one of "
+                                   "the two blocks)")
+    return [(name, actions[name]) for name in FILES if name in actions]
+
+
+def _imports_of(path: Path, doc: tuple[str, str, _Lines] | str) -> set[Path]:
+    """The real paths of the files that this file imports (none when the tool cannot
+    read the file: doc is the error)."""
+    return set() if isinstance(doc, str) else {p.resolve() for p in _imports(path, doc[2].prose)}
 
 
 def _current(body: str, marker_lines: tuple[Span, Span], wanted: str) -> bool:
@@ -226,18 +340,17 @@ def _current(body: str, marker_lines: tuple[Span, Span], wanted: str) -> bool:
     return BEGIN + body[first[1]:last[0]] + END == wanted
 
 
-def _update_file(path: Path, folder: str, results: list[tuple[str, str]]) -> str:
-    text = path.read_bytes().decode("utf-8")  # keep the line ends of the file (CRLF, LF or CR)
-    bom = BOM if text.startswith(BOM) else ""  # an editor of Windows can write one
-    body = text[len(bom):]
-    lines = _Lines(body)
+def _update_file(path: Path, bom: str, body: str, lines: _Lines, folder: str) -> str:
+    """Put the block into the file (the parts of _read). Give the action or the
+    reason why the file did not change.
+
+    Raises:
+        OSError: the tool cannot write the file.
+    """
     try:
         found = lines.block()
     except _NoBlock as e:
         return f"not changed: {e}"
-    agents_ok = any(n == "AGENTS.md" and a in ("added", "updated", "current") for n, a in results)
-    if path.name == "CLAUDE.md" and found is None and agents_ok and INCLUDE_RE.search(lines.prose):
-        return "not changed: it includes AGENTS.md, which has the block"
     if found is not None:
         start, stop = found[0][0], found[1][1]  # the two marker lines, with their spaces
         outside = body[:start] + body[stop:]

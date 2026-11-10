@@ -3,6 +3,8 @@ import pytest
 from datasheet_lens import agents
 from datasheet_lens.cli import main
 
+INCLUDED = "not changed: Claude Code also reads AGENTS.md through the import in {}, which has the block"
+
 
 def test_block_in_agent_files(tmp_path, capsys):
     root = tmp_path / "board"
@@ -40,7 +42,7 @@ def test_claude_md_that_includes_agents_md(tmp_path):
     (tmp_path / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
     (tmp_path / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
     result = dict(agents.update(tmp_path, "datasheets"))
-    assert result["AGENTS.md"] == "added" and result["CLAUDE.md"].startswith("not changed: it includes")
+    assert result["AGENTS.md"] == "added" and result["CLAUDE.md"] == INCLUDED.format("CLAUDE.md")
     assert (tmp_path / "CLAUDE.md").read_text(encoding="utf-8") == "@AGENTS.md\n"
 
 
@@ -213,7 +215,7 @@ def test_markers_on_own_lines_and_other_files(tmp_path):
     assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8").startswith(text.rstrip("\n") + "\n\n<!--")
     # "@./AGENTS.md" counts as an include; one in a code block does not.
     (tmp_path / "CLAUDE.md").write_text("See @./AGENTS.md\n", encoding="utf-8")
-    assert dict(agents.update(tmp_path, "datasheets"))["CLAUDE.md"].startswith("not changed: it includes")
+    assert dict(agents.update(tmp_path, "datasheets"))["CLAUDE.md"] == INCLUDED.format("CLAUDE.md")
     (tmp_path / "CLAUDE.md").write_text("```\n@AGENTS.md\n```\n", encoding="utf-8")
     assert dict(agents.update(tmp_path, "datasheets"))["CLAUDE.md"] == "added"
 
@@ -249,7 +251,7 @@ def test_include_after_a_fence_in_a_list_item(tmp_path):
     (tmp_path / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
     (tmp_path / "CLAUDE.md").write_bytes(b"- ```\n  a\n  ```\n\n@AGENTS.md\n\n- ```\n  b\n  ```\n")
     result = dict(agents.update(tmp_path, "datasheets"))
-    assert result["AGENTS.md"] == "added" and result["CLAUDE.md"].startswith("not changed: it includes")
+    assert result["AGENTS.md"] == "added" and result["CLAUDE.md"] == INCLUDED.format("CLAUDE.md")
 
 
 def test_two_blocks(tmp_path):
@@ -311,4 +313,128 @@ def test_text_that_does_not_import_agents_md(tmp_path, claude):
 def test_import_in_a_sentence(tmp_path):
     (tmp_path / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
     (tmp_path / "CLAUDE.md").write_bytes(b"# Claude\n\nRead *the rules*: @./AGENTS.md\n")
-    assert dict(agents.update(tmp_path, "datasheets"))["CLAUDE.md"].startswith("not changed: it includes")
+    assert dict(agents.update(tmp_path, "datasheets"))["CLAUDE.md"] == INCLUDED.format("CLAUDE.md")
+
+
+def test_claude_md_in_the_claude_folder(tmp_path, capsys):
+    """Claude Code reads .claude/CLAUDE.md as CLAUDE.md: project init puts the block
+    into it when it is the only instruction file."""
+    (tmp_path / ".claude").mkdir()
+    path = tmp_path / ".claude" / "CLAUDE.md"
+    path.write_text("# Claude\n", encoding="utf-8")
+    assert main(["project", "init", "-p", str(tmp_path)]) == 0
+    assert ".claude/CLAUDE.md: datasheet-lens block added" in capsys.readouterr().out
+    assert path.read_text(encoding="utf-8").count(agents.BEGIN) == 1
+    assert agents.update(tmp_path, "datasheets") == [(".claude/CLAUDE.md", "current")]
+
+
+def test_two_claude_md_files_get_one_block(tmp_path):
+    """Claude Code reads CLAUDE.md and .claude/CLAUDE.md together: one block only.
+    A file that has the block keeps it, also when it is .claude/CLAUDE.md."""
+    (tmp_path / ".claude").mkdir()
+    root_file, folder_file = tmp_path / "CLAUDE.md", tmp_path / ".claude" / "CLAUDE.md"
+    root_file.write_text("# Root\n", encoding="utf-8")
+    folder_file.write_text("# Folder\n", encoding="utf-8")
+    also = "not changed: Claude Code also reads {}, which has the block"
+    assert agents.update(tmp_path, "datasheets") == [
+        ("CLAUDE.md", "added"), (".claude/CLAUDE.md", also.format("CLAUDE.md"))]
+    assert agents.BEGIN not in folder_file.read_text(encoding="utf-8")
+    assert agents.update(tmp_path, "datasheets") == [
+        ("CLAUDE.md", "current"), (".claude/CLAUDE.md", also.format("CLAUDE.md"))]
+
+    root_file.write_text("# Root\n", encoding="utf-8")
+    folder_file.write_text("# Folder\n\n" + agents.block("old") + "\n", encoding="utf-8")
+    assert agents.update(tmp_path, "datasheets") == [
+        ("CLAUDE.md", also.format(".claude/CLAUDE.md")), (".claude/CLAUDE.md", "updated")]
+    assert root_file.read_text(encoding="utf-8") == "# Root\n"
+
+
+def test_import_is_relative_to_the_file(tmp_path):
+    """A relative import starts in the folder of the file: "@AGENTS.md" in
+    .claude/CLAUDE.md is .claude/AGENTS.md, and "@../AGENTS.md" is the root file."""
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
+    path = tmp_path / ".claude" / "CLAUDE.md"
+    path.write_text("@AGENTS.md\n", encoding="utf-8")
+    assert dict(agents.update(tmp_path, "datasheets"))[".claude/CLAUDE.md"] == "added"
+    path.write_text("@../AGENTS.md\n", encoding="utf-8")
+    assert dict(agents.update(tmp_path, "datasheets"))[".claude/CLAUDE.md"] == INCLUDED.format(".claude/CLAUDE.md")
+    # An absolute path. Claude Code reads a backslash as the end of the path: "/" also on Windows.
+    path.write_text(f"@{(tmp_path / 'AGENTS.md').as_posix()}\n", encoding="utf-8")
+    assert dict(agents.update(tmp_path, "datasheets"))[".claude/CLAUDE.md"] == INCLUDED.format(".claude/CLAUDE.md")
+
+
+@pytest.mark.parametrize("claude, included", [
+    ("@AGENTS.md#rules\n", True),  # the text after "#" is not part of the path
+    ("<!-- note --> @AGENTS.md\n", True),  # Claude Code reads the HTML block with no comment
+    ("- <!-- note --> @AGENTS.md\n", True),  # also in a list item
+    ("<div>\n@AGENTS.md\n</div>\n", False),  # an other HTML block: no import
+    ("Read @AGENTS.md, then work.\n", False),  # the path is "AGENTS.md," (no such file)
+])
+def test_import_rules_of_claude_code(tmp_path, claude, included):
+    (tmp_path / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text(claude, encoding="utf-8")
+    wanted = INCLUDED.format("CLAUDE.md") if included else "added"
+    assert dict(agents.update(tmp_path, "datasheets"))["CLAUDE.md"] == wanted
+
+
+def test_two_claude_md_files_that_are_one_file(tmp_path):
+    """.claude/CLAUDE.md that is a symbolic link to CLAUDE.md: one block, and the
+    result tells that the two names are one file."""
+    import os
+
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / "CLAUDE.md").write_text("# Claude\n", encoding="utf-8")
+    try:
+        os.symlink("../CLAUDE.md", tmp_path / ".claude" / "CLAUDE.md")
+    except OSError:  # Windows with no right to make symbolic links
+        pytest.skip("no symbolic links")
+    assert agents.update(tmp_path, "datasheets") == [
+        ("CLAUDE.md", "added"), (".claude/CLAUDE.md", "added (the same file as CLAUDE.md)")]
+    assert (tmp_path / "CLAUDE.md").read_text(encoding="utf-8").count(agents.BEGIN) == 1
+
+
+def test_two_claude_md_files_with_a_block(tmp_path):
+    """Two blocks in the context of Claude Code: the tool updates the two and tells
+    the user to keep one."""
+    (tmp_path / ".claude").mkdir()
+    for name in ("CLAUDE.md", ".claude/CLAUDE.md"):
+        (tmp_path / name).write_text(agents.block("datasheets") + "\n", encoding="utf-8")
+    assert agents.update(tmp_path, "datasheets") == [
+        ("CLAUDE.md", "current"),
+        (".claude/CLAUDE.md", "current (Claude Code also reads the block in CLAUDE.md: keep one of the two blocks)")]
+
+
+def test_import_of_agents_md_and_a_block(tmp_path):
+    """CLAUDE.md that imports AGENTS.md and has its own block: the two blocks stay,
+    and the result tells the user to keep one. A broken block in AGENTS.md also
+    counts: CLAUDE.md gets no second block."""
+    (tmp_path / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text("@AGENTS.md\n\n" + agents.block("datasheets") + "\n", encoding="utf-8")
+    assert agents.update(tmp_path, "datasheets") == [
+        ("AGENTS.md", "added"),
+        ("CLAUDE.md", "current (Claude Code also reads the block in AGENTS.md through the import in CLAUDE.md: "
+                      "keep one of the two blocks)")]
+    (tmp_path / "AGENTS.md").write_text("<!-- datasheet-lens -->\nhalf a block\n", encoding="utf-8")
+    (tmp_path / "CLAUDE.md").write_text("@AGENTS.md\n", encoding="utf-8")
+    assert dict(agents.update(tmp_path, "datasheets"))["CLAUDE.md"] == (
+        "not changed: Claude Code also reads AGENTS.md through the import in CLAUDE.md, which has a block that "
+        "the tool cannot change")
+    assert (tmp_path / "CLAUDE.md").read_text(encoding="utf-8") == "@AGENTS.md\n"
+
+
+def test_claude_md_that_is_agents_md_and_a_second_block(tmp_path):
+    """CLAUDE.md is a symbolic link to AGENTS.md, and .claude/CLAUDE.md has its own
+    block: the result tells it on .claude/CLAUDE.md, not on AGENTS.md."""
+    import os
+
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
+    try:
+        os.symlink("AGENTS.md", tmp_path / "CLAUDE.md")
+    except OSError:  # Windows with no right to make symbolic links
+        pytest.skip("no symbolic links")
+    (tmp_path / ".claude" / "CLAUDE.md").write_text(agents.block("datasheets") + "\n", encoding="utf-8")
+    assert agents.update(tmp_path, "datasheets") == [
+        ("AGENTS.md", "added"), ("CLAUDE.md", "added (the same file as AGENTS.md)"),
+        (".claude/CLAUDE.md", "current (Claude Code also reads the block in CLAUDE.md: keep one of the two blocks)")]

@@ -31,7 +31,8 @@ The command does these steps:
 1. It makes the project file `datasheet-lens.toml` with a comment header.
 2. It makes the document folder, with the inbox `_inbox` in it (see
    [The inbox](#the-inbox)).
-3. It puts the datasheet-lens block into `AGENTS.md` and `CLAUDE.md`.
+3. It puts the datasheet-lens block into `AGENTS.md`, and into `CLAUDE.md` or
+   `.claude/CLAUDE.md`.
 
 | Option | Effect |
 |---|---|
@@ -41,13 +42,13 @@ The command does these steps:
 
 When you run the command in a subfolder of a project, it uses that project. When the
 project file exists, the command does not change it. It only updates the block in
-`AGENTS.md` and `CLAUDE.md`. To change the folder or the layout of an existing
+the instruction files. To change the folder or the layout of an existing
 project, edit the project file.
 
 ### The block in AGENTS.md and CLAUDE.md
 
-An agent reads `AGENTS.md` or `CLAUDE.md` of a repository. The block tells the agent
-where the project file and the copies are, and which tools to use:
+An agent reads `AGENTS.md` of a repository. Claude Code reads `CLAUDE.md` and
+`.claude/CLAUDE.md`, and the files that they import. The block tells the agent where the project file and the copies are, and which tools to use:
 
 - Read each value from the original page.
 - Find the content step by step, and use `find_facts` and `save_fact`.
@@ -63,13 +64,25 @@ where the project file and the copies are, and which tools to use:
 The block is between the lines `<!-- datasheet-lens -->` and
 `<!-- /datasheet-lens -->`. The text outside these lines does not change. Rules:
 
-- The tool does not make a new `AGENTS.md` or `CLAUDE.md`. It changes only the files
-  that exist. Make the file first if you want the block.
+- The tool does not make a new `AGENTS.md`, `CLAUDE.md` or `.claude/CLAUDE.md`. It
+  changes only the files that exist. Make the file first if you want the block.
 - A second run replaces the block only when its text is different (for example
   from an older version).
-- When `CLAUDE.md` imports `AGENTS.md` (`@AGENTS.md` in the text, not in code and
-  not in an HTML comment) and `AGENTS.md` has the block, `CLAUDE.md` does not get a
-  second block.
+- `AGENTS.md` gets the block.
+- Claude Code reads `CLAUDE.md` and `.claude/CLAUDE.md` together. Thus only one
+  of them gets the block:
+  - A file that has the block keeps it, and the tool updates it. When the two
+    files have a block, the result of `project init` tells you to keep one.
+  - A block that the tool cannot change (see the conditions below) also counts as
+    a block. Repair it, then run `project init` again.
+  - When one of the two files imports `AGENTS.md` and `AGENTS.md` has the block,
+    the two files do not get a second block. Examples are `@AGENTS.md` in
+    `CLAUDE.md`, and `@../AGENTS.md` in `.claude/CLAUDE.md`.
+  - If no file has the block, `CLAUDE.md` gets it. If `CLAUDE.md` does not exist,
+    `.claude/CLAUDE.md` gets it.
+- The tool finds an import with the rules of Claude Code:
+  - The import is `@path` in the text, not in code and not in an HTML comment.
+  - A relative path starts in the folder of the file that has the import.
 - The tool keeps the line ends of the file (LF, CRLF or CR) and a byte order mark
   at its start. The block gets the line end of most lines of the text outside it.
 - The tool reads the file as CommonMark. The marker lines must be at the top level

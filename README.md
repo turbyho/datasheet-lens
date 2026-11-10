@@ -146,7 +146,7 @@ arguments. The server gives its instructions to the agent. See
 In the root folder of the repository of the design:
 
 ```sh
-datasheet-lens project init     # the project file, and a block in AGENTS.md, CLAUDE.md
+datasheet-lens project init     # the project file, and the block in the instruction files
 datasheet-lens add PATH|URL     # add a datasheet; it proposes the MPN of the part
 datasheet-lens sync             # copy the documents into the project folder, and give the
                                 # PDF files of datasheets/_inbox/ to their parts
@@ -154,8 +154,9 @@ datasheet-lens check BOM.csv    # compare the project with a BOM of the CAD proj
 ```
 
 The agent uses the same functions through the MCP server. The block in
-`AGENTS.md` or `CLAUDE.md` tells the agent the procedure. `project init` changes
-only the files that exist: make one of them first if you want the block.
+`AGENTS.md` or `CLAUDE.md` (also `.claude/CLAUDE.md`) tells the agent the
+procedure. `project init` changes only the files that exist: make one of them
+first if you want the block.
 
 | Command | What it does |
 |---|---|

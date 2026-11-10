@@ -328,8 +328,9 @@ datasheet-lens project init [--folder FOLDER] [--layout LAYOUT] [-p PATH]
 
 Make the project file and the document folder, with the inbox `_inbox` in it (see
 [projects.md](projects.md#the-inbox)). Put the datasheet-lens block into
-`AGENTS.md` and `CLAUDE.md` when these files exist. A second run updates only the
-block.
+`AGENTS.md`, and into `CLAUDE.md` or `.claude/CLAUDE.md`, when these files exist.
+A second run updates only the block. See
+[projects.md](projects.md#the-block-in-agentsmd-and-claudemd).
 
 | Option | Effect |
 |---|---|

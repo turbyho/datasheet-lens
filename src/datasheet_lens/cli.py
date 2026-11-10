@@ -413,8 +413,8 @@ PROJECT_ADD_HINT = ("datasheet-lens project add-part \"{part}\"{base} --document
 
 def cmd_project_init(args: argparse.Namespace) -> int:
     """The command project init: make the project file and its folder, and put the
-    datasheet-lens block into AGENTS.md and CLAUDE.md. A second run changes only
-    a block that is not current."""
+    datasheet-lens block into AGENTS.md, and into CLAUDE.md or .claude/CLAUDE.md
+    (agents.update). A second run changes only a block that is not current."""
     from .lock import folder_lock
     from .project import find_project
 
@@ -1190,7 +1190,8 @@ def build_parser() -> argparse.ArgumentParser:
     project = sub.add_parser("project", help="the parts of a project and the copies of their documents")
     psub = project.add_subparsers(dest="project_command", required=True)
     pinit = psub.add_parser("init", help="make the project file datasheet-lens.toml, and put the datasheet-lens "
-                                         "block into AGENTS.md and CLAUDE.md (a second run updates the block)")
+                                         "block into AGENTS.md, and into CLAUDE.md or .claude/CLAUDE.md (a "
+                                         "second run updates the block)")
     pinit.add_argument("--folder", help="the document folder, relative to the project (default: datasheets)")
     pinit.add_argument("--layout",
                        help="the subfolder of each copy: {manufacturer}, {category}, {mpn}, or \"\" (default: "

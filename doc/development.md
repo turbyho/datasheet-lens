@@ -152,8 +152,8 @@ instructions.
 
 ## The block for agents
 
-`agents.py` holds the block that `project init` writes into `AGENTS.md` and
-`CLAUDE.md`. When you change its text, the next `project init` in a user project
+`agents.py` holds the block that `project init` writes into `AGENTS.md`, and into
+`CLAUDE.md` or `.claude/CLAUDE.md`. When you change its text, the next `project init` in a user project
 updates the block.
 
 ## Store schema
